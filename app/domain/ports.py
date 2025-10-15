@@ -7,6 +7,14 @@ class PostRepo(Protocol):
     def get_by_slug(self, slug: str) -> Optional[Post]: ...
     def ensure_unique_slug(self, desired: str) -> str: ...
     def list_published(self, limit: int = 50) -> Iterable[Post]: ...
+    def list(
+            self, *,
+            status: str | None = None,
+            visibility: str | None = None,
+            q: str | None = None,
+            limit: int = 50,
+            offset: int = 0,
+    ) -> Iterable[Post]: ...
 
 class UnitOfWork(Protocol):
     posts: PostRepo

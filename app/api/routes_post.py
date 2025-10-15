@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Optional
 from sqlalchemy.orm import Session
 from app.api.deps import get_session, get_uow
 from app.domain.dto import PostCreateDTO, PostDTO
@@ -12,8 +13,15 @@ def get_service(session: Session = Depends(get_session)) -> PostService:
     return PostService(uow)
 
 @router.get("/", response_model=list[PostDTO])
-def list_posts(svc: PostService = Depends(get_service)):
-    return svc.list_published()
+def list_posts(
+        svc: PostService = Depends(get_service),
+        status: Optional[str] = Query(None),
+        visibility: Optional[str] = Query(None),
+        q: Optional[str] = Query(None),
+        limit: int = Query(50, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+):
+    return svc.list(status=status, visibility=visibility, q=q, limit=limit, offset=offset)
 
 @router.post("/", response_model=PostDTO, status_code=201)
 def create_post(payload: PostCreateDTO, svc: PostService = Depends(get_service)):

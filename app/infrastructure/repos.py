@@ -67,3 +67,29 @@ class SqlPostRepo(PostRepo):
         )
         for r in self.session.execute(q).scalars():
             yield _row_to_domain(r)
+
+    def list(
+            self, *,
+            status: str | None = None,
+            visibility: str | None = None,
+            q: str | None = None,
+            limit: int = 50,
+            offset: int = 0,
+    ):
+        conditions = [PostORM.deleted_at.is_(None)]
+        if status:
+            conditions.append(PostORM.status == status)
+        if visibility:
+            conditions.append(PostORM.visibility == visibility)
+        if q:
+            ilike = f"%{q.lower()}%"
+            conditions.append(func.lower(PostORM.title).like(ilike))
+
+        stmt = (
+            select(PostORM)
+            .where(*conditions)
+            .order_by(PostORM.published_at.desc().nullslast(), PostORM.created_at.desc())
+            .limit(limit).offset(offset)
+        )
+        rows = self.session.execute(stmt).scalars().all()
+        return [_row_to_domain(r) for r in rows]
