@@ -15,7 +15,7 @@ app.include_router(posts_publish.router, prefix="/api/publish",      tags=["publ
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4321", "http://127.0.0.1:4321"],
+    allow_origins=["http://localhost:4321", "http://127.0.0.1:4321", "http://ratemymusic.blog"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
