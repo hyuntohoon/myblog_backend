@@ -53,6 +53,8 @@ jobs:
           aws-region: ap-northeast-2
           role-to-assume: arn:aws:iam::338183196042:role/GitHubActionsDeployRole
           role-session-name: github-sam-deploy
+      - name: Who am I?
+        run: aws sts get-caller-identity
 
       - name: SAM build (no container, cached+parallel)
         run: sam build --cached --parallel
