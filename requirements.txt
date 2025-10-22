@@ -2,3 +2,8 @@ fastapi
 uvicorn[standard]
 pydantic
 slugify
+boto3==1.*              # Secrets Manager
+httpx==0.27.*           # (선택) GitHub API 호출
+SQLAlchemy==2.*         # (선택) DB
+psycopg[binary]==3.*    # (선택) PostgreSQL
+python-dotenv==1.*      # (선택) 로컬 개발
