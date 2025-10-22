@@ -48,7 +48,7 @@ jobs:
           key: layer-python-${{ runner.os }}-${{ hashFiles('layers/requirements.txt') }}
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5.1.0
         with:
           aws-region: ap-northeast-2
           role-to-assume: arn:aws:iam::338183196042:role/GitHubActionsDeployRole
