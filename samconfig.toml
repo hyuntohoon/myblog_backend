@@ -1,0 +1,15 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "blog-backend"
+resolve_s3 = true
+s3_prefix = "blog-backend"
+region = "ap-northeast-2"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+disable_rollback = true
+parameter_overrides = "FrontOrigin=\"https://ratemymusic.blog\" SecretsArn=\"arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:blog-backend-secrets-xxxx\" SubnetIds=\"subnet-03c8485ab0b862b7d,subnet-05f36f478a6df45c7\" SecurityGroupIds=\"sg-022d09676644016fa\" LogRetentionInDays=\"14\""
+image_repositories = []
+
+[default.global.parameters]
+region = "ap-northeast-2"
