@@ -65,3 +65,31 @@ class PostService:
             status=p.status,
             visibility=p.visibility,
         ) for p in self.uow.posts.list_published(limit)]
+    def list(
+            self,
+            *,
+            status: str | None = None,
+            visibility: str | None = None,
+            q: str | None = None,
+            limit: int = 50,
+            offset: int = 0,
+    ) -> list[PostDTO]:
+        posts = self.uow.posts.list(
+            status=status,
+            visibility=visibility,
+            q=q,
+            limit=limit,
+            offset=offset,
+        )
+        return [
+            PostDTO(
+                id=p.id.value,
+                author_id=p.author_id,
+                slug=p.slug,
+                title=p.title,
+                excerpt=p.excerpt,
+                status=p.status,
+                visibility=p.visibility,
+            )
+            for p in posts
+        ]
