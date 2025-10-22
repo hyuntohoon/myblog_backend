@@ -1,105 +1,97 @@
-name: Deploy Backend (SAM)
+name: Deploy SAM (blog-backend)
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
+    paths:
+      - "template.yaml"
+      - "template.yml"
+      - "samconfig.toml"
+      - "src/**"
+      - ".github/workflows/deploy-sam.yml"
   workflow_dispatch:
 
 concurrency:
-  group: deploy-backend-sam-${{ github.ref }}
+  group: sam-deploy-blog-backend
   cancel-in-progress: true
+
+env:
+  AWS_REGION: ap-northeast-2
+  STACK_NAME: blog-backend
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     permissions:
       id-token: write
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # 1) 실행 컨텍스트 확인
-      - name: Print GitHub context
-        run: |
-          echo "EVENT=$GITHUB_EVENT_NAME"
-          echo "REF=$GITHUB_REF"
-          echo "HEAD_REF=$GITHUB_HEAD_REF"
-
-      # 2) OIDC 토큰 발급 + 클레임 추출 (Node에서 바로 디코드)
-      - name: Get & Print OIDC claims
-        id: oidc
-        uses: actions/github-script@v7
+      - name: Configure AWS credentials (OIDC assume role)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          script: |
-            const id = await core.getIDToken('sts.amazonaws.com');
-            const payloadB64 = id.split('.')[1];
-            const payloadJson = JSON.parse(Buffer.from(payloadB64, 'base64').toString('utf8'));
-            core.info('--- OIDC claims ---');
-            core.info(`iss: ${payloadJson.iss}`);
-            core.info(`aud: ${payloadJson.aud}`);
-            core.info(`sub: ${payloadJson.sub}`);
-            core.setOutput('iss', payloadJson.iss);
-            core.setOutput('aud', payloadJson.aud);
-            core.setOutput('sub', payloadJson.sub);
-
-      # 3) AWS 자격증명(OIDC)
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v5.1.0
-        with:
-          aws-region: ap-northeast-2
+          aws-region: ${{ env.AWS_REGION }}
           role-to-assume: arn:aws:iam::338183196042:role/GitHubActionsDeployRole
-          role-session-name: github-sam-deploy
-          audience: sts.amazonaws.com
-          unset-current-credentials: true
-          # 필요시 기존 자격증명 무시:
-          # unset-current-credentials: true
+          role-session-name: gha-sam-deploy
 
-      # 4) OIDC 성공 확정
-      - name: Who am I?
-        run: aws sts get-caller-identity
-
-      # ---- 빌드/배포 ----
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: |
-            requirements.txt
-            **/requirements.txt
 
-      - name: Install SAM CLI
-        run: pip install "aws-sam-cli==1.123.0"
-
-      - name: Cache SAM build
-        uses: actions/cache@v4
+      - name: Setup AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
         with:
-          path: |
-            ~/.aws-sam
-            .aws-sam
-          key: sam-build-${{ runner.os }}-${{ hashFiles('**/template*.y*ml', '**/requirements.txt', '**/package.json', '**/poetry.lock') }}
+          use-installer: true
+          # version: "latest"  # 필요시 고정
 
-      - name: Cache Lambda layer (python deps)
-        uses: actions/cache@v4
-        with:
-          path: layers/python
-          key: layer-python-${{ runner.os }}-${{ hashFiles('layers/requirements.txt') }}
+      - name: Install deps (optional)
+        if: hashFiles('requirements*.txt') != ''
+        run: |
+          pip install -r requirements.txt || true
+          if [ -f "requirements-dev.txt" ]; then pip install -r requirements-dev.txt; fi
 
-      - name: SAM build (no container, cached+parallel)
-        run: sam build --cached --parallel
+      - name: sam build
+        run: sam build --use-container --parallel
 
-      - name: SAM deploy
+      - name: Sanity check inputs
+        run: |
+          echo "FRONT_ORIGIN=${{ vars.FRONT_ORIGIN }}"
+          echo "SUBNET_IDS=${{ vars.SUBNET_IDS }}"
+          echo "SECURITY_GROUP_IDS=${{ vars.SECURITY_GROUP_IDS }}"
+          echo "LOG_RETENTION_DAYS=${{ vars.LOG_RETENTION_DAYS }}"
+          echo "SECRETS_ARN set? $([[ -n "${{ secrets.SECRETS_ARN }}" ]] && echo yes || echo no)"
+
+      - name: sam deploy
+        env:
+          FRONT_ORIGIN:          ${{ vars.FRONT_ORIGIN }}
+          SUBNET_IDS:            ${{ vars.SUBNET_IDS }}
+          SECURITY_GROUP_IDS:    ${{ vars.SECURITY_GROUP_IDS }}
+          LOG_RETENTION_DAYS:    ${{ vars.LOG_RETENTION_DAYS }}
+          SECRETS_ARN:           ${{ secrets.SECRETS_ARN }}
         run: |
           sam deploy \
-            --stack-name blog-backend \
+            --stack-name "${STACK_NAME}" \
+            --region "${AWS_REGION}" \
             --resolve-s3 \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            --capabilities CAPABILITY_IAM \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
             --parameter-overrides \
-              FrontOrigin='${{ vars.FRONT_ORIGIN }}' \
-              SecretsArn='${{ secrets.SECRETS_ARN }}' \
-              SubnetIds='${{ vars.SUBNET_IDS }}' \
-              SecurityGroupIds='${{ vars.SECURITY_GROUP_IDS }}' \
-              LogRetentionInDays='${{ vars.LOG_RETENTION_DAYS || 14 }}'
+              FRONT_ORIGIN="${FRONT_ORIGIN}" \
+              SECRETS_ARN="${SECRETS_ARN}" \
+              SUBNET_IDS="${SUBNET_IDS}" \
+              SECURITY_GROUP_IDS="${SECURITY_GROUP_IDS}" \
+              LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS}"
+
+      - name: Output stack outputs (optional)
+        run: |
+          aws cloudformation describe-stacks \
+            --region "${AWS_REGION}" \
+            --stack-name "${STACK_NAME}" \
+          | jq -r '.Stacks[0].Outputs[]? | "\(.OutputKey)=\(.OutputValue)"' || true
