@@ -13,11 +13,53 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
+      id-token: write     # OIDC 필수
       contents: read
     steps:
       - uses: actions/checkout@v4
 
+      # (선택) jq 설치 - OIDC 토큰 디코드 시 사용
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      # 1) 현재 실행 컨텍스트 출력
+      - name: Print GitHub context
+        run: |
+          echo "EVENT=$GITHUB_EVENT_NAME"
+          echo "REF=$GITHUB_REF"
+          echo "HEAD_REF=$GITHUB_HEAD_REF"
+
+      # 2) OIDC 토큰 발급 + 클레임 확인 (payload만 디코드)
+      - name: Get OIDC token
+        id: idtoken
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const core = require('@actions/core');
+            const id = await core.getIDToken('sts.amazonaws.com'); // audience
+            core.setOutput('token', id)
+
+      - name: Decode OIDC claims
+        run: |
+          TOKEN="${{ steps.idtoken.outputs.token }}"
+          echo "$TOKEN" | cut -d '.' -f2 | base64 -d 2>/dev/null | jq .
+          # 여기서 "sub", "iss", "aud" 값을 확인하고 IAM Trust policy와 일치시키세요.
+
+      # 3) AWS 자격증명(OIDC) 구성
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5.1.0
+        with:
+          aws-region: ap-northeast-2
+          role-to-assume: arn:aws:iam::338183196042:role/GitHubActionsDeployRole
+          role-session-name: github-sam-deploy
+          # (선택) 기존 환경변수 자격증명 무시하고 OIDC만 쓰고 싶으면:
+          # unset-current-credentials: true
+
+      # 4) OIDC 성공 확정 체크
+      - name: Who am I?
+        run: aws sts get-caller-identity
+
+      # ---- 빌드/배포 ----
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -27,34 +69,22 @@ jobs:
             requirements.txt
             **/requirements.txt
 
-      # SAM CLI 버전 고정 (업그레이드 비용 제거)
       - name: Install SAM CLI
         run: pip install "aws-sam-cli==1.123.0"
 
-      # SAM 빌드 캐시
       - name: Cache SAM build
         uses: actions/cache@v4
         with:
           path: |
             ~/.aws-sam
             .aws-sam
-          key: sam-build-${{ runner.os }}-${{ hashFiles('**/template*.yaml', '**/template*.yml', '**/requirements.txt', '**/package.json', '**/poetry.lock') }}
+          key: sam-build-${{ runner.os }}-${{ hashFiles('**/template*.y*ml', '**/requirements.txt', '**/package.json', '**/poetry.lock') }}
 
-      # (선택) 레이어 디렉터리 캐시
       - name: Cache Lambda layer (python deps)
         uses: actions/cache@v4
         with:
           path: layers/python
           key: layer-python-${{ runner.os }}-${{ hashFiles('layers/requirements.txt') }}
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v5.1.0
-        with:
-          aws-region: ap-northeast-2
-          role-to-assume: arn:aws:iam::338183196042:role/GitHubActionsDeployRole
-          role-session-name: github-sam-deploy
-      - name: Who am I?
-        run: aws sts get-caller-identity
 
       - name: SAM build (no container, cached+parallel)
         run: sam build --cached --parallel
