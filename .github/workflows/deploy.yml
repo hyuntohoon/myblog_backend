@@ -2,14 +2,18 @@ name: Deploy Backend (SAM)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
+
+concurrency:
+  group: deploy-backend-sam-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write         # ✅ OIDC 필수
+      id-token: write
       contents: read
     steps:
       - uses: actions/checkout@v4
@@ -18,9 +22,30 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            **/requirements.txt
 
+      # SAM CLI 버전 고정 (업그레이드 비용 제거)
       - name: Install SAM CLI
-        run: pip install --upgrade aws-sam-cli
+        run: pip install "aws-sam-cli==1.123.0"
+
+      # SAM 빌드 캐시
+      - name: Cache SAM build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.aws-sam
+            .aws-sam
+          key: sam-build-${{ runner.os }}-${{ hashFiles('**/template*.yaml', '**/template*.yml', '**/requirements.txt', '**/package.json', '**/poetry.lock') }}
+
+      # (선택) 레이어 디렉터리 캐시
+      - name: Cache Lambda layer (python deps)
+        uses: actions/cache@v4
+        with:
+          path: layers/python
+          key: layer-python-${{ runner.os }}-${{ hashFiles('layers/requirements.txt') }}
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -29,18 +54,20 @@ jobs:
           role-to-assume: arn:aws:iam::338183196042:role/GitHubActionsDeployRole
           role-session-name: github-sam-deploy
 
-      - name: SAM build (container)
-        run: sam build --use-container
+      - name: SAM build (no container, cached+parallel)
+        run: sam build --cached --parallel
 
       - name: SAM deploy
         run: |
           sam deploy \
             --stack-name blog-backend \
+            --resolve-s3 \
             --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
             --capabilities CAPABILITY_IAM \
             --parameter-overrides \
-              FrontOrigin=${{ vars.FRONT_ORIGIN }} \
-              SecretsArn=${{ secrets.SECRETS_ARN }} \
-              SubnetIds=${{ vars.SUBNET_IDS }} \
-              SecurityGroupIds=${{ vars.SECURITY_GROUP_IDS }} \
-              LogRetentionInDays=${{ vars.LOG_RETENTION_DAYS || 14 }}
+              FrontOrigin='${{ vars.FRONT_ORIGIN }}' \
+              SecretsArn='${{ secrets.SECRETS_ARN }}' \
+              SubnetIds='${{ vars.SUBNET_IDS }}' \
+              SecurityGroupIds='${{ vars.SECURITY_GROUP_IDS }}' \
+              LogRetentionInDays='${{ vars.LOG_RETENTION_DAYS || 14 }}'
