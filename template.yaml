@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: FastAPI on Lambda (Mangum) - Minimal but Prod-ready
+
+# ── 배포 시 넘길 파라미터(너만 정하면 되는 값) ─────────────────────────────
+Parameters:
+  FrontOrigin:                       # 프론트 도메인 (CORS 허용 출처)
+    Type: String
+    Default: https://ratemymusic.blog
+
+  SecretsArn:                        # Secrets Manager ARN (DB/JWT/GitHub 토큰 JSON)
+    Type: String
+    Default: ""                      # 예: arn:aws:secretsmanager:ap-northeast-2:123:secret:blog-xxxx
+
+  SubnetIds:                         # Lambda가 붙을 Private(App) 서브넷 2개 이상 (CSV)
+    Type: CommaDelimitedList
+    Default: ""                      # 예: subnet-03c8485ab0b862b7d,subnet-05f36f478a6df45c7
+
+  SecurityGroupIds:                  # Lambda 보안그룹 (RDS/Proxy로 5432 나가도록 구성)
+    Type: CommaDelimitedList
+    Default: ""                      # 예: sg-022d09676644016fa
+
+  LogRetentionInDays:                # CloudWatch 로그 보존(비용 최적화)
+    Type: Number
+    Default: 14
+
+# ── 공통 기본값 ──────────────────────────────────────────────────────────────
+Globals:
+  Function:
+    Runtime: python3.11              # 최신 런타임
+    Architectures: [arm64]           # Graviton (저렴/성능)
+    Timeout: 15                      # HTTP API 응답 한계(~29s) 고려한 권장값
+    MemorySize: 512
+    Tracing: Active                  # X-Ray 추적 활성화
+    Environment:
+      Variables:
+        APP_ENV: dev
+        FRONT_ORIGIN: !Ref FrontOrigin
+        SECRETS_ARN: !Ref SecretsArn
+        # ↓ 비밀이 아닌 상수만 여기에 (비밀은 Secrets에)
+        GITHUB_REPO_OWNER: hyuntohoon
+        GITHUB_REPO_NAME: myblog_front
+        GITHUB_REPO_BRANCH: main
+        CONTENT_DIR: content/blog
+
+# ── 리소스 정의 ──────────────────────────────────────────────────────────────
+Resources:
+  # (1) HTTP API 자체와 CORS 설정
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref FrontOrigin
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        MaxAge: 600
+
+  # (2) FastAPI + Mangum 핸들러가 올라갈 Lambda
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .                     # 리포 루트(여기에 app/main.py, requirements.txt 존재)
+      Handler: app.main.handler      # main.py에서 handler = Mangum(app)
+      Events:
+        AnyRoute:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            PayloadFormatVersion: "2.0"
+      VpcConfig:                     # VPC Private(App) 서브넷/SG 지정
+        SubnetIds: !Ref SubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSXrayWriteOnlyAccess
+        - Version: '2012-10-17'      # SecretsManager 읽기 최소권한(특정 ARN으로 제한)
+          Statement:
+            - Effect: Allow
+              Action: ["secretsmanager:GetSecretValue"]
+              Resource: !Ref SecretsArn
+      # 필요 시 프로비저닝 동시성 사용 (콜드스타트 완화)
+      # ProvisionedConcurrencyConfig:
+      #   ProvisionedConcurrentExecutions: 1
+
+  # (3) CloudWatch 로그 보존기간(비용절감)
+  ApiFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ApiFunction}"
+      RetentionInDays: !Ref LogRetentionInDays
+
+# ── 출력(프런트 환경변수 PUBLIC_API_URL로 사용) ─────────────────────────────
+Outputs:
+  ApiEndpoint:
+    Description: HTTP API Invoke URL
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
