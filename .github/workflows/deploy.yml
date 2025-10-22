@@ -13,49 +13,48 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write     # OIDC 필수
+      id-token: write
       contents: read
+
     steps:
       - uses: actions/checkout@v4
 
-      # (선택) jq 설치 - OIDC 토큰 디코드 시 사용
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      # 1) 현재 실행 컨텍스트 출력
       - name: Print GitHub context
         run: |
           echo "EVENT=$GITHUB_EVENT_NAME"
           echo "REF=$GITHUB_REF"
           echo "HEAD_REF=$GITHUB_HEAD_REF"
 
-      # 2) OIDC 토큰 발급 + 클레임 확인 (payload만 디코드)
+      # ⬇️ OIDC 클레임 확인 (수정된 스크립트)
       - name: Get OIDC token
         id: idtoken
         uses: actions/github-script@v7
         with:
           script: |
-            const core = require('@actions/core');
-            const id = await core.getIDToken('sts.amazonaws.com'); // audience
-            core.setOutput('token', id)
+            const id = await core.getIDToken('sts.amazonaws.com');
+            core.setOutput('token', id);
 
       - name: Decode OIDC claims
+        env:
+          TOKEN: ${{ steps.idtoken.outputs.token }}
         run: |
-          TOKEN="${{ steps.idtoken.outputs.token }}"
-          echo "$TOKEN" | cut -d '.' -f2 | base64 -d 2>/dev/null | jq .
-          # 여기서 "sub", "iss", "aud" 값을 확인하고 IAM Trust policy와 일치시키세요.
+          python - <<'PY'
+import os,base64,json
+tok=os.environ['TOKEN']
+b=tok.split('.')[1]
+b += '=' * (-len(b)%4)
+print(json.dumps(json.loads(base64.urlsafe_b64decode(b)), indent=2, ensure_ascii=False))
+PY
 
-      # 3) AWS 자격증명(OIDC) 구성
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v5.1.0
         with:
           aws-region: ap-northeast-2
           role-to-assume: arn:aws:iam::338183196042:role/GitHubActionsDeployRole
           role-session-name: github-sam-deploy
-          # (선택) 기존 환경변수 자격증명 무시하고 OIDC만 쓰고 싶으면:
+          # 필요시 기존 자격증명 무시:
           # unset-current-credentials: true
 
-      # 4) OIDC 성공 확정 체크
       - name: Who am I?
         run: aws sts get-caller-identity
 
