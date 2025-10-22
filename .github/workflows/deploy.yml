@@ -1,0 +1,46 @@
+name: Deploy Backend (SAM)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write         # ✅ OIDC 필수
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install SAM CLI
+        run: pip install --upgrade aws-sam-cli
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ap-northeast-2
+          role-to-assume: arn:aws:iam::338183196042:role/GitHubActionsDeployRole
+          role-session-name: github-sam-deploy
+
+      - name: SAM build (container)
+        run: sam build --use-container
+
+      - name: SAM deploy
+        run: |
+          sam deploy \
+            --stack-name blog-backend \
+            --no-confirm-changeset \
+            --capabilities CAPABILITY_IAM \
+            --parameter-overrides \
+              FrontOrigin=${{ vars.FRONT_ORIGIN }} \
+              SecretsArn=${{ secrets.SECRETS_ARN }} \
+              SubnetIds=${{ vars.SUBNET_IDS }} \
+              SecurityGroupIds=${{ vars.SECURITY_GROUP_IDS }} \
+              LogRetentionInDays=${{ vars.LOG_RETENTION_DAYS || 14 }}
