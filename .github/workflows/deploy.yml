@@ -35,7 +35,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: arn:aws:iam::338183196042:role/GitHubActionsDeployRole
+          role-to-assume: arn:aws:iam::338183196042:role/git
           role-session-name: gha-sam-deploy
 
       - name: Setup Python
