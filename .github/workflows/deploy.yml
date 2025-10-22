@@ -19,33 +19,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 1) 실행 컨텍스트 확인
       - name: Print GitHub context
         run: |
           echo "EVENT=$GITHUB_EVENT_NAME"
           echo "REF=$GITHUB_REF"
           echo "HEAD_REF=$GITHUB_HEAD_REF"
 
-      # ⬇️ OIDC 클레임 확인 (수정된 스크립트)
-      - name: Get OIDC token
-        id: idtoken
+      # 2) OIDC 토큰 발급 + 클레임 추출 (Node에서 바로 디코드)
+      - name: Get & Print OIDC claims
+        id: oidc
         uses: actions/github-script@v7
         with:
           script: |
             const id = await core.getIDToken('sts.amazonaws.com');
-            core.setOutput('token', id);
+            const payloadB64 = id.split('.')[1];
+            const payloadJson = JSON.parse(Buffer.from(payloadB64, 'base64').toString('utf8'));
+            core.info('--- OIDC claims ---');
+            core.info(`iss: ${payloadJson.iss}`);
+            core.info(`aud: ${payloadJson.aud}`);
+            core.info(`sub: ${payloadJson.sub}`);
+            core.setOutput('iss', payloadJson.iss);
+            core.setOutput('aud', payloadJson.aud);
+            core.setOutput('sub', payloadJson.sub);
 
-      - name: Decode OIDC claims
-        env:
-          TOKEN: ${{ steps.idtoken.outputs.token }}
-        run: |
-          python - <<'PY'
-import os,base64,json
-tok=os.environ['TOKEN']
-b=tok.split('.')[1]
-b += '=' * (-len(b)%4)
-print(json.dumps(json.loads(base64.urlsafe_b64decode(b)), indent=2, ensure_ascii=False))
-PY
-
+      # 3) AWS 자격증명(OIDC)
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v5.1.0
         with:
@@ -55,6 +53,7 @@ PY
           # 필요시 기존 자격증명 무시:
           # unset-current-credentials: true
 
+      # 4) OIDC 성공 확정
       - name: Who am I?
         run: aws sts get-caller-identity
 
