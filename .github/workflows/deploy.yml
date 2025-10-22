@@ -50,6 +50,8 @@ jobs:
           aws-region: ap-northeast-2
           role-to-assume: arn:aws:iam::338183196042:role/GitHubActionsDeployRole
           role-session-name: github-sam-deploy
+          audience: sts.amazonaws.com
+          unset-current-credentials: true
           # 필요시 기존 자격증명 무시:
           # unset-current-credentials: true
 
