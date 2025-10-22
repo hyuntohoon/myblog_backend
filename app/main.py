@@ -1,25 +1,30 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
+from app.api.routes import posts, categories, metrics
+from app.db.session import get_db
 from fastapi.middleware.cors import CORSMiddleware
-try:
-    from mangum import Mangum
-    _HAS_MANGUM = True
-except Exception:
-    _HAS_MANGUM = False
+from app.api.routes import posts_publish
+from dotenv import load_dotenv
+load_dotenv()
 
-from app.routers.health import router as health_router
-from app.api.routes_post import router as post_router
+app = FastAPI(title="Blog Backend (Skeleton)")
 
-def create_app() -> FastAPI:
-    app = FastAPI(title="myblog-api", version="0.3.0-ddd")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    app.include_router(health_router)
-    app.include_router(post_router)
-    return app
+app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
+app.include_router(posts.router,      prefix="/api/posts",      tags=["posts"])
+app.include_router(metrics.router, prefix="/api/metrics/batch", tags=["metrics"])
+app.include_router(posts_publish.router, prefix="/api/publish",      tags=["publish"])
 
-app = create_app()
-handler = Mangum(app) if _HAS_MANGUM else None
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:4321", "http://127.0.0.1:4321"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+@app.get("/api/db/ping")
+def ping(db=Depends(get_db)):
+    return {"message": "✅ Database connected!"}
