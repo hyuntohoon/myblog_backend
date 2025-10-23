@@ -1,0 +1,97 @@
+name: Deploy SAM (blog-backend)
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "template.yaml"
+      - "template.yml"
+      - "samconfig.toml"
+      - "src/**"
+      - ".github/workflows/deploy-sam.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: sam-deploy-blog-backend
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ap-northeast-2
+  STACK_NAME: blog-backend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC assume role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::338183196042:role/git
+          role-session-name: gha-sam-deploy
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Setup AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+          # version: "latest"  # 필요시 고정
+
+      - name: Install deps (optional)
+        if: hashFiles('requirements*.txt') != ''
+        run: |
+          pip install -r requirements.txt || true
+          if [ -f "requirements-dev.txt" ]; then pip install -r requirements-dev.txt; fi
+
+      - name: sam build
+        run: sam build --use-container --parallel
+
+      - name: Sanity check inputs
+        run: |
+          echo "FRONT_ORIGIN=${{ vars.FRONT_ORIGIN }}"
+          echo "SUBNET_IDS=${{ vars.SUBNET_IDS }}"
+          echo "SECURITY_GROUP_IDS=${{ vars.SECURITY_GROUP_IDS }}"
+          echo "LOG_RETENTION_DAYS=${{ vars.LOG_RETENTION_DAYS }}"
+          echo "SECRETS_ARN set? $([[ -n "${{ secrets.SECRETS_ARN }}" ]] && echo yes || echo no)"
+
+      - name: sam deploy
+        env:
+          FRONT_ORIGIN:          ${{ vars.FRONT_ORIGIN }}
+          SUBNET_IDS:            ${{ vars.SUBNET_IDS }}
+          SECURITY_GROUP_IDS:    ${{ vars.SECURITY_GROUP_IDS }}
+          LOG_RETENTION_DAYS:    ${{ vars.LOG_RETENTION_DAYS }}
+          SECRETS_ARN:           ${{ secrets.SECRETS_ARN }}
+        run: |
+          sam deploy \
+            --stack-name "${STACK_NAME}" \
+            --region "${AWS_REGION}" \
+            --resolve-s3 \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+            --parameter-overrides \
+              FRONT_ORIGIN="${FRONT_ORIGIN}" \
+              SECRETS_ARN="${SECRETS_ARN}" \
+              SUBNET_IDS="${SUBNET_IDS}" \
+              SECURITY_GROUP_IDS="${SECURITY_GROUP_IDS}" \
+              LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS}"
+
+      - name: Output stack outputs (optional)
+        run: |
+          aws cloudformation describe-stacks \
+            --region "${AWS_REGION}" \
+            --stack-name "${STACK_NAME}" \
+          | jq -r '.Stacks[0].Outputs[]? | "\(.OutputKey)=\(.OutputValue)"' || true
