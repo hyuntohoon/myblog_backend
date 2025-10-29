@@ -97,13 +97,12 @@ async def edge_guard(request: Request, call_next):
 # -----------------------------
 # 라우터
 # -----------------------------
-from app.api.routes import posts, categories, metrics, posts_publish  # (또는 상대임포트로 변경 가능)
+from app.api.routes import posts, categories, metrics  # (또는 상대임포트로 변경 가능)
 from app.db.session import get_db
 
 app.include_router(categories.router,    prefix="/api/categories",      tags=["categories"])
 app.include_router(posts.router,         prefix="/api/posts",           tags=["posts"])
 app.include_router(metrics.router,       prefix="/api/metrics/batch",   tags=["metrics"])
-app.include_router(posts_publish.router, prefix="/api/publish",         tags=["publish"])
 
 # -----------------------------
 # 기본 라우트

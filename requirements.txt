@@ -3,6 +3,6 @@ mangum
 # (필요하면) httpx==0.27.*
 SQLAlchemy==2.*
 psycopg[binary]==3.*
-slugify
+python-slugify
 pydantic-settings>=2.0
 requests
