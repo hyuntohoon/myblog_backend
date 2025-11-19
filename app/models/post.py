@@ -1,63 +1,69 @@
 # app/models/post.py
-from dataclasses import dataclass, field
-from datetime import date, datetime
-from typing import Optional, Literal, List
-import re
 import uuid
+import re
+from datetime import date, datetime
+from typing import Optional, List
 
-def slugify(title: str) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-    return s or "untitled"
+from sqlalchemy import (
+    Text, Date, DateTime, Integer, ForeignKey
+)
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql import text
 
-# 1) 쓰기용: 폼/요청 → 유효성/슬러그 생성까지
+from app.db.base import Base
+from app.models.album import post_albums
+from dataclasses import dataclass, field
+
+class Post(Base):
+    __tablename__ = "posts"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    slug: Mapped[str] = mapped_column(Text, unique=True, index=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    body_mdx: Mapped[str] = mapped_column(Text, nullable=False)
+    posted_date: Mapped[date] = mapped_column(Date)
+    last_updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=text("now()"), onupdate=text("now()")
+    )
+    status: Mapped[str] = mapped_column(Text, default="published")
+
+    category_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("categories.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # 🔥 앨범 관계
+    albums: Mapped[List["Album"]] = relationship(
+        "Album",
+        secondary=post_albums,
+        back_populates="posts",
+        lazy="select",
+    )
+
 @dataclass
 class PostDraft:
     title: str
     body_mdx: str
     description: str = ""
-    posted_date: date = field(default_factory=lambda: date.today())
-    status: Literal["draft", "published", "archived"] = "published"
-
-    # 카테고리는 이름 기준(서비스에서 id로 resolve)
+    posted_date: date = field(default_factory=date.today)
+    status: str = "published"
     category_name: Optional[str] = None
 
-    # (옵션) 음악 리뷰 작성시 함께 들어오는 초안 정보
-    music_review_subject: Optional[Literal["album", "track"]] = None
+    music_review_subject: Optional[str] = None
     review_target_id: Optional[str] = None
     rating: Optional[float] = None
 
-    def validate(self) -> None:
+    album_ids: List[str] = []  # POST /posts 시 들어오는 앨범 UUID 목록
+
+    def validate(self):
         if not self.title:
             raise ValueError("title required")
         if not self.body_mdx:
             raise ValueError("body_mdx required")
-        if self.rating is not None and not (0 <= self.rating <= 10):
-            raise ValueError("rating must be 0~10")
-
-    def to_persistence_payload(self, *, category_id: Optional[int]) -> dict:
-        """DB INSERT에 바로 쓰는 payload 생성 (posts 테이블 컬럼 기준)."""
-        self.validate()
-        return {
-            "id": str(uuid.uuid4()),
-            "slug": slugify(self.title),
-            "title": self.title.strip(),
-            "description": self.description or "",
-            "body_mdx": self.body_mdx,
-            "posted_date": self.posted_date,
-            "status": self.status,
-            "category_id": category_id,
-            # DB가 채우는 필드: last_updated_at, body_text, search_index, extra 등은 생략
-        }
-
-# 2) 읽기용: DB 레코드 1:1 매핑
-@dataclass
-class Post:
-    id: str
-    slug: str
-    title: str
-    description: str
-    body_mdx: str
-    posted_date: date
-    last_updated_at: datetime
-    status: str
-    category_id: Optional[int]

@@ -39,10 +39,16 @@ class WritePostRequest(BaseModel):
     review_target_id: Optional[str] = Field(default=None, alias="reviewTargetId")
     rating: Optional[float] = Field(default=None, ge=0, le=10)
 
-class WritePostResponse(BaseModel):
-    id: str
-    slug: str
+# app/api/schemas.py
+class WritePostRequest(BaseModel):
+    title: str
+    description: str = ""
+    body_mdx: str
+    posted_date: date
+    status: str = "published"
+    category: Optional[str] = None
 
+    album_ids: list[str] = []   # ← 추가
 
 # ====== Categories ======
 

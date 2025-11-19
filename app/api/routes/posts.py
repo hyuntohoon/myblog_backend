@@ -23,6 +23,7 @@ def create_post(
             posted_date=req.posted_date,
             status=req.status,
             category_name=req.category,  # ✅ 이름만 보내도 됨 (없으면 생성)
+            album_ids=req.album_ids, # ✅ 앨범 ID 리스트
         )
         return WritePostResponse(id=post.id, slug=post.slug)
     except ValueError as e:
