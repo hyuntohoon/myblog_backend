@@ -1,63 +1,66 @@
-# ✅ 구현 클래스만 두세요. (Protocol 쓰지 않기)
+# app/repositories/post_repository.py
 from typing import List, Optional
-from sqlalchemy import text
+from datetime import date
+
 from sqlalchemy.orm import Session
+
 from app.models.post import Post
 
 
 class PostRepository:
+    """posts 테이블 전용 리포지토리 (SQLAlchemy ORM 기반)."""
+
     def list_all(self, db: Session) -> List[Post]:
-        rows = db.execute(text("""
-            SELECT id, slug, title, description, body_mdx, posted_date, last_updated_at, status, category_id
-            FROM posts
-            ORDER BY posted_date DESC
-        """)).fetchall()
-        return [Post(*r) for r in rows]
+        """
+        전체 포스트 목록을 posted_date DESC 로 반환
+        """
+        return (
+            db.query(Post)
+            .order_by(Post.posted_date.desc())
+            .all()
+        )
 
     def get_by_slug(self, db: Session, slug: str) -> Optional[Post]:
-        r = db.execute(text("""
-            SELECT id, slug, title, description, body_mdx, posted_date, last_updated_at, status, category_id
-            FROM posts
-            WHERE slug = :slug
-            LIMIT 1
-        """), {"slug": slug}).fetchone()
-        return Post(*r) if r else None
+        """
+        slug로 단일 포스트 조회
+        """
+        return (
+            db.query(Post)
+            .filter(Post.slug == slug)
+            .first()
+        )
 
     def create(
-            self,
-            db: Session,
-            *,
-            slug: str,
-            title: str,
-            description: str,
-            body_mdx: str,
-            posted_date,
-            status: str,
-            category_id,
+        self,
+        db: Session,
+        *,
+        slug: str,
+        title: str,
+        description: str,
+        body_mdx: Optional[str],  # NULL 허용
+        posted_date: date,
+        status: str,
+        category_id: int,
+        album_cover_url: Optional[str] = None,
+        rating: Optional[float] = None,
+        rating_scale: int = 5,           # 추가
+        search_index: bool = True,       # 추가
     ) -> Post:
-        # ✅ id는 DEFAULT(gen_random_uuid()) 사용 → INSERT/바인드에서 제외
-        row = db.execute(
-            text("""
-                INSERT INTO posts (slug, title, description, body_mdx, posted_date, status, category_id)
-                VALUES (:slug, :title, :description, :body_mdx, :posted_date, :status, :category_id)
-                RETURNING id, slug, title, description, body_mdx, posted_date, last_updated_at, status, category_id
-            """),
-            {
-                "slug": slug,
-                "title": title,
-                "description": description,
-                "body_mdx": body_mdx,
-                "posted_date": posted_date,
-                "status": status,
-                "category_id": category_id,
-            },
-        ).fetchone()
+        post = Post(
+            slug=slug,
+            title=title,
+            description=description,
+            body_mdx=body_mdx,
+            posted_date=posted_date,
+            status=status,
+            category_id=category_id,
+            album_cover_url=album_cover_url,
+            rating=rating,
+            rating_scale=rating_scale,
+            search_index=search_index,
+        )
 
-        db.commit()
+        db.add(post)
+        db.flush()  # commit 대신 flush (ID 생성만)
 
-        # ✅ row의 UUID를 문자열로 변환
-        data = dict(row._mapping)
-        if not isinstance(data["id"], str):
-            data["id"] = str(data["id"])
-
-        return Post(**data)
+        return post
