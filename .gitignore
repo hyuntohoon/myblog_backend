@@ -67,6 +67,7 @@ var/
 .installed.cfg
 *.egg
 MANIFEST
+pgdata/
 
 # ======================================
 # Jupyter / Notebook
@@ -106,6 +107,8 @@ docker-compose.override.yml
 *.swp
 *.tmp
 *.lock
+*.zip
+
 
 # ======================================
 # Local / Temp files
@@ -115,3 +118,5 @@ temp/
 logs/
 uploads/
 media/
+
+pgdata/pgdata/
