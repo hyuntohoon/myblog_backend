@@ -8,7 +8,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.sql import text
+from sqlalchemy import text, Boolean
 
 from app.db.base import Base   # ← SQLAlchemy Base
 
@@ -28,6 +28,12 @@ post_albums = Table(
         PGUUID(as_uuid=True),
         ForeignKey("albums.id", ondelete="CASCADE"),
         primary_key=True,
+    ),
+    Column(
+        "is_classic",
+        Boolean,
+        nullable=False,
+        server_default="false",
     ),
 )
 
