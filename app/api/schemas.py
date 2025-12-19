@@ -3,57 +3,58 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Literal, Dict
 from datetime import date
 
+
+# ====== 추천 트랙 입력 ======
+
+class RecommendedTrackInput(BaseModel):
+    album_id: str
+    track_id: str
+    position: Optional[int] = None
+    note: Optional[str] = None
+
+
 # ====== Posts ======
 
 class WritePostRequest(BaseModel):
-    """
-    프런트 입력을 서버 내부 모델로 정리:
-    - body -> body_mdx 로 alias
-    - posted_date 기본값: 오늘
-    - status: 'draft' | 'published' | 'archived'
-    - category: 카테고리 '이름' (서비스에서 id resolve)
-    - searchIndex(optional) -> search_index 로 alias (DB 기본 True)
-    - 음악 리뷰 필드(옵션): subject/target/rating
-    """
     model_config = {
-        "populate_by_name": True,   # alias 로 들어온 값을 수용
-        "extra": "ignore",          # 정의 안 된 키는 무시(테스트 편의)
+        "populate_by_name": True,
+        "extra": "ignore",
     }
 
     title: str = Field(min_length=1)
-    body_mdx: str = Field(alias="body", min_length=1)
+    body_mdx: Optional[str] = None  # 필수 → 선택 (평점-only 허용)
     description: str = ""
     posted_date: date = Field(default_factory=date.today)
     status: Literal["draft", "published", "archived"] = "published"
 
-    # 카테고리는 '이름'으로 받음 (서비스에서 id 탐색/생성)
     category: Optional[str] = None
+    search_index: Optional[bool] = Field(default=None)  # None이면 서비스에서 자동 결정
 
-    # DB의 search_index (요청에 없으면 기본 True 사용)
-    search_index: Optional[bool] = Field(default=True, alias="searchIndex")
+    album_ids: List[str] = Field(default_factory=list)
+    artist_ids: List[str] = Field(default_factory=list)
 
-    # --- Music Review (옵션) ---
-    music_review_subject: Optional[Literal["album", "track"]] = Field(
-        default=None, alias="musicReviewSubject"
-    )
-    review_target_id: Optional[str] = Field(default=None, alias="reviewTargetId")
-    rating: Optional[float] = Field(default=None, ge=0, le=10)
+    # 평점
+    rating: Optional[float] = Field(default=None, ge=0, le=5)
+    rating_scale: int = Field(default=5, ge=1, le=10)
 
-# app/api/schemas.py
-class WritePostRequest(BaseModel):
-    title: str
-    description: str = ""
-    body_mdx: str
-    posted_date: date
-    status: str = "published"
-    category: Optional[str] = None
+    # 앨범별 명반 여부
+    album_classics: Dict[str, bool] = Field(default_factory=dict)
+    # 예: {"album-uuid-1": true, "album-uuid-2": false}
 
-    album_ids: list[str] = []   # ← 추가
+    # 추천 트랙
+    recommended_tracks: List[RecommendedTrackInput] = Field(default_factory=list)
+
+
+class WritePostResponse(BaseModel):
+    id: str
+    slug: str
+
 
 # ====== Categories ======
 
 class CategoryListResponse(BaseModel):
     categories: List[str]
+
 
 class AddCategoryRequest(BaseModel):
     name: str = Field(min_length=1)
@@ -64,9 +65,11 @@ class AddCategoryRequest(BaseModel):
 class MetricsBatchRequest(BaseModel):
     slugs: List[str]
 
+
 class PostMetrics(BaseModel):
     likes: int
     comments: int
+
 
 class MetricsBatchResponse(BaseModel):
     data: Dict[str, PostMetrics]
