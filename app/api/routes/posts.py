@@ -8,13 +8,27 @@ from app.services.post_service import PostService
 
 router = APIRouter()
 
+
 @router.post("", response_model=WritePostResponse)
 def create_post(
-        req: WritePostRequest,
-        db: Session = Depends(get_db),
-        svc: PostService = Depends(get_post_service),
+    req: WritePostRequest,
+    db: Session = Depends(get_db),
+    svc: PostService = Depends(get_post_service),
 ):
     try:
+        category_name = (req.category or "default").strip()
+
+        # 추천 트랙 dict 변환
+        recommended_tracks = [
+            {
+                "album_id": rt.album_id,
+                "track_id": rt.track_id,
+                "position": rt.position,
+                "note": rt.note,
+            }
+            for rt in req.recommended_tracks
+        ]
+
         post = svc.create(
             db,
             title=req.title,
@@ -22,10 +36,16 @@ def create_post(
             body_mdx=req.body_mdx,
             posted_date=req.posted_date,
             status=req.status,
-            category_name=req.category,  # ✅ 이름만 보내도 됨 (없으면 생성)
-            album_ids=req.album_ids, # ✅ 앨범 ID 리스트
+            category_name=category_name,
+            album_ids=req.album_ids,
+            artist_ids=req.artist_ids,
+            rating=req.rating,
+            rating_scale=req.rating_scale,
+            album_classics=req.album_classics,
+            recommended_tracks=recommended_tracks,
         )
-        return WritePostResponse(id=post.id, slug=post.slug)
+
+        return WritePostResponse(id=str(post.id), slug=post.slug)
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
