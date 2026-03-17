@@ -1,0 +1,37 @@
+# .github/workflows/deploy.yml
+name: Deploy Backend Lambda
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build zip
+        run: |
+          mkdir -p build
+          pip install -r requirements.txt -t build --platform manylinux2014_aarch64 --only-binary=:all:
+          cp -r app build/
+          find build -name "__pycache__" -type d -exec rm -rf {} +
+          find build -name "*.pyc" -delete
+          cd build && zip -r ../bundle.zip . && cd -
+          ls -lh bundle.zip
+
+      - name: Deploy to Lambda
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ap-northeast-2
+        run: |
+          aws lambda update-function-code \
+            --function-name ratemymusic-api \
+            --zip-file fileb://bundle.zip \
+            --architectures arm64
