@@ -1,4 +1,8 @@
--- schema_v0.sql (indices intentionally omitted; add later)
+-- DERIVED from docs/contracts/schema.sql (myblog-workspace repo).
+-- Do not edit here first — update the canonical file, then sync this copy.
+-- Last synced: 2026-05-23
+-- NOTE: This file omits music-catalog columns added after initial setup.
+--       See docs/contracts/schema.sql for the full authoritative DDL.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 DO $$
