@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from functools import lru_cache
 from urllib.parse import urlsplit, urlunsplit
 

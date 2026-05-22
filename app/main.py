@@ -12,10 +12,10 @@ APP_ENV = settings.ENV
 # -----------------------------
 # App + middleware
 # -----------------------------
-app = FastAPI(title="Blog Backend (Lambda/Mangum)", debug=(APP_ENV == "dev"))
+app = FastAPI(title="Blog Backend (Lambda/Mangum)", debug=(APP_ENV in ("dev", "local")))
 
 allow_origins: List[str] = [settings.FRONT_ORIGIN]
-if APP_ENV == "dev":
+if APP_ENV in ("dev", "local"):
     allow_origins += ["http://localhost:4321", "http://127.0.0.1:4321"]
 
 app.add_middleware(
@@ -33,7 +33,7 @@ PROTECTED_PREFIXES = ("/api",)
 
 @app.middleware("http")
 async def edge_guard(request: Request, call_next):
-    if APP_ENV == "dev":
+    if APP_ENV in ("dev", "local"):
         return await call_next(request)
 
     if request.method == "OPTIONS":
