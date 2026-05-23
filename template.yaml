@@ -77,8 +77,8 @@ Resources:
             ApiId: !Ref HttpApi
             PayloadFormatVersion: "2.0"
       VpcConfig:                     # VPC Private(App) 서브넷/SG 지정
-        SubnetIds: !Ref SubnetIds
-        SecurityGroupIds: !Ref SecurityGroupIds
+        SubnetIds: !Split [",", !Ref SubnetIds]
+        SecurityGroupIds: !Split [",", !Ref SecurityGroupIds]
       Policies:
         - AWSLambdaBasicExecutionRole
         - AWSXrayWriteOnlyAccess
