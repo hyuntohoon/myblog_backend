@@ -12,7 +12,7 @@ docker run --rm \
   --platform "${PLATFORM}" \
   -v "$PWD":/var/task -w /var/task \
   --entrypoint /bin/bash \
-  public.ecr.aws/lambda/python:3.11 \
+  public.ecr.aws/lambda/python:3.12 \
   -lc '
     echo "== pip install =="
     pip install -r requirements.txt -t build

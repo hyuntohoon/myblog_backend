@@ -27,7 +27,7 @@ Parameters:
 # ── 공통 기본값 ──────────────────────────────────────────────────────────────
 Globals:
   Function:
-    Runtime: python3.11              # 최신 런타임
+    Runtime: python3.12
     Architectures: [arm64]           # Graviton (저렴/성능)
     Timeout: 15                      # HTTP API 응답 한계(~29s) 고려한 권장값
     MemorySize: 512

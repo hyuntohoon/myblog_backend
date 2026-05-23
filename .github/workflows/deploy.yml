@@ -12,7 +12,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Build zip
         run: |
@@ -29,8 +29,9 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ap-northeast-2
+          FUNCTION_NAME: ${{ vars.LAMBDA_FUNCTION_NAME || 'ratemymusic-api' }}
         run: |
           aws lambda update-function-code \
-            --function-name ratemymusic-api \
+            --function-name "$FUNCTION_NAME" \
             --zip-file fileb://bundle.zip \
             --architectures arm64
