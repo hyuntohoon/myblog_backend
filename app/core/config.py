@@ -69,6 +69,8 @@ def get_settings() -> Settings:
         secrets = _load_secrets(s.SECRETS_ARN)
         if secrets.get("DATABASE_URL"):
             s.DATABASE_URL = secrets["DATABASE_URL"]
+        if secrets.get("EDGE_SECRET"):
+            s.EDGE_SECRET = secrets["EDGE_SECRET"]
         if secrets.get("GITHUB_TOKEN"):
             s.GITHUB_TOKEN = secrets["GITHUB_TOKEN"]
 
