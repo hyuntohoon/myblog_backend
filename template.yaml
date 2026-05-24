@@ -82,6 +82,40 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${ApiFunction}"
       RetentionInDays: !Ref LogRetentionInDays
 
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ApiFunction}-errors"
+      AlarmDescription: "Lambda invocation errors >= 1 over two 5-min periods"
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ApiFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  LambdaThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ApiFunction}-throttles"
+      AlarmDescription: "Lambda throttles >= 5 over two 5-min periods"
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ApiFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
 # ── 출력(프런트 환경변수 PUBLIC_API_URL로 사용) ─────────────────────────────
 Outputs:
   ApiEndpoint:
