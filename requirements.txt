@@ -1,8 +1,7 @@
-fastapi
-mangum
-# (필요하면) httpx==0.27.*
+fastapi>=0.110,<1.0
+mangum>=0.17,<1.0
 SQLAlchemy==2.*
 psycopg[binary]==3.*
 python-slugify
 pydantic-settings>=2.0
-requests
+requests>=2.31

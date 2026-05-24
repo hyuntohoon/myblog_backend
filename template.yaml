@@ -8,17 +8,9 @@ Parameters:
     Type: String
     Default: https://ratemymusic.blog
 
-  SecretsArn:                        # Secrets Manager ARN (DB/JWT/GitHub 토큰 JSON)
+  SecretsArn:                        # Secrets Manager ARN (DB/JWT 토큰 JSON)
     Type: String
     Default: ""                      # 예: arn:aws:secretsmanager:ap-northeast-2:123:secret:blog-xxxx
-
-  SubnetIds:                         # Lambda가 붙을 Private(App) 서브넷 2개 이상 (CSV)
-    Type: CommaDelimitedList
-    Default: ""                      # 예: subnet-03c8485ab0b862b7d,subnet-05f36f478a6df45c7
-
-  SecurityGroupIds:                  # Lambda 보안그룹 (RDS/Proxy로 5432 나가도록 구성)
-    Type: CommaDelimitedList
-    Default: ""                      # 예: sg-022d09676644016fa
 
   LogRetentionInDays:                # CloudWatch 로그 보존(비용 최적화)
     Type: Number
@@ -27,7 +19,7 @@ Parameters:
 # ── 공통 기본값 ──────────────────────────────────────────────────────────────
 Globals:
   Function:
-    Runtime: python3.11              # 최신 런타임
+    Runtime: python3.12
     Architectures: [arm64]           # Graviton (저렴/성능)
     Timeout: 15                      # HTTP API 응답 한계(~29s) 고려한 권장값
     MemorySize: 512
@@ -37,11 +29,6 @@ Globals:
         APP_ENV: dev
         FRONT_ORIGIN: !Ref FrontOrigin
         SECRETS_ARN: !Ref SecretsArn
-        # ↓ 비밀이 아닌 상수만 여기에 (비밀은 Secrets에)
-        GITHUB_REPO_OWNER: hyuntohoon
-        GITHUB_REPO_NAME: myblog_front
-        GITHUB_REPO_BRANCH: main
-        CONTENT_DIR: content/blog
 
 # ── 리소스 정의 ──────────────────────────────────────────────────────────────
 Resources:
@@ -76,9 +63,6 @@ Resources:
           Properties:
             ApiId: !Ref HttpApi
             PayloadFormatVersion: "2.0"
-      VpcConfig:                     # VPC Private(App) 서브넷/SG 지정
-        SubnetIds: !Ref SubnetIds
-        SecurityGroupIds: !Ref SecurityGroupIds
       Policies:
         - AWSLambdaBasicExecutionRole
         - AWSXrayWriteOnlyAccess
