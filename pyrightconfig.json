@@ -1,0 +1,10 @@
+{
+  "include": ["app"],
+  "typeCheckingMode": "basic",
+  "reportAttributeAccessIssue": "none",
+  "reportMissingImports": "none",
+  "reportArgumentType": "warning",
+  "reportReturnType": "warning",
+  "reportOptionalMemberAccess": "warning",
+  "reportUndefinedVariable": "warning"
+}
