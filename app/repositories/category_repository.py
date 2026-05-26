@@ -2,7 +2,7 @@
 from typing import List, Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from app.models.category import Category
+from myblog_shared_db.models import Category
 import re
 
 def _slugify(name: str) -> str:
