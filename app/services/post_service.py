@@ -9,11 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.repositories.post_repository import PostRepository
 from app.repositories.category_repository import CategoryRepository
-from app.models.post import Post
-from app.models.album import Album, post_albums
-from app.models.artist import Artist
-from app.models.track import Track
-from app.models.post_recommended_track import post_recommended_tracks
+from myblog_shared_db.models import (
+    Post, Artist, Track,
+    post_albums_table as post_albums,
+    post_recommended_tracks_table as post_recommended_tracks,
+)
 
 
 def slugify_title(title: str) -> str:

@@ -4,7 +4,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from app.models.post import Post
+from myblog_shared_db.models import Post
 
 
 class PostRepository:
