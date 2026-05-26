@@ -5,7 +5,7 @@ FastAPI REST API deployed as AWS Lambda via Mangum. Handles posts, categories, a
 ## Stack
 
 - **Runtime**: Python 3.12, FastAPI, Mangum (Lambda adapter)
-- **DB**: PostgreSQL via SQLAlchemy 2 + psycopg3
+- **DB**: PostgreSQL via SQLAlchemy 2 + psycopg3; ORM models from `myblog-shared-db` package (`myblog_shared_db.models`)
 - **Config**: `pydantic-settings` — single source of truth is `app/core/config.py`
 - **Deploy**: SAM (`template.yaml`, `build.sh`)
 
@@ -20,7 +20,6 @@ app/
 │   └── routes/      ← posts.py, categories.py, metrics.py
 ├── db/session.py    ← SQLAlchemy engine + get_db dependency
 ├── di.py            ← FastAPI dependency providers
-├── models/          ← SQLAlchemy ORM models
 ├── repositories/    ← DB access layer
 └── services/        ← Business logic
 ```
