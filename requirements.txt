@@ -5,3 +5,4 @@ psycopg[binary]==3.*
 python-slugify
 pydantic-settings>=2.0
 requests>=2.31
+myblog-shared-db @ git+https://github.com/hyuntohoon/myblog_shared_db.git@v0.1.0
