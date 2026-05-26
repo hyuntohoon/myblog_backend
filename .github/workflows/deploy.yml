@@ -16,6 +16,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Configure git auth for private package
+        env:
+          SHARED_DB_PAT: ${{ secrets.SHARED_DB_PAT }}
+        run: git config --global url."https://${SHARED_DB_PAT}@github.com/".insteadOf "https://github.com/"
+
       - name: Install dependencies
         run: pip install -r requirements.txt pyright
 
@@ -32,6 +37,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Configure git auth for private package
+        env:
+          SHARED_DB_PAT: ${{ secrets.SHARED_DB_PAT }}
+        run: git config --global url."https://${SHARED_DB_PAT}@github.com/".insteadOf "https://github.com/"
 
       - name: Build zip
         run: |
