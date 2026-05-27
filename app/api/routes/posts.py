@@ -36,6 +36,7 @@ def list_posts(
             status=p.status,
             posted_date=p.posted_date,
             rating=p.rating,
+            category=p.category.name if p.category else None,
         )
         for p in posts
     ]

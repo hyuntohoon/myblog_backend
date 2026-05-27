@@ -59,6 +59,7 @@ class PostListItem(BaseModel):
     status: str
     posted_date: date
     rating: Optional[float]
+    category: Optional[str] = None
 
 
 class PostListResponse(BaseModel):

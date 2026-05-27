@@ -183,6 +183,17 @@
       },
       "PostListItem": {
         "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
           "description": {
             "title": "Description",
             "type": "string"
