@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
+from typing import List, Optional
 import re
 
 from sqlalchemy.orm import Session
@@ -138,6 +138,21 @@ class PostService:
         db.refresh(post)
 
         return post
+
+    def list(self, db: Session, status: Optional[str] = None) -> List[Post]:
+        return self.post_repo.list_by_status(db, status)
+
+    def get_by_id(self, db: Session, post_id: str) -> Optional[Post]:
+        return self.post_repo.get_by_id(db, post_id)
+
+    def update(self, db: Session, post_id: str, **fields) -> Optional[Post]:
+        post = self.post_repo.get_by_id(db, post_id)
+        if not post:
+            return None
+        return self.post_repo.update(db, post, **fields)
+
+    def delete(self, db: Session, post_id: str) -> bool:
+        return self.post_repo.delete_by_id(db, post_id)
 
     def _ensure_unique_slug(self, db: Session, base: str) -> str:
         if not self.post_repo.get_by_slug(db, base):
