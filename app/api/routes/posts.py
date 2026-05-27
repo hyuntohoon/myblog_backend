@@ -1,12 +1,45 @@
 # app/api/routes/posts.py
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Dict, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from app.api.schemas import WritePostRequest, WritePostResponse
+
+from app.api.schemas import (
+    PostListItem,
+    PostListResponse,
+    UpdatePostRequest,
+    WritePostRequest,
+    WritePostResponse,
+)
+from app.core.auth import require_cognito_token
 from app.db.session import get_db
 from app.di import get_post_service
 from app.services.post_service import PostService
 
 router = APIRouter()
+
+
+@router.get("", response_model=PostListResponse)
+def list_posts(
+    status: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+    svc: PostService = Depends(get_post_service),
+    _claims: Dict = Depends(require_cognito_token),
+):
+    posts = svc.list(db, status=status)
+    items = [
+        PostListItem(
+            id=str(p.id),
+            slug=p.slug,
+            title=p.title,
+            description=p.description or "",
+            status=p.status,
+            posted_date=p.posted_date,
+            rating=p.rating,
+        )
+        for p in posts
+    ]
+    return PostListResponse(posts=items)
 
 
 @router.post("", response_model=WritePostResponse)
@@ -18,7 +51,6 @@ def create_post(
     try:
         category_name = (req.category or "default").strip()
 
-        # 추천 트랙 dict 변환
         recommended_tracks = [
             {
                 "album_id": rt.album_id,
@@ -49,3 +81,30 @@ def create_post(
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/{post_id}", response_model=WritePostResponse)
+def update_post(
+    post_id: str,
+    req: UpdatePostRequest,
+    db: Session = Depends(get_db),
+    svc: PostService = Depends(get_post_service),
+    _claims: Dict = Depends(require_cognito_token),
+):
+    updates = req.model_dump(exclude_unset=True)
+    post = svc.update(db, post_id, **updates)
+    if post is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return WritePostResponse(id=str(post.id), slug=post.slug)
+
+
+@router.delete("/{post_id}", status_code=204)
+def delete_post(
+    post_id: str,
+    db: Session = Depends(get_db),
+    svc: PostService = Depends(get_post_service),
+    _claims: Dict = Depends(require_cognito_token),
+):
+    deleted = svc.delete(db, post_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Post not found")

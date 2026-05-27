@@ -49,6 +49,31 @@ class WritePostResponse(BaseModel):
     slug: str
 
 
+class PostListItem(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: str
+    slug: str
+    title: str
+    description: str
+    status: str
+    posted_date: date
+    rating: Optional[float]
+
+
+class PostListResponse(BaseModel):
+    posts: List[PostListItem]
+
+
+class UpdatePostRequest(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    body_mdx: Optional[str] = None
+    posted_date: Optional[date] = None
+    status: Optional[Literal["draft", "published", "archived"]] = None
+    rating: Optional[float] = Field(default=None, ge=0, le=5)
+
+
 # ====== Categories ======
 
 class CategoryListResponse(BaseModel):

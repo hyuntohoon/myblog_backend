@@ -14,15 +14,17 @@ def local_env(monkeypatch):
 
 
 @pytest.fixture
-def client():
-    # Import after env is set by local_env fixture
+def app():
     import app.core.config as cfg
     cfg.get_settings.cache_clear()
+    from app.main import app as fastapi_app
+    yield fastapi_app
+    fastapi_app.dependency_overrides.clear()
+    cfg.get_settings.cache_clear()
 
-    from app.main import app
+
+@pytest.fixture
+def client(app):
     from fastapi.testclient import TestClient
-
     with TestClient(app) as c:
         yield c
-
-    cfg.get_settings.cache_clear()

@@ -10,15 +10,17 @@ from myblog_shared_db.models import Post
 class PostRepository:
     """posts 테이블 전용 리포지토리 (SQLAlchemy ORM 기반)."""
 
+    def list_by_status(self, db: Session, status: Optional[str] = None) -> List[Post]:
+        q = db.query(Post).order_by(Post.posted_date.desc())
+        if status:
+            q = q.filter(Post.status == status)
+        return q.all()
+
     def list_all(self, db: Session) -> List[Post]:
-        """
-        전체 포스트 목록을 posted_date DESC 로 반환
-        """
-        return (
-            db.query(Post)
-            .order_by(Post.posted_date.desc())
-            .all()
-        )
+        return self.list_by_status(db)
+
+    def get_by_id(self, db: Session, post_id: str) -> Optional[Post]:
+        return db.query(Post).filter(Post.id == post_id).first()
 
     def get_by_slug(self, db: Session, slug: str) -> Optional[Post]:
         """
@@ -64,3 +66,18 @@ class PostRepository:
         db.flush()  # commit 대신 flush (ID 생성만)
 
         return post
+
+    def update(self, db: Session, post: Post, **fields) -> Post:
+        for k, v in fields.items():
+            setattr(post, k, v)
+        db.commit()
+        db.refresh(post)
+        return post
+
+    def delete_by_id(self, db: Session, post_id: str) -> bool:
+        post = self.get_by_id(db, post_id)
+        if not post:
+            return False
+        db.delete(post)
+        db.commit()
+        return True
