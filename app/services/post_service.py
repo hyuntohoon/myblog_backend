@@ -21,10 +21,18 @@ def slugify_title(title: str) -> str:
     return s or "untitled"
 
 
+class DuplicateSlugError(Exception):
+    """Raised when a new post's title would collide with an existing slug.
+
+    The route layer maps this to HTTP 409 so the frontend can surface the
+    backend message verbatim and ask the user to change the title.
+    """
+
+
 class PostService:
     """
     - 카테고리: 이름이 오면 get_or_create로 upsert (없으면 생성)
-    - 슬러그: 중복 시 '-2', '-3' … 자동 suffix 부여로 유니크 보장
+    - 슬러그: 제목에서 생성, 중복이면 DuplicateSlugError (자동 suffix 없음)
     - 트랜잭션: service 레벨에서 한 번에 commit
     """
 
@@ -62,9 +70,12 @@ class PostService:
             cat = self.category_repo.create(db, category_name)
         category_id = cat.id
 
-        # 2) 슬러그 유니크 보장
-        base_slug = slugify_title(title)
-        slug = self._ensure_unique_slug(db, base_slug)
+        # 2) 슬러그 생성 + 중복 시 hard block
+        slug = slugify_title(title)
+        if self.post_repo.get_by_slug(db, slug):
+            raise DuplicateSlugError(
+                f'이미 같은 제목의 글이 있습니다 (slug="{slug}"). 제목을 바꿔주세요.'
+            )
 
         # 3) 평점-only면 search_index = False
         search_index = body_mdx is not None and len(body_mdx.strip()) > 0
@@ -153,14 +164,3 @@ class PostService:
 
     def delete(self, db: Session, post_id: str) -> bool:
         return self.post_repo.delete_by_id(db, post_id)
-
-    def _ensure_unique_slug(self, db: Session, base: str) -> str:
-        if not self.post_repo.get_by_slug(db, base):
-            return base
-
-        i = 2
-        while True:
-            candidate = f"{base}-{i}"
-            if not self.post_repo.get_by_slug(db, candidate):
-                return candidate
-            i += 1

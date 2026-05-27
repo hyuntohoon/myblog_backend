@@ -16,7 +16,7 @@ from app.api.schemas import (
 from app.core.auth import require_cognito_token
 from app.db.session import get_db
 from app.di import get_post_service
-from app.services.post_service import PostService
+from app.services.post_service import DuplicateSlugError, PostService
 
 router = APIRouter()
 
@@ -45,7 +45,11 @@ def list_posts(
     return PostListResponse(posts=items)
 
 
-@router.post("", response_model=WritePostResponse)
+@router.post(
+    "",
+    response_model=WritePostResponse,
+    responses={409: {"description": "Slug derived from title already exists"}},
+)
 def create_post(
     req: WritePostRequest,
     db: Session = Depends(get_db),
@@ -82,6 +86,9 @@ def create_post(
 
         return WritePostResponse(id=str(post.id), slug=post.slug)
 
+    except DuplicateSlugError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except IntegrityError as e:
