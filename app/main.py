@@ -43,7 +43,12 @@ async def edge_guard(request: Request, call_next):
         return await call_next(request)
 
     if request.url.path.startswith(PROTECTED_PREFIXES):
-        if request.headers.get("x-origin-verify") != settings.EDGE_SECRET:
+        # API Gateway validates JWT before invoking Lambda; those requests carry
+        # Authorization: Bearer but no x-origin-verify (CloudFront adds the latter).
+        # Trust either: a matching edge secret (CloudFront path) or a Bearer token
+        # (API Gateway path — Cognito JWT already validated at ingress).
+        has_bearer = request.headers.get("authorization", "").startswith("Bearer ")
+        if not has_bearer and request.headers.get("x-origin-verify") != settings.EDGE_SECRET:
             raise HTTPException(status_code=403, detail="Forbidden")
 
     return await call_next(request)
