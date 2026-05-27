@@ -2,6 +2,7 @@
 from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
@@ -83,6 +84,9 @@ def create_post(
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=f"DB constraint violation: {e.orig}")
 
 
 @router.get("/{post_id}", response_model=PostDetailResponse)
