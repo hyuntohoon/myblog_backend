@@ -28,8 +28,16 @@ class Settings(BaseSettings):
     # CORS
     FRONT_ORIGIN: str = "http://localhost:4321"
 
+    # Cognito JWT
+    COGNITO_REGION: str = "ap-northeast-2"
+    COGNITO_USER_POOL_ID: str = ""
+
     # GitHub (loaded from Secrets Manager in prod)
     GITHUB_TOKEN: str = ""
+    GITHUB_REPO_OWNER: str = ""
+    GITHUB_REPO_NAME: str = ""
+    GITHUB_REPO_BRANCH: str = "main"
+    CONTENT_DIR: str = "content/blog"
 
     model_config = SettingsConfigDict(
         env_file=".env",
