@@ -40,7 +40,7 @@ def create_post(
             album_ids=req.album_ids,
             artist_ids=req.artist_ids,
             rating=req.rating,
-            rating_scale=req.rating_scale,
+            rating_scale=5,
             album_classics=req.album_classics,
             recommended_tracks=recommended_tracks,
         )

@@ -35,7 +35,6 @@ class WritePostRequest(BaseModel):
 
     # 평점
     rating: Optional[float] = Field(default=None, ge=0, le=5)
-    rating_scale: int = Field(default=5, ge=1, le=10)
 
     # 앨범별 명반 여부
     album_classics: Dict[str, bool] = Field(default_factory=dict)
