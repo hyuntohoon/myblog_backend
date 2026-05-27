@@ -45,7 +45,6 @@ app/
 
 `WritePostRequest` (all optional except `title`):
 - `rating: float | None` — `ge=0, le=5`
-- `rating_scale: int` — default `5`, range `1–10`
 - `album_classics: Dict[str, bool]` — per-album "classic" flag
 - `recommended_tracks: List[RecommendedTrackInput]`
 

@@ -28,7 +28,6 @@ class CreatePostReq(BaseModel):
     artist_ids: list[str] = Field(default_factory=list)
     album_cover_url: str | None = None
     rating: float | None = None
-    rating_scale: int = 5
 
 
 @router.post("")
@@ -63,7 +62,7 @@ def create_post(
             post_id=req.post_id or "",
             album_cover_url=req.album_cover_url,
             rating=req.rating,
-            rating_scale=req.rating_scale,
+            rating_scale=5,
             body_mdx=req.body_mdx,
         )
     except RuntimeError as e:

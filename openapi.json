@@ -112,11 +112,6 @@
             ],
             "title": "Rating"
           },
-          "rating_scale": {
-            "default": 5,
-            "title": "Rating Scale",
-            "type": "integer"
-          },
           "slug": {
             "anyOf": [
               {
@@ -351,13 +346,6 @@
               }
             ],
             "title": "Rating"
-          },
-          "rating_scale": {
-            "default": 5,
-            "maximum": 10.0,
-            "minimum": 1.0,
-            "title": "Rating Scale",
-            "type": "integer"
           },
           "recommended_tracks": {
             "items": {
