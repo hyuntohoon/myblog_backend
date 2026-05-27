@@ -14,7 +14,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.WORKSPACE_GITHUB_TOKEN }}
         run: |
-          gh api repos/hyuntohoon/myblog-workspace/dispatches \
-            --method POST \
-            --field event_type=openapi-updated \
-            --field client_payload='{"service":"backend"}'
+          printf '{"event_type":"openapi-updated","client_payload":{"service":"backend"}}' | \
+            gh api repos/hyuntohoon/myblog-workspace/dispatches --method POST --input -
