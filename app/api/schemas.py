@@ -67,12 +67,22 @@ class PostListResponse(BaseModel):
 
 
 class UpdatePostRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
     title: Optional[str] = None
     description: Optional[str] = None
     body_mdx: Optional[str] = None
     posted_date: Optional[date] = None
     status: Optional[Literal["draft", "published", "archived"]] = None
     rating: Optional[float] = Field(default=None, ge=0, le=5)
+
+    # BUG-10: editing a draft must be able to change category + linked
+    # albums/artists, not just scalar text fields. None on these means "not
+    # provided in this request" (no change); to clear, pass an empty list /
+    # empty string. exclude_unset on the route side preserves that distinction.
+    category: Optional[str] = None
+    album_ids: Optional[List[str]] = None
+    artist_ids: Optional[List[str]] = None
 
 
 class PostDetailResponse(BaseModel):

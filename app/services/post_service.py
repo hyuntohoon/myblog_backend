@@ -21,6 +21,9 @@ def slugify_title(title: str) -> str:
     return s or "untitled"
 
 
+_MISSING = object()  # sentinel so callers can distinguish "not provided" from None
+
+
 class DuplicateSlugError(Exception):
     """Raised when a new post's title would collide with an existing slug.
 
@@ -160,7 +163,52 @@ class PostService:
         post = self.post_repo.get_by_id(db, post_id)
         if not post:
             return None
-        return self.post_repo.update(db, post, **fields)
+
+        # Pull out fields that don't map to scalar columns. Presence (not value)
+        # is what matters — `exclude_unset=True` on the route side already filtered
+        # out keys the client didn't send, so any key still in `fields` is an
+        # intentional write (including a clear-to-empty / clear-to-null).
+        category_name = fields.pop("category", _MISSING)
+        album_ids = fields.pop("album_ids", _MISSING)
+        artist_ids = fields.pop("artist_ids", _MISSING)
+
+        if category_name is not _MISSING:
+            if isinstance(category_name, str) and category_name.strip():
+                name = category_name.strip()
+                cat = self.category_repo.get_by_name(db, name)
+                if not cat:
+                    cat = self.category_repo.create(db, name)
+                fields["category_id"] = cat.id
+            else:
+                fields["category_id"] = None
+
+        if fields:
+            post = self.post_repo.update(db, post, **fields)
+
+        if album_ids is not _MISSING:
+            unique = list({aid for aid in (album_ids or []) if aid})
+            db.execute(
+                post_albums.delete().where(post_albums.c.post_id == post.id)
+            )
+            for aid in unique:
+                db.execute(
+                    post_albums.insert().values(
+                        post_id=post.id, album_id=aid, is_classic=False
+                    )
+                )
+            db.commit()
+            db.refresh(post)
+
+        if artist_ids is not _MISSING:
+            unique = list({aid for aid in (artist_ids or []) if aid})
+            artists = (
+                db.query(Artist).filter(Artist.id.in_(unique)).all() if unique else []
+            )
+            post.artists = artists
+            db.commit()
+            db.refresh(post)
+
+        return post
 
     def delete(self, db: Session, post_id: str) -> bool:
         return self.post_repo.delete_by_id(db, post_id)
