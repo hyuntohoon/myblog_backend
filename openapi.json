@@ -859,6 +859,9 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "description": "Slug derived from title already exists"
+          },
           "422": {
             "content": {
               "application/json": {

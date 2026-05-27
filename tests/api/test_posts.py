@@ -4,6 +4,7 @@ from datetime import date
 from unittest.mock import MagicMock
 
 from app.di import get_post_service
+from app.services.post_service import DuplicateSlugError
 
 
 def _make_post(post_id="uuid-1", slug="test-post", title="Test Post", status="published"):
@@ -81,6 +82,43 @@ class TestDeletePost:
         resp = client.delete("/api/posts/no-such-id")
 
         assert resp.status_code == 404
+        app.dependency_overrides.clear()
+
+
+class TestCreatePost:
+    _payload = {
+        "title": "Test Post",
+        "body_mdx": "some body text long enough to index",
+        "posted_date": "2026-05-28",
+        "status": "published",
+    }
+
+    def test_create_returns_200_with_id_and_slug(self, client, app):
+        mock_svc = MagicMock()
+        mock_svc.create.return_value = _make_post()
+        app.dependency_overrides[get_post_service] = lambda: mock_svc
+
+        resp = client.post("/api/posts", json=self._payload)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == "uuid-1"
+        assert body["slug"] == "test-post"
+        app.dependency_overrides.clear()
+
+    def test_duplicate_slug_returns_409(self, client, app):
+        mock_svc = MagicMock()
+        mock_svc.create.side_effect = DuplicateSlugError(
+            '이미 같은 제목의 글이 있습니다 (slug="test-post"). 제목을 바꿔주세요.'
+        )
+        app.dependency_overrides[get_post_service] = lambda: mock_svc
+
+        resp = client.post("/api/posts", json=self._payload)
+
+        assert resp.status_code == 409
+        # Frontend renders the backend detail verbatim — make sure the slug
+        # name is in the message so users see what collided.
+        assert "test-post" in resp.json()["detail"]
         app.dependency_overrides.clear()
 
 
