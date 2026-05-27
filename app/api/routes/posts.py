@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
+    PostDetailResponse,
     PostListItem,
     PostListResponse,
     UpdatePostRequest,
@@ -82,6 +83,31 @@ def create_post(
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{post_id}", response_model=PostDetailResponse)
+def get_post(
+    post_id: str,
+    db: Session = Depends(get_db),
+    svc: PostService = Depends(get_post_service),
+    _claims: Dict = Depends(require_cognito_token),
+):
+    post = svc.get_by_id(db, post_id)
+    if post is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return PostDetailResponse(
+        id=str(post.id),
+        slug=post.slug,
+        title=post.title,
+        description=post.description or "",
+        body_mdx=post.body_mdx,
+        status=post.status,
+        posted_date=post.posted_date,
+        rating=post.rating,
+        category=post.category.name if post.category else None,
+        album_ids=[str(a.id) for a in post.albums],
+        artist_ids=[str(a.id) for a in post.artists],
+    )
 
 
 @router.put("/{post_id}", response_model=WritePostResponse)

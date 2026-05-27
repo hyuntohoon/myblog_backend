@@ -181,6 +181,97 @@
         "title": "MetricsBatchResponse",
         "type": "object"
       },
+      "PostDetailResponse": {
+        "properties": {
+          "album_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Album Ids",
+            "type": "array"
+          },
+          "artist_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artist Ids",
+            "type": "array"
+          },
+          "body_mdx": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body Mdx"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "posted_date": {
+            "format": "date",
+            "title": "Posted Date",
+            "type": "string"
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "title",
+          "description",
+          "body_mdx",
+          "status",
+          "posted_date",
+          "rating",
+          "category",
+          "album_ids",
+          "artist_ids"
+        ],
+        "title": "PostDetailResponse",
+        "type": "object"
+      },
       "PostListItem": {
         "properties": {
           "category": {
@@ -820,6 +911,51 @@
           }
         ],
         "summary": "Delete Post",
+        "tags": [
+          "posts"
+        ]
+      },
+      "get": {
+        "operationId": "get_post_api_posts__post_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "post_id",
+            "required": true,
+            "schema": {
+              "title": "Post Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Post",
         "tags": [
           "posts"
         ]

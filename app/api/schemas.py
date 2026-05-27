@@ -75,6 +75,20 @@ class UpdatePostRequest(BaseModel):
     rating: Optional[float] = Field(default=None, ge=0, le=5)
 
 
+class PostDetailResponse(BaseModel):
+    id: str
+    slug: str
+    title: str
+    description: str
+    body_mdx: Optional[str]
+    status: str
+    posted_date: date
+    rating: Optional[float]
+    category: Optional[str]
+    album_ids: List[str]
+    artist_ids: List[str]
+
+
 # ====== Categories ======
 
 class CategoryListResponse(BaseModel):
