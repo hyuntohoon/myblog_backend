@@ -1,0 +1,20 @@
+name: Notify workspace of openapi.json update
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - openapi.json
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger workspace merge-contract workflow
+        env:
+          GH_TOKEN: ${{ secrets.WORKSPACE_GITHUB_TOKEN }}
+        run: |
+          gh api repos/hyuntohoon/myblog-workspace/dispatches \
+            --method POST \
+            --field event_type=openapi-updated \
+            --field client_payload='{"service":"backend"}'

@@ -27,8 +27,32 @@ jobs:
       - name: Type check (pyright)
         run: pyright app/
 
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure git auth for private package
+        env:
+          SHARED_DB_PAT: ${{ secrets.SHARED_DB_PAT }}
+        run: git config --global url."https://${SHARED_DB_PAT}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verify openapi.json is up to date
+        env:
+          DATABASE_URL: "postgresql+psycopg://x:x@localhost/x"
+        run: |
+          python scripts/export_openapi.py
+          git diff --exit-code openapi.json
+
   deploy:
-    needs: check
+    needs: [check, contract]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
