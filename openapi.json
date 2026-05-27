@@ -410,6 +410,34 @@
       },
       "UpdatePostRequest": {
         "properties": {
+          "album_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Ids"
+          },
+          "artist_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Ids"
+          },
           "body_mdx": {
             "anyOf": [
               {
@@ -420,6 +448,17 @@
               }
             ],
             "title": "Body Mdx"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
           },
           "description": {
             "anyOf": [

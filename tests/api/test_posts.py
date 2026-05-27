@@ -148,3 +148,38 @@ class TestUpdatePost:
         app.dependency_overrides.clear()
         resp = client.put("/api/posts/uuid-1", json={"rating": 10.0})
         assert resp.status_code == 422
+
+    # BUG-10: editing a draft must forward category / album_ids / artist_ids
+    # to the service. Prior to the fix UpdatePostRequest dropped them silently.
+    def test_update_forwards_category_album_artist(self, client, app):
+        mock_svc = MagicMock()
+        mock_svc.update.return_value = _make_post(slug="updated-post")
+        app.dependency_overrides[get_post_service] = lambda: mock_svc
+
+        resp = client.put(
+            "/api/posts/uuid-1",
+            json={
+                "category": "jazz",
+                "album_ids": ["a1", "a2"],
+                "artist_ids": ["ar1"],
+            },
+        )
+
+        assert resp.status_code == 200
+        kwargs = mock_svc.update.call_args.kwargs
+        assert kwargs["category"] == "jazz"
+        assert kwargs["album_ids"] == ["a1", "a2"]
+        assert kwargs["artist_ids"] == ["ar1"]
+        app.dependency_overrides.clear()
+
+    def test_update_omits_unset_fields(self, client, app):
+        mock_svc = MagicMock()
+        mock_svc.update.return_value = _make_post()
+        app.dependency_overrides[get_post_service] = lambda: mock_svc
+
+        resp = client.put("/api/posts/uuid-1", json={"title": "Only Title"})
+
+        assert resp.status_code == 200
+        kwargs = mock_svc.update.call_args.kwargs
+        assert kwargs == {"title": "Only Title"}
+        app.dependency_overrides.clear()
