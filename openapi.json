@@ -368,6 +368,81 @@
         "title": "PostMetrics",
         "type": "object"
       },
+      "PostReviewAlbum": {
+        "properties": {
+          "rating": {
+            "title": "Rating",
+            "type": "number"
+          },
+          "scale": {
+            "default": 5,
+            "title": "Scale",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rating"
+        ],
+        "title": "PostReviewAlbum",
+        "type": "object"
+      },
+      "PostReviewBundle": {
+        "properties": {
+          "album": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PostReviewAlbum"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tracks": {
+            "items": {
+              "$ref": "#/components/schemas/PostReviewTrack"
+            },
+            "title": "Tracks",
+            "type": "array"
+          }
+        },
+        "title": "PostReviewBundle",
+        "type": "object"
+      },
+      "PostReviewTrack": {
+        "properties": {
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "rating": {
+            "title": "Rating",
+            "type": "number"
+          },
+          "scale": {
+            "default": 5,
+            "title": "Scale",
+            "type": "integer"
+          },
+          "track_id": {
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "track_id",
+          "rating"
+        ],
+        "title": "PostReviewTrack",
+        "type": "object"
+      },
       "RecommendedTrackInput": {
         "properties": {
           "album_id": {
@@ -406,6 +481,87 @@
           "track_id"
         ],
         "title": "RecommendedTrackInput",
+        "type": "object"
+      },
+      "TrackReviewBatchItem": {
+        "properties": {
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "rating": {
+            "maximum": 5.0,
+            "minimum": 0.0,
+            "title": "Rating",
+            "type": "number"
+          },
+          "scale": {
+            "default": 5,
+            "title": "Scale",
+            "type": "integer"
+          },
+          "track_id": {
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "track_id",
+          "rating"
+        ],
+        "title": "TrackReviewBatchItem",
+        "type": "object"
+      },
+      "TrackReviewBatchRequest": {
+        "properties": {
+          "tracks": {
+            "items": {
+              "$ref": "#/components/schemas/TrackReviewBatchItem"
+            },
+            "maxItems": 200,
+            "title": "Tracks",
+            "type": "array"
+          }
+        },
+        "title": "TrackReviewBatchRequest",
+        "type": "object"
+      },
+      "TrackReviewUpsert": {
+        "properties": {
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "rating": {
+            "maximum": 5.0,
+            "minimum": 0.0,
+            "title": "Rating",
+            "type": "number"
+          },
+          "scale": {
+            "default": 5,
+            "title": "Scale",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rating"
+        ],
+        "title": "TrackReviewUpsert",
         "type": "object"
       },
       "UpdatePostRequest": {
@@ -1055,6 +1211,218 @@
         "summary": "Update Post",
         "tags": [
           "posts"
+        ]
+      }
+    },
+    "/api/posts/{post_id}/reviews": {
+      "get": {
+        "operationId": "get_post_reviews_api_posts__post_id__reviews_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "post_id",
+            "required": true,
+            "schema": {
+              "title": "Post Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostReviewBundle"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Post Reviews",
+        "tags": [
+          "reviews"
+        ]
+      }
+    },
+    "/api/posts/{post_id}/reviews/tracks/batch": {
+      "post": {
+        "operationId": "batch_upsert_track_reviews_api_posts__post_id__reviews_tracks_batch_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "post_id",
+            "required": true,
+            "schema": {
+              "title": "Post Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrackReviewBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostReviewBundle"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Batch Upsert Track Reviews",
+        "tags": [
+          "reviews"
+        ]
+      }
+    },
+    "/api/posts/{post_id}/reviews/tracks/{track_id}": {
+      "delete": {
+        "operationId": "delete_track_review_api_posts__post_id__reviews_tracks__track_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "post_id",
+            "required": true,
+            "schema": {
+              "title": "Post Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "track_id",
+            "required": true,
+            "schema": {
+              "title": "Track Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Track Review",
+        "tags": [
+          "reviews"
+        ]
+      },
+      "put": {
+        "operationId": "put_track_review_api_posts__post_id__reviews_tracks__track_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "post_id",
+            "required": true,
+            "schema": {
+              "title": "Post Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "track_id",
+            "required": true,
+            "schema": {
+              "title": "Track Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrackReviewUpsert"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostReviewTrack"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Put Track Review",
+        "tags": [
+          "reviews"
         ]
       }
     },

@@ -99,6 +99,44 @@ class PostDetailResponse(BaseModel):
     artist_ids: List[str]
 
 
+# ====== Reviews ======
+# Per-track ratings live in post_reviews (subject='track'). Album rating still
+# lives on posts.rating (legacy) — see RFC PR-reviews-polymorphic.
+
+class PostReviewAlbum(BaseModel):
+    rating: float
+    scale: int = 5
+
+
+class PostReviewTrack(BaseModel):
+    track_id: str
+    rating: float
+    scale: int = 5
+    notes: Optional[str] = None
+
+
+class PostReviewBundle(BaseModel):
+    album: Optional[PostReviewAlbum] = None
+    tracks: List[PostReviewTrack] = Field(default_factory=list)
+
+
+class TrackReviewUpsert(BaseModel):
+    rating: float = Field(ge=0, le=5)
+    scale: int = 5
+    notes: Optional[str] = None
+
+
+class TrackReviewBatchItem(BaseModel):
+    track_id: str
+    rating: float = Field(ge=0, le=5)
+    scale: int = 5
+    notes: Optional[str] = None
+
+
+class TrackReviewBatchRequest(BaseModel):
+    tracks: List[TrackReviewBatchItem] = Field(default_factory=list, max_length=200)
+
+
 # ====== Categories ======
 
 class CategoryListResponse(BaseModel):
