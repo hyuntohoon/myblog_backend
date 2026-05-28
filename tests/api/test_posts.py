@@ -64,24 +64,100 @@ class TestListPosts:
 
 
 class TestDeletePost:
-    def test_delete_existing_post_returns_204(self, client, app):
+    def test_delete_default_archives_returns_200_with_status(self, client, app):
+        # Default DELETE is a soft archive: service returns the updated Post,
+        # route echoes id + new status so the UI can immediately reflect it.
         mock_svc = MagicMock()
-        mock_svc.delete.return_value = True
+        mock_svc.delete.return_value = _make_post(status="archived")
         app.dependency_overrides[get_post_service] = lambda: mock_svc
 
         resp = client.delete("/api/posts/uuid-1")
 
-        assert resp.status_code == 204
+        assert resp.status_code == 200
+        assert resp.json() == {"id": "uuid-1", "status": "archived"}
+        kwargs = mock_svc.delete.call_args.kwargs
+        assert kwargs.get("hard") is False
         app.dependency_overrides.clear()
 
-    def test_delete_nonexistent_post_returns_404(self, client, app):
+    def test_delete_archive_nonexistent_returns_404(self, client, app):
         mock_svc = MagicMock()
-        mock_svc.delete.return_value = False
+        mock_svc.delete.return_value = None
         app.dependency_overrides[get_post_service] = lambda: mock_svc
 
         resp = client.delete("/api/posts/no-such-id")
 
         assert resp.status_code == 404
+        app.dependency_overrides.clear()
+
+    def test_delete_hard_true_returns_204(self, client, app):
+        mock_svc = MagicMock()
+        mock_svc.delete.return_value = True
+        app.dependency_overrides[get_post_service] = lambda: mock_svc
+
+        resp = client.delete("/api/posts/uuid-1?hard=true")
+
+        assert resp.status_code == 204
+        kwargs = mock_svc.delete.call_args.kwargs
+        assert kwargs.get("hard") is True
+        app.dependency_overrides.clear()
+
+    def test_delete_hard_nonexistent_returns_404(self, client, app):
+        mock_svc = MagicMock()
+        mock_svc.delete.return_value = False
+        app.dependency_overrides[get_post_service] = lambda: mock_svc
+
+        resp = client.delete("/api/posts/no-such-id?hard=true")
+
+        assert resp.status_code == 404
+        app.dependency_overrides.clear()
+
+
+class TestRestorePost:
+    def test_restore_existing_archived_returns_200(self, client, app):
+        mock_svc = MagicMock()
+        mock_svc.restore.return_value = _make_post(status="published")
+        app.dependency_overrides[get_post_service] = lambda: mock_svc
+
+        resp = client.patch("/api/posts/uuid-1/restore")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"id": "uuid-1", "status": "published"}
+        app.dependency_overrides.clear()
+
+    def test_restore_nonexistent_returns_404(self, client, app):
+        mock_svc = MagicMock()
+        mock_svc.restore.return_value = None
+        app.dependency_overrides[get_post_service] = lambda: mock_svc
+
+        resp = client.patch("/api/posts/no-such-id/restore")
+
+        assert resp.status_code == 404
+        app.dependency_overrides.clear()
+
+
+class TestListPostsIncludeArchived:
+    def test_include_archived_flag_forwarded(self, client, app):
+        mock_svc = MagicMock()
+        mock_svc.list.return_value = [_make_post(status="archived")]
+        app.dependency_overrides[get_post_service] = lambda: mock_svc
+
+        resp = client.get("/api/posts?include_archived=true")
+
+        assert resp.status_code == 200
+        kwargs = mock_svc.list.call_args.kwargs
+        assert kwargs.get("include_archived") is True
+        app.dependency_overrides.clear()
+
+    def test_include_archived_default_false(self, client, app):
+        mock_svc = MagicMock()
+        mock_svc.list.return_value = []
+        app.dependency_overrides[get_post_service] = lambda: mock_svc
+
+        resp = client.get("/api/posts")
+
+        assert resp.status_code == 200
+        kwargs = mock_svc.list.call_args.kwargs
+        assert kwargs.get("include_archived") is False
         app.dependency_overrides.clear()
 
 
