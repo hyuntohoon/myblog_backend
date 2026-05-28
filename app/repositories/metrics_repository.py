@@ -1,25 +1,43 @@
-from typing import Protocol, Dict
+from typing import Protocol, Dict, List
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
 
 class MetricsRepository(Protocol):
-    def ensure(self, slug: str) -> None: ...
-    def get(self, slug: str) -> dict: ...
-    def inc_like(self, slug: str) -> None: ...
-    def inc_comment(self, slug: str) -> None: ...
+    def get_many(self, db: Session, slugs: List[str]) -> Dict[str, dict]: ...
+
 
 class InMemoryMetricsRepository(MetricsRepository):
-    def __init__(self):
+    """Legacy in-memory store. Kept for tests / local dev fallback."""
+
+    def __init__(self) -> None:
         self._m: Dict[str, dict] = {}
 
-    def ensure(self, slug: str) -> None:
-        self._m.setdefault(slug, {"likes": 0, "comments": 0})
+    def get_many(self, db: Session, slugs: List[str]) -> Dict[str, dict]:
+        del db
+        return {s: self._m.setdefault(s, {"likes": 0, "comments": 0}) for s in slugs}
 
-    def get(self, slug: str) -> dict:
-        return self._m.setdefault(slug, {"likes": 0, "comments": 0})
 
-    def inc_like(self, slug: str) -> None:
-        self.ensure(slug)
-        self._m[slug]["likes"] += 1
+class SqlMetricsRepository(MetricsRepository):
+    """Reads likes / comments_count from post_metrics, joined to posts.slug."""
 
-    def inc_comment(self, slug: str) -> None:
-        self.ensure(slug)
-        self._m[slug]["comments"] += 1
+    _SQL = text(
+        """
+        SELECT p.slug AS slug,
+               COALESCE(m.likes, 0)          AS likes,
+               COALESCE(m.comments_count, 0) AS comments
+        FROM posts p
+        LEFT JOIN post_metrics m ON m.post_id = p.id
+        WHERE p.slug = ANY(:slugs)
+        """
+    )
+
+    def get_many(self, db: Session, slugs: List[str]) -> Dict[str, dict]:
+        if not slugs:
+            return {}
+        rows = db.execute(self._SQL, {"slugs": list(slugs)}).mappings().all()
+        found = {r["slug"]: {"likes": int(r["likes"]), "comments": int(r["comments"])} for r in rows}
+        for s in slugs:
+            found.setdefault(s, {"likes": 0, "comments": 0})
+        return found
