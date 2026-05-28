@@ -31,27 +31,28 @@ def make_mdx_frontmatter(
     album_cover_url: Optional[str] = None,
     rating: Optional[float] = None,
     rating_scale: int = 5,
+    author: Optional[str] = None,
 ) -> str:
     cat = (category or "default").strip() or "default"
-    return "\n".join(
-        [
-            "---",
-            f"title: {title!r}",
-            f"slug: {slug!r}",
-            f"description: {(description or '')!r}",
-            f"date: {posted_date.isoformat()}",
-            f"category: {cat!r}",
-            "draft: false",
-            f"albumIds: {json.dumps(album_ids or [], ensure_ascii=False)}",
-            f"artistIds: {json.dumps(artist_ids or [], ensure_ascii=False)}",
-            f"postId: {post_id!r}",
-            f"albumCover: {json.dumps(album_cover_url or '', ensure_ascii=False)}",
-            f"rating: {rating if rating is not None else 'null'}",
-            f"ratingScale: {rating_scale}",
-            "---",
-            "",
-        ]
-    )
+    lines = [
+        "---",
+        f"title: {title!r}",
+        f"slug: {slug!r}",
+        f"description: {(description or '')!r}",
+        f"date: {posted_date.isoformat()}",
+        f"category: {cat!r}",
+        "draft: false",
+        f"albumIds: {json.dumps(album_ids or [], ensure_ascii=False)}",
+        f"artistIds: {json.dumps(artist_ids or [], ensure_ascii=False)}",
+        f"postId: {post_id!r}",
+        f"albumCover: {json.dumps(album_cover_url or '', ensure_ascii=False)}",
+        f"rating: {rating if rating is not None else 'null'}",
+        f"ratingScale: {rating_scale}",
+    ]
+    if author:
+        lines.append(f"author: {author!r}")
+    lines += ["---", ""]
+    return "\n".join(lines)
 
 
 def github_put_file(
@@ -103,6 +104,7 @@ def publish_to_github(
     rating: Optional[float],
     rating_scale: int,
     body_mdx: Optional[str],
+    author: Optional[str] = None,
 ) -> dict:
     path = f"{content_dir}/{posted_date.isoformat()}--{slug}/index.mdx"
     body_content = body_mdx.strip() if body_mdx else ""
@@ -120,6 +122,7 @@ def publish_to_github(
             album_cover_url=album_cover_url,
             rating=rating,
             rating_scale=rating_scale,
+            author=author,
         )
         + body_content
         + "\n"

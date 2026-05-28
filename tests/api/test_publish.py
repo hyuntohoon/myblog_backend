@@ -93,6 +93,65 @@ class TestPublishHappyPath:
         assert sent_payload["sha"] == "existing_sha_abc"
 
 
+class TestPublishAuthorFromCognito:
+    def _capture_mdx(self, mock_put):
+        """Decode the base64-encoded MDX content sent to GitHub."""
+        import base64
+        import json as _json
+        sent = _json.loads(mock_put.call_args[1]["data"])
+        return base64.b64decode(sent["content"]).decode("utf-8")
+
+    def test_author_from_name_claim(self, app, client):
+        from app.core.auth import require_cognito_token
+        app.dependency_overrides[require_cognito_token] = lambda: {
+            "name": "지훈",
+            "preferred_username": "hyuntohoon",
+            "email": "test@example.com",
+        }
+
+        mock_get, mock_put = _mock_github(201)
+        with (
+            patch("app.services.publish_service.requests.get", mock_get),
+            patch("app.services.publish_service.requests.put", mock_put),
+        ):
+            resp = client.post("/api/publish", json=VALID_PAYLOAD)
+
+        assert resp.status_code == 200
+        mdx = self._capture_mdx(mock_put)
+        assert "author: '지훈'" in mdx
+
+    def test_author_falls_back_to_preferred_username(self, app, client):
+        from app.core.auth import require_cognito_token
+        app.dependency_overrides[require_cognito_token] = lambda: {
+            "preferred_username": "hyuntohoon",
+            "email": "test@example.com",
+        }
+
+        mock_get, mock_put = _mock_github(201)
+        with (
+            patch("app.services.publish_service.requests.get", mock_get),
+            patch("app.services.publish_service.requests.put", mock_put),
+        ):
+            resp = client.post("/api/publish", json=VALID_PAYLOAD)
+
+        assert resp.status_code == 200
+        mdx = self._capture_mdx(mock_put)
+        assert "author: 'hyuntohoon'" in mdx
+
+    def test_no_author_line_when_claims_empty(self, client):
+        # ENV=local in conftest → require_cognito_token already returns {}
+        mock_get, mock_put = _mock_github(201)
+        with (
+            patch("app.services.publish_service.requests.get", mock_get),
+            patch("app.services.publish_service.requests.put", mock_put),
+        ):
+            resp = client.post("/api/publish", json=VALID_PAYLOAD)
+
+        assert resp.status_code == 200
+        mdx = self._capture_mdx(mock_put)
+        assert "author:" not in mdx
+
+
 class TestPublishMissingToken:
     def test_missing_github_token_returns_500(self, client):
         import app.core.config as cfg

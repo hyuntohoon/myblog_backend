@@ -33,7 +33,7 @@ class CreatePostReq(BaseModel):
 @router.post("")
 def create_post(
     req: CreatePostReq,
-    _claims: Dict[str, Any] = Depends(require_cognito_token),
+    claims: Dict[str, Any] = Depends(require_cognito_token),
 ):
     owner = settings.GITHUB_REPO_OWNER
     repo = settings.GITHUB_REPO_NAME
@@ -44,6 +44,13 @@ def create_post(
         raise HTTPException(500, detail="Missing GitHub environment variables")
 
     slug = req.slug or slugify(req.title)
+
+    author = (
+        claims.get("name")
+        or claims.get("preferred_username")
+        or claims.get("cognito:username")
+        or claims.get("email")
+    )
 
     try:
         result = publish_to_github(
@@ -64,6 +71,7 @@ def create_post(
             rating=req.rating,
             rating_scale=5,
             body_mdx=req.body_mdx,
+            author=author,
         )
     except RuntimeError as e:
         raise HTTPException(502, detail=str(e))
