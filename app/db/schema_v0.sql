@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS post_reviews (
   post_id        UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
   subject        review_subject NOT NULL,
   album_id       UUID REFERENCES albums(id) ON DELETE SET NULL,
-  track_id       UUID REFERENCES tracks(id) ON DELETE SET NULL,
+  track_id       UUID REFERENCES tracks(id) ON DELETE CASCADE,
   rating_value   NUMERIC(3,1),
   rating_scale   SMALLINT NOT NULL DEFAULT 10,
   notes          TEXT,
@@ -131,6 +131,12 @@ CREATE TABLE IF NOT EXISTS post_reviews (
     rating_value IS NULL OR (rating_value >= 0 AND rating_value <= rating_scale)
   )
 );
+
+CREATE INDEX IF NOT EXISTS idx_post_reviews_post_id  ON post_reviews(post_id);
+CREATE INDEX IF NOT EXISTS idx_post_reviews_album_id ON post_reviews(album_id);
+CREATE INDEX IF NOT EXISTS idx_post_reviews_track_id ON post_reviews(track_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_post_reviews_post_track
+  ON post_reviews(post_id, track_id) WHERE track_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS outbox_events (
   id           BIGSERIAL PRIMARY KEY,
