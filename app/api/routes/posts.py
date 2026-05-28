@@ -119,6 +119,7 @@ def get_post(
         category=post.category.name if post.category else None,
         album_ids=[str(a.id) for a in post.albums],
         artist_ids=[str(a.id) for a in post.artists],
+        recommended_tracks=svc.list_recommended_tracks(db, post.id),
     )
 
 

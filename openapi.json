@@ -243,6 +243,13 @@
             ],
             "title": "Rating"
           },
+          "recommended_tracks": {
+            "items": {
+              "$ref": "#/components/schemas/RecommendedTrackOutput"
+            },
+            "title": "Recommended Tracks",
+            "type": "array"
+          },
           "slug": {
             "title": "Slug",
             "type": "string"
@@ -408,6 +415,46 @@
         "title": "RecommendedTrackInput",
         "type": "object"
       },
+      "RecommendedTrackOutput": {
+        "properties": {
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          },
+          "track_id": {
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "album_id",
+          "track_id"
+        ],
+        "title": "RecommendedTrackOutput",
+        "type": "object"
+      },
       "UpdatePostRequest": {
         "properties": {
           "album_ids": {
@@ -495,6 +542,20 @@
               }
             ],
             "title": "Rating"
+          },
+          "recommended_tracks": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RecommendedTrackInput"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended Tracks"
           },
           "status": {
             "anyOf": [
