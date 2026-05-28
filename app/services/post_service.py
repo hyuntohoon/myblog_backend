@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import List, Optional
+from typing import List, Optional, Union
 import re
 
 from sqlalchemy.orm import Session
@@ -153,8 +153,19 @@ class PostService:
 
         return post
 
-    def list(self, db: Session, status: Optional[str] = None) -> List[Post]:
-        return self.post_repo.list_by_status(db, status)
+    def list(
+        self,
+        db: Session,
+        status: Optional[str] = None,
+        include_archived: bool = False,
+    ) -> List[Post]:
+        # Default public read: status='published' only. include_archived broadens
+        # to draft+published+archived (callers with a Cognito token only).
+        if status:
+            return self.post_repo.list_by_status(db, status)
+        if include_archived:
+            return self.post_repo.list_by_status(db, None)
+        return self.post_repo.list_by_status(db, "published")
 
     def get_by_id(self, db: Session, post_id: str) -> Optional[Post]:
         return self.post_repo.get_by_id(db, post_id)
@@ -210,5 +221,19 @@ class PostService:
 
         return post
 
-    def delete(self, db: Session, post_id: str) -> bool:
-        return self.post_repo.delete_by_id(db, post_id)
+    def archive(self, db: Session, post_id: str) -> Optional[Post]:
+        return self.post_repo.set_status(db, post_id, "archived")
+
+    def restore(self, db: Session, post_id: str) -> Optional[Post]:
+        return self.post_repo.set_status(db, post_id, "published")
+
+    def delete(
+        self, db: Session, post_id: str, hard: bool = False
+    ) -> Union[Optional[Post], bool]:
+        # hard=True: legacy behavior, CASCADE removes M:M rows; returns bool.
+        # hard=False: soft delete via status='archived'; returns the updated Post
+        # so the route can echo the new status. Mixed return type is intentional;
+        # the route layer disambiguates by the `hard` flag it sent.
+        if hard:
+            return self.post_repo.delete_by_id(db, post_id)
+        return self.post_repo.set_status(db, post_id, "archived")

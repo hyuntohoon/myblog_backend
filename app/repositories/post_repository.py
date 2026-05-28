@@ -74,6 +74,15 @@ class PostRepository:
         db.refresh(post)
         return post
 
+    def set_status(self, db: Session, post_id: str, status: str) -> Optional[Post]:
+        post = self.get_by_id(db, post_id)
+        if not post:
+            return None
+        post.status = status
+        db.commit()
+        db.refresh(post)
+        return post
+
     def delete_by_id(self, db: Session, post_id: str) -> bool:
         post = self.get_by_id(db, post_id)
         if not post:

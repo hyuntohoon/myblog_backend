@@ -1,7 +1,7 @@
 # app/api/routes/posts.py
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -24,11 +24,12 @@ router = APIRouter()
 @router.get("", response_model=PostListResponse)
 def list_posts(
     status: Optional[str] = Query(default=None),
+    include_archived: bool = Query(default=False),
     db: Session = Depends(get_db),
     svc: PostService = Depends(get_post_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
-    posts = svc.list(db, status=status)
+    posts = svc.list(db, status=status, include_archived=include_archived)
     items = [
         PostListItem(
             id=str(p.id),
@@ -136,13 +137,39 @@ def update_post(
     return WritePostResponse(id=str(post.id), slug=post.slug)
 
 
-@router.delete("/{post_id}", status_code=204)
+@router.delete(
+    "/{post_id}",
+    responses={
+        200: {"description": "Soft-archived (status='archived'); body echoes new status."},
+        204: {"description": "Hard-deleted; no body."},
+        404: {"description": "Post not found"},
+    },
+)
 def delete_post(
+    post_id: str,
+    hard: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    svc: PostService = Depends(get_post_service),
+    _claims: Dict = Depends(require_cognito_token),
+):
+    result = svc.delete(db, post_id, hard=hard)
+    if hard:
+        if not result:
+            raise HTTPException(status_code=404, detail="Post not found")
+        return Response(status_code=204)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return {"id": str(result.id), "status": result.status}
+
+
+@router.patch("/{post_id}/restore")
+def restore_post(
     post_id: str,
     db: Session = Depends(get_db),
     svc: PostService = Depends(get_post_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
-    deleted = svc.delete(db, post_id)
-    if not deleted:
+    post = svc.restore(db, post_id)
+    if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
+    return {"id": str(post.id), "status": post.status}
