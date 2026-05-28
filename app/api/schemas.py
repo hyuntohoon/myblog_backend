@@ -13,6 +13,13 @@ class RecommendedTrackInput(BaseModel):
     note: Optional[str] = None
 
 
+class RecommendedTrackOutput(BaseModel):
+    album_id: str
+    track_id: str
+    position: Optional[int] = None
+    note: Optional[str] = None
+
+
 # ====== Posts ======
 
 class WritePostRequest(BaseModel):
@@ -83,6 +90,7 @@ class UpdatePostRequest(BaseModel):
     category: Optional[str] = None
     album_ids: Optional[List[str]] = None
     artist_ids: Optional[List[str]] = None
+    recommended_tracks: Optional[List[RecommendedTrackInput]] = None
 
 
 class PostDetailResponse(BaseModel):
@@ -97,6 +105,7 @@ class PostDetailResponse(BaseModel):
     category: Optional[str]
     album_ids: List[str]
     artist_ids: List[str]
+    recommended_tracks: List[RecommendedTrackOutput] = Field(default_factory=list)
 
 
 # ====== Categories ======

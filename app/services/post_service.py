@@ -182,6 +182,7 @@ class PostService:
         category_name = fields.pop("category", _MISSING)
         album_ids = fields.pop("album_ids", _MISSING)
         artist_ids = fields.pop("artist_ids", _MISSING)
+        recommended_tracks = fields.pop("recommended_tracks", _MISSING)
 
         if category_name is not _MISSING:
             if isinstance(category_name, str) and category_name.strip():
@@ -219,7 +220,67 @@ class PostService:
             db.commit()
             db.refresh(post)
 
+        if recommended_tracks is not _MISSING:
+            # Replace pattern: clear existing rows, insert new ones.
+            # Validation mirrors create(): track must exist + belong to album,
+            # album must be linked to post.
+            db.execute(
+                post_recommended_tracks.delete().where(
+                    post_recommended_tracks.c.post_id == post.id
+                )
+            )
+            linked_album_ids = {str(a.id) for a in post.albums}
+            for rt in recommended_tracks or []:
+                track_id = rt.get("track_id")
+                album_id = rt.get("album_id")
+                track = db.query(Track).filter(Track.id == track_id).first()
+                if not track:
+                    raise ValueError(f"Track {track_id} not found")
+                if str(track.album_id) != album_id:
+                    raise ValueError(
+                        f"Track {track_id} does not belong to album {album_id}"
+                    )
+                if album_id not in linked_album_ids:
+                    raise ValueError(
+                        f"Album {album_id} is not linked to this post"
+                    )
+                db.execute(
+                    post_recommended_tracks.insert().values(
+                        post_id=post.id,
+                        album_id=album_id,
+                        track_id=track_id,
+                        position=rt.get("position"),
+                        note=rt.get("note"),
+                    )
+                )
+            db.commit()
+            db.refresh(post)
+
         return post
+
+    def list_recommended_tracks(self, db: Session, post_id: str) -> list[dict]:
+        """Return rows from post_recommended_tracks ordered by position (NULLs last)."""
+        from sqlalchemy import select
+
+        rows = db.execute(
+            select(
+                post_recommended_tracks.c.album_id,
+                post_recommended_tracks.c.track_id,
+                post_recommended_tracks.c.position,
+                post_recommended_tracks.c.note,
+            )
+            .where(post_recommended_tracks.c.post_id == post_id)
+            .order_by(post_recommended_tracks.c.position.asc().nullslast())
+        ).all()
+        return [
+            {
+                "album_id": str(r.album_id),
+                "track_id": str(r.track_id),
+                "position": r.position,
+                "note": r.note,
+            }
+            for r in rows
+        ]
 
     def archive(self, db: Session, post_id: str) -> Optional[Post]:
         return self.post_repo.set_status(db, post_id, "archived")
