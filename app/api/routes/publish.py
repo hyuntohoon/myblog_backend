@@ -31,6 +31,10 @@ class CreatePostReq(BaseModel):
     artist_ids: list[str] = Field(default_factory=list)
     album_cover_url: str | None = None
     rating: float | None = None
+    # FEAT-view-redesign Step 5: writer's ★ picks (track IDs). Written to
+    # the MDX frontmatter so the static read page can render the album
+    # tracklist with picks marked without a runtime auth-gated lookup.
+    recommended_track_ids: list[str] = Field(default_factory=list)
 
 
 @router.post("")
@@ -78,6 +82,7 @@ def create_post(
             rating_scale=5,
             body_mdx=req.body_mdx,
             best_new=best_new,
+            recommended_track_ids=req.recommended_track_ids,
         )
     except RuntimeError as e:
         raise HTTPException(502, detail=str(e))

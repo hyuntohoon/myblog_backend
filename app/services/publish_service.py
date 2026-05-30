@@ -32,6 +32,7 @@ def make_mdx_frontmatter(
     rating: Optional[float] = None,
     rating_scale: int = 5,
     best_new: bool = False,
+    recommended_track_ids: Optional[list[str]] = None,
 ) -> str:
     cat = (category or "default").strip() or "default"
     return "\n".join(
@@ -50,6 +51,7 @@ def make_mdx_frontmatter(
             f"rating: {rating if rating is not None else 'null'}",
             f"ratingScale: {rating_scale}",
             f"bestNew: {'true' if best_new else 'false'}",
+            f"recommendedTrackIds: {json.dumps(recommended_track_ids or [], ensure_ascii=False)}",
             "---",
             "",
         ]
@@ -106,6 +108,7 @@ def publish_to_github(
     rating_scale: int,
     body_mdx: Optional[str],
     best_new: bool = False,
+    recommended_track_ids: Optional[list[str]] = None,
 ) -> dict:
     path = f"{content_dir}/{posted_date.isoformat()}--{slug}/index.mdx"
     body_content = body_mdx.strip() if body_mdx else ""
@@ -124,6 +127,7 @@ def publish_to_github(
             rating=rating,
             rating_scale=rating_scale,
             best_new=best_new,
+            recommended_track_ids=recommended_track_ids,
         )
         + body_content
         + "\n"
