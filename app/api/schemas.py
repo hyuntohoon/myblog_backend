@@ -47,6 +47,12 @@ class WritePostRequest(BaseModel):
     album_classics: Dict[str, bool] = Field(default_factory=dict)
     # 예: {"album-uuid-1": true, "album-uuid-2": false}
 
+    # FEAT-writer-lowfreq-redesign Step 5: writer's BEST NEW MUSIC toggle.
+    # When non-null AND exactly one album_ids entry, the service UPDATEs
+    # albums.best_new in the same transaction as the post insert/update.
+    # Null = "don't touch" (Writer omits the field when no subject is set).
+    subject_best_new: Optional[bool] = None
+
     # 추천 트랙
     recommended_tracks: List[RecommendedTrackInput] = Field(default_factory=list)
 
@@ -91,6 +97,9 @@ class UpdatePostRequest(BaseModel):
     album_ids: Optional[List[str]] = None
     artist_ids: Optional[List[str]] = None
     recommended_tracks: Optional[List[RecommendedTrackInput]] = None
+    # FEAT-writer-lowfreq-redesign Step 5: same semantics as on create — null
+    # means "no change," non-null triggers the album-level UPDATE.
+    subject_best_new: Optional[bool] = None
 
 
 class PostDetailResponse(BaseModel):
@@ -106,6 +115,10 @@ class PostDetailResponse(BaseModel):
     album_ids: List[str]
     artist_ids: List[str]
     recommended_tracks: List[RecommendedTrackOutput] = Field(default_factory=list)
+    # FEAT-writer-lowfreq-redesign Step 5: joined from the post's subject album
+    # so the writer's edit flow can seed the BEST NEW pill on load. Null when
+    # the post has zero or many albums (no single subject to read from).
+    subject_best_new: Optional[bool] = None
 
 
 # ====== Categories ======

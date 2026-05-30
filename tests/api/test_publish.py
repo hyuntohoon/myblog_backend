@@ -2,6 +2,24 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stub_get_db(app):
+    """FEAT-writer-lowfreq-redesign Step 5: the publish route now reads
+    albums.best_new from DB to seed frontmatter. Stub get_db so tests stay
+    pure (no local Postgres required, per [[feedback-local-db-smoke-fallback]]).
+    The album lookup returns None → best_new=False, which matches the
+    pre-Step-5 frontmatter exactly.
+    """
+    from app.db.session import get_db
+
+    stub_session = MagicMock()
+    stub_session.query.return_value.filter.return_value.first.return_value = None
+    app.dependency_overrides[get_db] = lambda: stub_session
+    yield
+
 
 VALID_PAYLOAD = {
     "title": "Test Album Review",

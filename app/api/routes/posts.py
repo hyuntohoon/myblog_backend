@@ -83,6 +83,7 @@ def create_post(
             rating_scale=5,
             album_classics=req.album_classics,
             recommended_tracks=recommended_tracks,
+            subject_best_new=req.subject_best_new,
         )
 
         return WritePostResponse(id=str(post.id), slug=post.slug)
@@ -107,6 +108,13 @@ def get_post(
     post = svc.get_by_id(db, post_id)
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
+    # FEAT-writer-lowfreq-redesign Step 5: surface the subject album's BEST
+    # NEW flag so the writer's edit flow can seed its toggle. Only meaningful
+    # when the post has exactly one album — otherwise return null.
+    subject_best_new = None
+    if len(post.albums) == 1:
+        subject_best_new = bool(getattr(post.albums[0], "best_new", False))
+
     return PostDetailResponse(
         id=str(post.id),
         slug=post.slug,
@@ -120,6 +128,7 @@ def get_post(
         album_ids=[str(a.id) for a in post.albums],
         artist_ids=[str(a.id) for a in post.artists],
         recommended_tracks=svc.list_recommended_tracks(db, post.id),
+        subject_best_new=subject_best_new,
     )
 
 

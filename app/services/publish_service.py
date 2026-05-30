@@ -31,6 +31,7 @@ def make_mdx_frontmatter(
     album_cover_url: Optional[str] = None,
     rating: Optional[float] = None,
     rating_scale: int = 5,
+    best_new: bool = False,
 ) -> str:
     cat = (category or "default").strip() or "default"
     return "\n".join(
@@ -48,6 +49,7 @@ def make_mdx_frontmatter(
             f"albumCover: {json.dumps(album_cover_url or '', ensure_ascii=False)}",
             f"rating: {rating if rating is not None else 'null'}",
             f"ratingScale: {rating_scale}",
+            f"bestNew: {'true' if best_new else 'false'}",
             "---",
             "",
         ]
@@ -103,6 +105,7 @@ def publish_to_github(
     rating: Optional[float],
     rating_scale: int,
     body_mdx: Optional[str],
+    best_new: bool = False,
 ) -> dict:
     path = f"{content_dir}/{posted_date.isoformat()}--{slug}/index.mdx"
     body_content = body_mdx.strip() if body_mdx else ""
@@ -120,6 +123,7 @@ def publish_to_github(
             album_cover_url=album_cover_url,
             rating=rating,
             rating_scale=rating_scale,
+            best_new=best_new,
         )
         + body_content
         + "\n"
