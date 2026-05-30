@@ -6,10 +6,13 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from app.core.auth import require_cognito_token
 from app.core.config import settings
+from app.db.session import get_db
 from app.services.publish_service import publish_to_github, slugify
+from myblog_shared_db.models import Album
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,7 @@ class CreatePostReq(BaseModel):
 @router.post("")
 def create_post(
     req: CreatePostReq,
+    db: Session = Depends(get_db),
     _claims: Dict[str, Any] = Depends(require_cognito_token),
 ):
     owner = settings.GITHUB_REPO_OWNER
@@ -44,6 +48,15 @@ def create_post(
         raise HTTPException(500, detail="Missing GitHub environment variables")
 
     slug = req.slug or slugify(req.title)
+
+    # FEAT-writer-lowfreq-redesign Step 5: read best_new from the subject
+    # album so frontmatter stays consistent with DB. Only meaningful when the
+    # post has exactly one album; ambiguous otherwise (default false).
+    best_new = False
+    if len(req.album_ids) == 1:
+        al = db.query(Album).filter(Album.id == req.album_ids[0]).first()
+        if al is not None:
+            best_new = bool(getattr(al, "best_new", False))
 
     try:
         result = publish_to_github(
@@ -64,6 +77,7 @@ def create_post(
             rating=req.rating,
             rating_scale=5,
             body_mdx=req.body_mdx,
+            best_new=best_new,
         )
     except RuntimeError as e:
         raise HTTPException(502, detail=str(e))

@@ -258,6 +258,17 @@
             "title": "Status",
             "type": "string"
           },
+          "subject_best_new": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Best New"
+          },
           "title": {
             "title": "Title",
             "type": "string"
@@ -573,6 +584,17 @@
             ],
             "title": "Status"
           },
+          "subject_best_new": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Best New"
+          },
           "title": {
             "anyOf": [
               {
@@ -723,6 +745,17 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "subject_best_new": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Best New"
           },
           "title": {
             "minLength": 1,

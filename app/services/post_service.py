@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.repositories.post_repository import PostRepository
 from app.repositories.category_repository import CategoryRepository
 from myblog_shared_db.models import (
-    Post, Artist, Track,
+    Album, Post, Artist, Track,
     post_albums_table as post_albums,
     post_recommended_tracks_table as post_recommended_tracks,
 )
@@ -60,6 +60,7 @@ class PostService:
         rating_scale: int = 5,
         album_classics: Optional[dict[str, bool]] = None,
         recommended_tracks: Optional[list[dict]] = None,
+        subject_best_new: Optional[bool] = None,
     ) -> Post:
         album_ids = album_ids or []
         artist_ids = artist_ids or []
@@ -147,7 +148,16 @@ class PostService:
                 )
             )
 
-        # 8) 트랜잭션 커밋 (한 번에)
+        # FEAT-writer-lowfreq-redesign Step 5: editor-set BEST NEW on the
+        # single-subject album. Same transaction as the post insert (one auth
+        # gate, atomic). Silent no-op when zero or many albums are linked —
+        # the badge is per-album and only meaningful with one subject.
+        if subject_best_new is not None and len(unique_album_ids) == 1:
+            db.query(Album).filter(Album.id == unique_album_ids[0]).update(
+                {"best_new": bool(subject_best_new)}, synchronize_session=False
+            )
+
+        # 9) 트랜잭션 커밋 (한 번에)
         db.commit()
         db.refresh(post)
 
@@ -183,6 +193,7 @@ class PostService:
         album_ids = fields.pop("album_ids", _MISSING)
         artist_ids = fields.pop("artist_ids", _MISSING)
         recommended_tracks = fields.pop("recommended_tracks", _MISSING)
+        subject_best_new = fields.pop("subject_best_new", _MISSING)
 
         if category_name is not _MISSING:
             if isinstance(category_name, str) and category_name.strip():
@@ -219,6 +230,18 @@ class PostService:
             post.artists = artists
             db.commit()
             db.refresh(post)
+
+        # FEAT-writer-lowfreq-redesign Step 5: same single-subject UPDATE
+        # pattern as create(). Read the post's currently-linked albums after
+        # any album_ids replacement above so the count matches the live shape.
+        if subject_best_new is not None and subject_best_new is not _MISSING:
+            current_album_ids = [str(a.id) for a in post.albums]
+            if len(current_album_ids) == 1:
+                db.query(Album).filter(Album.id == current_album_ids[0]).update(
+                    {"best_new": bool(subject_best_new)}, synchronize_session=False
+                )
+                db.commit()
+                db.refresh(post)
 
         if recommended_tracks is not _MISSING:
             # Replace pattern: clear existing rows, insert new ones.
