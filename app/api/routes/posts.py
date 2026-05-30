@@ -59,16 +59,6 @@ def create_post(
     try:
         category_name = (req.category or "default").strip()
 
-        recommended_tracks = [
-            {
-                "album_id": rt.album_id,
-                "track_id": rt.track_id,
-                "position": rt.position,
-                "note": rt.note,
-            }
-            for rt in req.recommended_tracks
-        ]
-
         post = svc.create(
             db,
             title=req.title,
@@ -82,7 +72,7 @@ def create_post(
             rating=req.rating,
             rating_scale=5,
             album_classics=req.album_classics,
-            recommended_tracks=recommended_tracks,
+            recommended_track_ids=req.recommended_track_ids,
             subject_best_new=req.subject_best_new,
         )
 
@@ -127,7 +117,7 @@ def get_post(
         category=post.category.name if post.category else None,
         album_ids=[str(a.id) for a in post.albums],
         artist_ids=[str(a.id) for a in post.artists],
-        recommended_tracks=svc.list_recommended_tracks(db, post.id),
+        recommended_track_ids=svc.list_recommended_track_ids(db, post.id),
         subject_best_new=subject_best_new,
     )
 

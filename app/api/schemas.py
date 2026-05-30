@@ -4,22 +4,6 @@ from typing import Optional, List, Literal, Dict
 from datetime import date
 
 
-# ====== 추천 트랙 입력 ======
-
-class RecommendedTrackInput(BaseModel):
-    album_id: str
-    track_id: str
-    position: Optional[int] = None
-    note: Optional[str] = None
-
-
-class RecommendedTrackOutput(BaseModel):
-    album_id: str
-    track_id: str
-    position: Optional[int] = None
-    note: Optional[str] = None
-
-
 # ====== Posts ======
 
 class WritePostRequest(BaseModel):
@@ -53,8 +37,10 @@ class WritePostRequest(BaseModel):
     # Null = "don't touch" (Writer omits the field when no subject is set).
     subject_best_new: Optional[bool] = None
 
-    # 추천 트랙
-    recommended_tracks: List[RecommendedTrackInput] = Field(default_factory=list)
+    # 추천 트랙 — FEAT-view-redesign Step 3: set of picked track IDs
+    # (no order, no per-row position/note). Album linkage is resolved from
+    # `tracks.album_id` server-side; album must be in `album_ids`.
+    recommended_track_ids: List[str] = Field(default_factory=list)
 
 
 class WritePostResponse(BaseModel):
@@ -96,7 +82,9 @@ class UpdatePostRequest(BaseModel):
     category: Optional[str] = None
     album_ids: Optional[List[str]] = None
     artist_ids: Optional[List[str]] = None
-    recommended_tracks: Optional[List[RecommendedTrackInput]] = None
+    # Same shape as create — set of track IDs (no position/note).
+    # Empty list = explicit clear; None = "not provided" (no change).
+    recommended_track_ids: Optional[List[str]] = None
     # FEAT-writer-lowfreq-redesign Step 5: same semantics as on create — null
     # means "no change," non-null triggers the album-level UPDATE.
     subject_best_new: Optional[bool] = None
@@ -114,7 +102,7 @@ class PostDetailResponse(BaseModel):
     category: Optional[str]
     album_ids: List[str]
     artist_ids: List[str]
-    recommended_tracks: List[RecommendedTrackOutput] = Field(default_factory=list)
+    recommended_track_ids: List[str] = Field(default_factory=list)
     # FEAT-writer-lowfreq-redesign Step 5: joined from the post's subject album
     # so the writer's edit flow can seed the BEST NEW pill on load. Null when
     # the post has zero or many albums (no single subject to read from).
