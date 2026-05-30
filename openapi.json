@@ -112,6 +112,13 @@
             ],
             "title": "Rating"
           },
+          "recommended_track_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Recommended Track Ids",
+            "type": "array"
+          },
           "slug": {
             "anyOf": [
               {
