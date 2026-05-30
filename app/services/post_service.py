@@ -59,13 +59,13 @@ class PostService:
         rating: Optional[float] = None,
         rating_scale: int = 5,
         album_classics: Optional[dict[str, bool]] = None,
-        recommended_tracks: Optional[list[dict]] = None,
+        recommended_track_ids: Optional[list[str]] = None,
         subject_best_new: Optional[bool] = None,
     ) -> Post:
         album_ids = album_ids or []
         artist_ids = artist_ids or []
         album_classics = album_classics or {}
-        recommended_tracks = recommended_tracks or []
+        recommended_track_ids = recommended_track_ids or []
 
         # 1) 카테고리 처리
         category_name = (category_name or "").strip() or "default"
@@ -118,33 +118,23 @@ class PostService:
             for ar in artists:
                 post.artists.append(ar)
 
-        # 7) 추천 트랙 저장 (앱 레벨 검증 포함)
-        for rt in recommended_tracks:
-            track_id = rt.get("track_id")
-            album_id = rt.get("album_id")
-
-            # 앱 레벨 검증: track이 album 소속인지
+        # 7) 추천 트랙 저장 — set of picked track IDs. album_id is resolved
+        #    from tracks.album_id and validated against the post's linked albums.
+        #    `position` column kept nullable; never written (RFC Step 3).
+        for track_id in dict.fromkeys(tid for tid in recommended_track_ids if tid):
             track = db.query(Track).filter(Track.id == track_id).first()
             if not track:
                 raise ValueError(f"Track {track_id} not found")
-            if str(track.album_id) != album_id:
-                raise ValueError(
-                    f"Track {track_id} does not belong to album {album_id}"
-                )
-
-            # 해당 album이 post_albums에 연결되어 있는지 확인
+            album_id = str(track.album_id)
             if album_id not in unique_album_ids:
                 raise ValueError(
-                    f"Album {album_id} is not linked to this post"
+                    f"Track {track_id}'s album {album_id} is not linked to this post"
                 )
-
             db.execute(
                 post_recommended_tracks.insert().values(
                     post_id=post.id,
                     album_id=album_id,
                     track_id=track_id,
-                    position=rt.get("position"),
-                    note=rt.get("note"),
                 )
             )
 
@@ -192,7 +182,7 @@ class PostService:
         category_name = fields.pop("category", _MISSING)
         album_ids = fields.pop("album_ids", _MISSING)
         artist_ids = fields.pop("artist_ids", _MISSING)
-        recommended_tracks = fields.pop("recommended_tracks", _MISSING)
+        recommended_track_ids = fields.pop("recommended_track_ids", _MISSING)
         subject_best_new = fields.pop("subject_best_new", _MISSING)
 
         if category_name is not _MISSING:
@@ -243,37 +233,29 @@ class PostService:
                 db.commit()
                 db.refresh(post)
 
-        if recommended_tracks is not _MISSING:
-            # Replace pattern: clear existing rows, insert new ones.
-            # Validation mirrors create(): track must exist + belong to album,
-            # album must be linked to post.
+        if recommended_track_ids is not _MISSING:
+            # Replace pattern: clear existing rows, insert new picks.
+            # Validation mirrors create(): track exists + its album is linked.
             db.execute(
                 post_recommended_tracks.delete().where(
                     post_recommended_tracks.c.post_id == post.id
                 )
             )
             linked_album_ids = {str(a.id) for a in post.albums}
-            for rt in recommended_tracks or []:
-                track_id = rt.get("track_id")
-                album_id = rt.get("album_id")
+            for track_id in dict.fromkeys(tid for tid in (recommended_track_ids or []) if tid):
                 track = db.query(Track).filter(Track.id == track_id).first()
                 if not track:
                     raise ValueError(f"Track {track_id} not found")
-                if str(track.album_id) != album_id:
-                    raise ValueError(
-                        f"Track {track_id} does not belong to album {album_id}"
-                    )
+                album_id = str(track.album_id)
                 if album_id not in linked_album_ids:
                     raise ValueError(
-                        f"Album {album_id} is not linked to this post"
+                        f"Track {track_id}'s album {album_id} is not linked to this post"
                     )
                 db.execute(
                     post_recommended_tracks.insert().values(
                         post_id=post.id,
                         album_id=album_id,
                         track_id=track_id,
-                        position=rt.get("position"),
-                        note=rt.get("note"),
                     )
                 )
             db.commit()
@@ -281,29 +263,15 @@ class PostService:
 
         return post
 
-    def list_recommended_tracks(self, db: Session, post_id: str) -> list[dict]:
-        """Return rows from post_recommended_tracks ordered by position (NULLs last)."""
+    def list_recommended_track_ids(self, db: Session, post_id: str) -> list[str]:
+        """Return picked track IDs for a post (set semantics; insertion order)."""
         from sqlalchemy import select
 
         rows = db.execute(
-            select(
-                post_recommended_tracks.c.album_id,
-                post_recommended_tracks.c.track_id,
-                post_recommended_tracks.c.position,
-                post_recommended_tracks.c.note,
-            )
+            select(post_recommended_tracks.c.track_id)
             .where(post_recommended_tracks.c.post_id == post_id)
-            .order_by(post_recommended_tracks.c.position.asc().nullslast())
         ).all()
-        return [
-            {
-                "album_id": str(r.album_id),
-                "track_id": str(r.track_id),
-                "position": r.position,
-                "note": r.note,
-            }
-            for r in rows
-        ]
+        return [str(r.track_id) for r in rows]
 
     def archive(self, db: Session, post_id: str) -> Optional[Post]:
         return self.post_repo.set_status(db, post_id, "archived")

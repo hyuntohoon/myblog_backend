@@ -260,45 +260,34 @@ class TestUpdatePost:
         assert kwargs == {"title": "Only Title"}
         app.dependency_overrides.clear()
 
-    def test_update_forwards_recommended_tracks(self, client, app):
+    def test_update_forwards_recommended_track_ids(self, client, app):
         mock_svc = MagicMock()
         mock_svc.update.return_value = _make_post(slug="updated-post")
         app.dependency_overrides[get_post_service] = lambda: mock_svc
 
         resp = client.put(
             "/api/posts/uuid-1",
-            json={
-                "recommended_tracks": [
-                    {"album_id": "a1", "track_id": "t1", "position": 0, "note": "lead"},
-                    {"album_id": "a1", "track_id": "t2", "position": 1},
-                ],
-            },
+            json={"recommended_track_ids": ["t1", "t2"]},
         )
 
         assert resp.status_code == 200
         kwargs = mock_svc.update.call_args.kwargs
-        # model_dump(exclude_unset=True) on UpdatePostRequest cascades into nested
-        # RecommendedTrackInput rows: unset optional fields are dropped, not nulled.
-        # Service uses rt.get("note") which returns None for missing keys, so the
-        # behavior is equivalent to note=None at the DB layer.
-        assert kwargs["recommended_tracks"] == [
-            {"album_id": "a1", "track_id": "t1", "position": 0, "note": "lead"},
-            {"album_id": "a1", "track_id": "t2", "position": 1},
-        ]
+        # FEAT-view-redesign Step 3: set of picked track IDs (no position/note).
+        assert kwargs["recommended_track_ids"] == ["t1", "t2"]
         app.dependency_overrides.clear()
 
-    def test_update_empty_recommended_tracks_is_explicit_clear(self, client, app):
+    def test_update_empty_recommended_track_ids_is_explicit_clear(self, client, app):
         mock_svc = MagicMock()
         mock_svc.update.return_value = _make_post()
         app.dependency_overrides[get_post_service] = lambda: mock_svc
 
         # Sending [] (set but empty) must reach the service as an explicit
         # clear, not be treated as "not provided". Mirrors album_ids: [] semantics.
-        resp = client.put("/api/posts/uuid-1", json={"recommended_tracks": []})
+        resp = client.put("/api/posts/uuid-1", json={"recommended_track_ids": []})
 
         assert resp.status_code == 200
         kwargs = mock_svc.update.call_args.kwargs
-        assert kwargs["recommended_tracks"] == []
+        assert kwargs["recommended_track_ids"] == []
         app.dependency_overrides.clear()
 
 
@@ -325,39 +314,32 @@ class TestGetPost:
         p.artists = [MagicMock(id=aid) for aid in artists]
         return p
 
-    def test_get_returns_recommended_tracks_in_response(self, client, app):
+    def test_get_returns_recommended_track_ids_in_response(self, client, app):
         mock_svc = MagicMock()
         mock_svc.get_by_id.return_value = self._post_with_relations(
             albums=["a1"], artists=["ar1"]
         )
-        mock_svc.list_recommended_tracks.return_value = [
-            {"album_id": "a1", "track_id": "t1", "position": 0, "note": "lead"},
-            {"album_id": "a1", "track_id": "t2", "position": 1, "note": None},
-        ]
+        mock_svc.list_recommended_track_ids.return_value = ["t1", "t2"]
         app.dependency_overrides[get_post_service] = lambda: mock_svc
 
         resp = client.get("/api/posts/uuid-1")
 
         assert resp.status_code == 200
         body = resp.json()
-        assert body["recommended_tracks"] == [
-            {"album_id": "a1", "track_id": "t1", "position": 0, "note": "lead"},
-            {"album_id": "a1", "track_id": "t2", "position": 1, "note": None},
-        ]
-        # service was queried for the tracks (not silently dropped)
-        mock_svc.list_recommended_tracks.assert_called_once()
+        assert body["recommended_track_ids"] == ["t1", "t2"]
+        mock_svc.list_recommended_track_ids.assert_called_once()
         app.dependency_overrides.clear()
 
-    def test_get_returns_empty_recommended_tracks_when_none(self, client, app):
+    def test_get_returns_empty_recommended_track_ids_when_none(self, client, app):
         mock_svc = MagicMock()
         mock_svc.get_by_id.return_value = self._post_with_relations()
-        mock_svc.list_recommended_tracks.return_value = []
+        mock_svc.list_recommended_track_ids.return_value = []
         app.dependency_overrides[get_post_service] = lambda: mock_svc
 
         resp = client.get("/api/posts/uuid-1")
 
         assert resp.status_code == 200
-        assert resp.json()["recommended_tracks"] == []
+        assert resp.json()["recommended_track_ids"] == []
         app.dependency_overrides.clear()
 
     def test_get_nonexistent_returns_404(self, client, app):
@@ -368,6 +350,5 @@ class TestGetPost:
         resp = client.get("/api/posts/no-such-id")
 
         assert resp.status_code == 404
-        # list_recommended_tracks must not be called when the post doesn't exist
-        mock_svc.list_recommended_tracks.assert_not_called()
+        mock_svc.list_recommended_track_ids.assert_not_called()
         app.dependency_overrides.clear()
