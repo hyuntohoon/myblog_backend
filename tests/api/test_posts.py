@@ -225,6 +225,24 @@ class TestUpdatePost:
         resp = client.put("/api/posts/uuid-1", json={"rating": 10.0})
         assert resp.status_code == 422
 
+    def test_update_rating_two_decimal_round_trips(self, client, app):
+        """FEAT-view-redesign Step 4: posts.rating widened to Numeric(3,2).
+
+        Pydantic schema has ge=0, le=5 with no step constraint, so a value
+        like 4.69 must reach the service exactly (no rounding to 4.7).
+        Pairs with the v0.4.0 shared_db pin so the column can hold it.
+        """
+        mock_svc = MagicMock()
+        mock_svc.update.return_value = _make_post(slug="rated-post")
+        app.dependency_overrides[get_post_service] = lambda: mock_svc
+
+        resp = client.put("/api/posts/uuid-1", json={"rating": 4.69})
+
+        assert resp.status_code == 200
+        kwargs = mock_svc.update.call_args.kwargs
+        assert kwargs["rating"] == 4.69
+        app.dependency_overrides.clear()
+
     # BUG-10: editing a draft must forward category / album_ids / artist_ids
     # to the service. Prior to the fix UpdatePostRequest dropped them silently.
     def test_update_forwards_category_album_artist(self, client, app):
