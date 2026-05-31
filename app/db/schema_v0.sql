@@ -10,9 +10,6 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'post_status') THEN
     CREATE TYPE post_status AS ENUM ('draft', 'published', 'archived');
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'review_subject') THEN
-    CREATE TYPE review_subject AS ENUM ('album', 'track');
-  END IF;
 END$$;
 
 CREATE TABLE IF NOT EXISTS categories (
@@ -110,26 +107,6 @@ CREATE TABLE IF NOT EXISTS track_artists (
   artist_id UUID NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
   role      TEXT,
   PRIMARY KEY (track_id, artist_id)
-);
-
-CREATE TABLE IF NOT EXISTS post_reviews (
-  id             BIGSERIAL PRIMARY KEY,
-  post_id        UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-  subject        review_subject NOT NULL,
-  album_id       UUID REFERENCES albums(id) ON DELETE SET NULL,
-  track_id       UUID REFERENCES tracks(id) ON DELETE SET NULL,
-  rating_value   NUMERIC(3,1),
-  rating_scale   SMALLINT NOT NULL DEFAULT 10,
-  notes          TEXT,
-  extra          JSONB NOT NULL DEFAULT '{}'::jsonb,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT chk_review_target CHECK (
-    (subject = 'album' AND album_id IS NOT NULL AND track_id IS NULL) OR
-    (subject = 'track' AND track_id IS NOT NULL AND album_id IS NULL)
-  ),
-  CONSTRAINT chk_rating_range CHECK (
-    rating_value IS NULL OR (rating_value >= 0 AND rating_value <= rating_scale)
-  )
 );
 
 CREATE TABLE IF NOT EXISTS outbox_events (
