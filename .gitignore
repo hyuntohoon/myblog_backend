@@ -52,6 +52,7 @@ coverage.xml
 # ======================================
 # Build / Distribution
 # ======================================
+.aws-sam/
 build/
 develop-eggs/
 dist/
