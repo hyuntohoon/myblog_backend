@@ -33,29 +33,33 @@ def make_mdx_frontmatter(
     rating_scale: int = 5,
     best_new: bool = False,
     recommended_track_ids: Optional[list[str]] = None,
+    music_review: Optional[dict] = None,
 ) -> str:
     cat = (category or "default").strip() or "default"
-    return "\n".join(
-        [
-            "---",
-            f"title: {title!r}",
-            f"slug: {slug!r}",
-            f"description: {(description or '')!r}",
-            f"date: {posted_date.isoformat()}",
-            f"category: {cat!r}",
-            "draft: false",
-            f"albumIds: {json.dumps(album_ids or [], ensure_ascii=False)}",
-            f"artistIds: {json.dumps(artist_ids or [], ensure_ascii=False)}",
-            f"postId: {post_id!r}",
-            f"albumCover: {json.dumps(album_cover_url or '', ensure_ascii=False)}",
-            f"rating: {rating if rating is not None else 'null'}",
-            f"ratingScale: {rating_scale}",
-            f"bestNew: {'true' if best_new else 'false'}",
-            f"recommendedTrackIds: {json.dumps(recommended_track_ids or [], ensure_ascii=False)}",
-            "---",
-            "",
-        ]
-    )
+    lines = [
+        "---",
+        f"title: {title!r}",
+        f"slug: {slug!r}",
+        f"description: {(description or '')!r}",
+        f"date: {posted_date.isoformat()}",
+        f"category: {cat!r}",
+        "draft: false",
+        f"albumIds: {json.dumps(album_ids or [], ensure_ascii=False)}",
+        f"artistIds: {json.dumps(artist_ids or [], ensure_ascii=False)}",
+        f"postId: {post_id!r}",
+        f"albumCover: {json.dumps(album_cover_url or '', ensure_ascii=False)}",
+        f"rating: {rating if rating is not None else 'null'}",
+        f"ratingScale: {rating_scale}",
+        f"bestNew: {'true' if best_new else 'false'}",
+        f"recommendedTrackIds: {json.dumps(recommended_track_ids or [], ensure_ascii=False)}",
+    ]
+    if music_review:
+        # JSON is a YAML subset (single-line flow style), so this parses
+        # cleanly as a nested map under the `musicReview:` key. zod sees the
+        # full object on the read page.
+        lines.append(f"musicReview: {json.dumps(music_review, ensure_ascii=False)}")
+    lines.extend(["---", ""])
+    return "\n".join(lines)
 
 
 def github_put_file(
@@ -109,6 +113,7 @@ def publish_to_github(
     body_mdx: Optional[str],
     best_new: bool = False,
     recommended_track_ids: Optional[list[str]] = None,
+    music_review: Optional[dict] = None,
 ) -> dict:
     path = f"{content_dir}/{posted_date.isoformat()}--{slug}/index.mdx"
     body_content = body_mdx.strip() if body_mdx else ""
@@ -128,6 +133,7 @@ def publish_to_github(
             rating_scale=rating_scale,
             best_new=best_new,
             recommended_track_ids=recommended_track_ids,
+            music_review=music_review,
         )
         + body_content
         + "\n"

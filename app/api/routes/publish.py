@@ -53,14 +53,37 @@ def create_post(
 
     slug = req.slug or slugify(req.title)
 
-    # FEAT-writer-lowfreq-redesign Step 5: read best_new from the subject
-    # album so frontmatter stays consistent with DB. Only meaningful when the
-    # post has exactly one album; ambiguous otherwise (default false).
+    # Read the subject album (when present) once and derive both the
+    # FEAT-writer-lowfreq-redesign Step 5 `best_new` flag and the
+    # FEAT-view-redesign Step 5 follow-up `music_review` payload — the
+    # read-page hero (.lfq-hero) reads label / year / artist / album-title /
+    # genres from this MDX block so the static page doesn't need a runtime
+    # album-detail fetch just to render the header. Only meaningful when the
+    # post has exactly one album subject.
     best_new = False
+    music_review: dict | None = None
     if len(req.album_ids) == 1:
         al = db.query(Album).filter(Album.id == req.album_ids[0]).first()
         if al is not None:
             best_new = bool(getattr(al, "best_new", False))
+            primary_artist = al.artists[0] if al.artists else None
+            artist_genres: list[str] = []
+            if primary_artist is not None and getattr(primary_artist, "genres", None):
+                # genres is a jsonb list of strings.
+                raw = primary_artist.genres or []
+                artist_genres = [str(g) for g in raw if g]
+            music_review = {
+                "subject": "album",
+                "title": al.title,
+                "artists": [a.name for a in al.artists],
+                "releaseDate": al.release_date.isoformat() if al.release_date else None,
+                "genres": artist_genres,
+                "label": al.label,
+                "cover": {"src": al.cover_url} if al.cover_url else None,
+            }
+            # Drop keys with empty/None values to keep the frontmatter tidy
+            # (zod treats undefined keys as "missing" → schema defaults apply).
+            music_review = {k: v for k, v in music_review.items() if v not in (None, [], "")}
 
     try:
         result = publish_to_github(
@@ -83,6 +106,7 @@ def create_post(
             body_mdx=req.body_mdx,
             best_new=best_new,
             recommended_track_ids=req.recommended_track_ids,
+            music_review=music_review,
         )
     except RuntimeError as e:
         raise HTTPException(502, detail=str(e))

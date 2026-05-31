@@ -128,6 +128,73 @@ class TestPublishMissingToken:
         assert "Missing GitHub" in resp.json()["detail"]
 
 
+class TestMusicReviewFrontmatter:
+    """FEAT-view-redesign Step 5 follow-up: publish writes a musicReview
+    block to MDX so the read-page hero (.lfq-hero) can show
+    label / year / artist / album-title / genres without a runtime fetch."""
+
+    def test_musicReview_serialized_when_subject_album_present(self, app, client):
+        from app.db.session import get_db
+        from datetime import date
+
+        album = MagicMock()
+        album.id = "alb-1"
+        album.title = "Inland Empire"
+        album.release_date = date(2026, 3, 14)
+        album.label = "Half Light Recordings"
+        album.cover_url = "https://cdn.example.com/cover.jpg"
+        album.best_new = True
+        artist = MagicMock()
+        artist.name = "유토 / YUTO"
+        artist.genres = ["Electronic", "Ambient"]
+        album.artists = [artist]
+
+        stub_session = MagicMock()
+        stub_session.query.return_value.filter.return_value.first.return_value = album
+        app.dependency_overrides[get_db] = lambda: stub_session
+
+        mock_get, mock_put = _mock_github(201)
+        with (
+            patch("app.services.publish_service.requests.get", mock_get),
+            patch("app.services.publish_service.requests.put", mock_put),
+        ):
+            resp = client.post("/api/publish", json=VALID_PAYLOAD)
+
+        assert resp.status_code == 200
+        # The frontmatter is base64-encoded inside the PUT payload body.
+        import base64, json
+        sent = json.loads(mock_put.call_args.kwargs["data"])
+        body = base64.b64decode(sent["content"]).decode("utf-8")
+        assert "musicReview: " in body
+        # The line is a single JSON object (YAML-compatible flow style).
+        line = next(ln for ln in body.splitlines() if ln.startswith("musicReview:"))
+        mr = json.loads(line.split("musicReview:", 1)[1].strip())
+        assert mr["title"] == "Inland Empire"
+        assert mr["label"] == "Half Light Recordings"
+        assert mr["artists"] == ["유토 / YUTO"]
+        assert mr["genres"] == ["Electronic", "Ambient"]
+        assert mr["releaseDate"] == "2026-03-14"
+        assert mr["cover"] == {"src": "https://cdn.example.com/cover.jpg"}
+        assert "bestNew: true" in body  # unchanged seed path
+        app.dependency_overrides.clear()
+
+    def test_no_musicReview_when_album_not_found(self, client):
+        """Existing autouse `_stub_get_db` returns None for the album lookup.
+        Publish must still succeed; frontmatter just omits `musicReview:`."""
+        mock_get, mock_put = _mock_github(201)
+        with (
+            patch("app.services.publish_service.requests.get", mock_get),
+            patch("app.services.publish_service.requests.put", mock_put),
+        ):
+            resp = client.post("/api/publish", json=VALID_PAYLOAD)
+
+        assert resp.status_code == 200
+        import base64, json
+        sent = json.loads(mock_put.call_args.kwargs["data"])
+        body = base64.b64decode(sent["content"]).decode("utf-8")
+        assert "musicReview:" not in body
+
+
 class TestPublishJwtRequired:
     def test_missing_jwt_returns_401_in_prod_env(self, client):
         # settings is bound at import time; patch the auth module's reference directly
