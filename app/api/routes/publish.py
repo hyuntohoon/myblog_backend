@@ -11,8 +11,8 @@ from sqlalchemy.orm import Session
 from app.core.auth import require_cognito_token
 from app.core.config import settings
 from app.db.session import get_db
+from app.services.content_sync import derive_subject_meta
 from app.services.publish_service import publish_to_github, slugify
-from myblog_shared_db.models import Album
 
 logger = logging.getLogger(__name__)
 
@@ -53,37 +53,14 @@ def create_post(
 
     slug = req.slug or slugify(req.title)
 
-    # Read the subject album (when present) once and derive both the
+    # Read the subject album (when present) and derive both the
     # FEAT-writer-lowfreq-redesign Step 5 `best_new` flag and the
     # FEAT-view-redesign Step 5 follow-up `music_review` payload — the
     # read-page hero (.lfq-hero) reads label / year / artist / album-title /
     # genres from this MDX block so the static page doesn't need a runtime
-    # album-detail fetch just to render the header. Only meaningful when the
-    # post has exactly one album subject.
-    best_new = False
-    music_review: dict | None = None
-    if len(req.album_ids) == 1:
-        al = db.query(Album).filter(Album.id == req.album_ids[0]).first()
-        if al is not None:
-            best_new = bool(getattr(al, "best_new", False))
-            primary_artist = al.artists[0] if al.artists else None
-            artist_genres: list[str] = []
-            if primary_artist is not None and getattr(primary_artist, "genres", None):
-                # genres is a jsonb list of strings.
-                raw = primary_artist.genres or []
-                artist_genres = [str(g) for g in raw if g]
-            music_review = {
-                "subject": "album",
-                "title": al.title,
-                "artists": [a.name for a in al.artists],
-                "releaseDate": al.release_date.isoformat() if al.release_date else None,
-                "genres": artist_genres,
-                "label": al.label,
-                "cover": {"src": al.cover_url} if al.cover_url else None,
-            }
-            # Drop keys with empty/None values to keep the frontmatter tidy
-            # (zod treats undefined keys as "missing" → schema defaults apply).
-            music_review = {k: v for k, v in music_review.items() if v not in (None, [], "")}
+    # album-detail fetch just to render the header. Shared with the restore
+    # re-publish path (content_sync) so both emit identical frontmatter.
+    best_new, music_review = derive_subject_meta(db, req.album_ids)
 
     try:
         result = publish_to_github(

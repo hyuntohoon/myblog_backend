@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.di import get_post_service
 from app.services.post_service import DuplicateSlugError
@@ -71,7 +71,11 @@ class TestDeletePost:
         mock_svc.delete.return_value = _make_post(status="archived")
         app.dependency_overrides[get_post_service] = lambda: mock_svc
 
-        resp = client.delete("/api/posts/uuid-1")
+        # FEAT-post-edit-delete-ui Step 3 added an MDX-removal side-effect; this
+        # test covers the DB/route contract, so isolate it (covered separately
+        # in test_unpublish.py).
+        with patch("app.api.routes.posts.content_sync.remove_post_content"):
+            resp = client.delete("/api/posts/uuid-1")
 
         assert resp.status_code == 200
         assert resp.json() == {"id": "uuid-1", "status": "archived"}
@@ -94,7 +98,8 @@ class TestDeletePost:
         mock_svc.delete.return_value = True
         app.dependency_overrides[get_post_service] = lambda: mock_svc
 
-        resp = client.delete("/api/posts/uuid-1?hard=true")
+        with patch("app.api.routes.posts.content_sync.remove_post_content"):
+            resp = client.delete("/api/posts/uuid-1?hard=true")
 
         assert resp.status_code == 204
         kwargs = mock_svc.delete.call_args.kwargs
@@ -118,7 +123,10 @@ class TestRestorePost:
         mock_svc.restore.return_value = _make_post(status="published")
         app.dependency_overrides[get_post_service] = lambda: mock_svc
 
-        resp = client.patch("/api/posts/uuid-1/restore")
+        # Restore now re-publishes the MDX (Step 3); isolate that side-effect
+        # here — re-publish is covered in test_unpublish.py.
+        with patch("app.api.routes.posts.content_sync.republish_post_content"):
+            resp = client.patch("/api/posts/uuid-1/restore")
 
         assert resp.status_code == 200
         assert resp.json() == {"id": "uuid-1", "status": "published"}

@@ -62,6 +62,25 @@ def make_mdx_frontmatter(
     return "\n".join(lines)
 
 
+def content_path(content_dir: str, posted_date: date, slug: str) -> str:
+    """The canonical MDX path for a post. Single source of truth shared by the
+    publish (PUT) and un-publish (DELETE) flows so they always agree."""
+    return f"{content_dir}/{posted_date.isoformat()}--{slug}/index.mdx"
+
+
+def _contents_url(owner: str, repo: str, path: str) -> str:
+    return f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+
+
+def _github_headers(token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "myblog-backend",
+        "Content-Type": "application/json",
+    }
+
+
 def github_put_file(
     owner: str,
     repo: str,
@@ -70,13 +89,8 @@ def github_put_file(
     content_utf8: str,
     token: str,
 ) -> requests.Response:
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "myblog-backend",
-        "Content-Type": "application/json",
-    }
+    url = _contents_url(owner, repo, path)
+    headers = _github_headers(token)
 
     r_get = requests.get(url, headers=headers, params={"ref": branch})
     sha = r_get.json().get("sha") if r_get.status_code == 200 else None
@@ -90,6 +104,40 @@ def github_put_file(
         payload["sha"] = sha
 
     return requests.put(url, headers=headers, data=json.dumps(payload))
+
+
+def github_delete_file(
+    owner: str,
+    repo: str,
+    branch: str,
+    path: str,
+    token: str,
+) -> dict:
+    """Delete a file from the content repo. **Idempotent**: if the file is
+    already absent (GET → 404), this is a no-op success — so un-publishing a
+    post that was never published (e.g. a draft) is safe. Raises RuntimeError
+    on any other GitHub error so the caller can surface a 502."""
+    url = _contents_url(owner, repo, path)
+    headers = _github_headers(token)
+
+    r_get = requests.get(url, headers=headers, params={"ref": branch})
+    if r_get.status_code == 404:
+        return {"ok": True, "path": path, "deleted": False, "reason": "absent"}
+    sha = r_get.json().get("sha") if r_get.status_code == 200 else None
+    if not sha:
+        raise RuntimeError(
+            f"GitHub API error resolving sha {r_get.status_code}: {r_get.text[:500]}"
+        )
+
+    payload = {
+        "message": f"chore(post): remove '{path.split('/')[-1]}'",
+        "sha": sha,
+        "branch": branch,
+    }
+    r = requests.delete(url, headers=headers, data=json.dumps(payload))
+    if r.status_code != 200:
+        raise RuntimeError(f"GitHub API error {r.status_code}: {r.text[:500]}")
+    return {"ok": True, "path": path, "deleted": True}
 
 
 def publish_to_github(
@@ -115,7 +163,7 @@ def publish_to_github(
     recommended_track_ids: Optional[list[str]] = None,
     music_review: Optional[dict] = None,
 ) -> dict:
-    path = f"{content_dir}/{posted_date.isoformat()}--{slug}/index.mdx"
+    path = content_path(content_dir, posted_date, slug)
     body_content = body_mdx.strip() if body_mdx else ""
 
     mdx = (
