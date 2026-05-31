@@ -24,6 +24,38 @@ class TestContentPath:
         assert p == "content/blog/2026-05-27--my-slug/index.mdx"
 
 
+class TestRatingFrontmatter:
+    """Regression: restore re-publishing a rating-less post (e.g. an archived
+    draft) must not emit `rating: null` — the content schema types rating as
+    z.number().optional(), so `null` fails the build. Omit the line instead."""
+
+    def test_none_rating_omits_line(self):
+        from datetime import date as _date
+
+        from app.services.publish_service import make_mdx_frontmatter
+
+        fm = make_mdx_frontmatter(
+            title="t", slug="s", description="", posted_date=_date(2026, 6, 1),
+            category="default", album_ids=[], artist_ids=[], post_id="p",
+            rating=None,
+        )
+        assert "rating: null" not in fm
+        assert "\nrating:" not in fm  # the optional field is absent entirely
+        assert "ratingScale: 5" in fm
+
+    def test_numeric_rating_emitted(self):
+        from datetime import date as _date
+
+        from app.services.publish_service import make_mdx_frontmatter
+
+        fm = make_mdx_frontmatter(
+            title="t", slug="s", description="", posted_date=_date(2026, 6, 1),
+            category="default", album_ids=[], artist_ids=[], post_id="p",
+            rating=4.5,
+        )
+        assert "rating: 4.5" in fm
+
+
 class TestGithubDeleteFile:
     def test_absent_file_is_idempotent_noop(self):
         """GET → 404 means the file never existed (e.g. a draft). No DELETE is
