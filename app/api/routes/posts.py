@@ -1,4 +1,5 @@
 # app/api/routes/posts.py
+import logging
 from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -16,7 +17,10 @@ from app.api.schemas import (
 from app.core.auth import require_cognito_token
 from app.db.session import get_db
 from app.di import get_post_service
+from app.services import content_sync
 from app.services.post_service import DuplicateSlugError, PostService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -153,13 +157,34 @@ def delete_post(
     svc: PostService = Depends(get_post_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
+    # Capture the content coordinates before a hard delete removes the row —
+    # un-publishing the static MDX needs slug + posted_date.
+    existing = svc.get_by_id(db, post_id)
+    coords = (existing.posted_date, existing.slug) if existing is not None else None
+
     result = svc.delete(db, post_id, hard=hard)
     if hard:
         if not result:
             raise HTTPException(status_code=404, detail="Post not found")
-        return Response(status_code=204)
-    if result is None:
+    elif result is None:
         raise HTTPException(status_code=404, detail="Post not found")
+
+    # FEAT-post-edit-delete-ui Step 3: archive and hard delete both un-publish
+    # the static page. Idempotent for never-published posts (drafts). The DB op
+    # already committed; on a GitHub failure we surface 502 without rolling it
+    # back (the post is genuinely un-published in the DB — only cleanup failed).
+    if coords is not None:
+        try:
+            content_sync.remove_post_content(coords[0], coords[1])
+        except RuntimeError as e:
+            logger.error("MDX removal failed for post %s: %s", post_id, e)
+            raise HTTPException(
+                status_code=502,
+                detail=f"Post {'deleted' if hard else 'archived'} but static page removal failed: {e}",
+            )
+
+    if hard:
+        return Response(status_code=204)
     return {"id": str(result.id), "status": result.status}
 
 
@@ -173,4 +198,20 @@ def restore_post(
     post = svc.restore(db, post_id)
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
+
+    # FEAT-post-edit-delete-ui Step 3: restore is the symmetric inverse of
+    # archive — archive removed the MDX, so restore must re-publish it, else the
+    # post is 'published' in the DB but its static page 404s. Re-derived from the
+    # row. A GitHub failure surfaces 502 (idempotent + retryable: restore re-runs
+    # set_status + re-publish safely).
+    try:
+        rec_track_ids = svc.list_recommended_track_ids(db, post.id)
+        content_sync.republish_post_content(db, post, rec_track_ids)
+    except RuntimeError as e:
+        logger.error("MDX re-publish failed for post %s: %s", post_id, e)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Post restored but static page re-publish failed: {e}",
+        )
+
     return {"id": str(post.id), "status": post.status}
