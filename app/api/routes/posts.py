@@ -55,6 +55,7 @@ def create_post(
     req: WritePostRequest,
     db: Session = Depends(get_db),
     svc: PostService = Depends(get_post_service),
+    _claims: Dict = Depends(require_cognito_token),
 ):
     try:
         category_name = (req.category or "default").strip()
