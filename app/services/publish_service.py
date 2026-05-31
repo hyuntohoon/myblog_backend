@@ -48,11 +48,18 @@ def make_mdx_frontmatter(
         f"artistIds: {json.dumps(artist_ids or [], ensure_ascii=False)}",
         f"postId: {post_id!r}",
         f"albumCover: {json.dumps(album_cover_url or '', ensure_ascii=False)}",
-        f"rating: {rating if rating is not None else 'null'}",
         f"ratingScale: {rating_scale}",
         f"bestNew: {'true' if best_new else 'false'}",
         f"recommendedTrackIds: {json.dumps(recommended_track_ids or [], ensure_ascii=False)}",
     ]
+    # The content schema types `rating` as `z.number().optional()` — `rating:
+    # null` is rejected ("Expected number, received null"). Emit the line only
+    # when there's a numeric rating; omit it entirely when None so the optional
+    # field stays absent. Reachable via restore re-publishing a rating-less post
+    # (e.g. an archived draft); the publish route never hit it because the
+    # writer always sends a numeric score.
+    if rating is not None:
+        lines.insert(11, f"rating: {rating}")
     if music_review:
         # JSON is a YAML subset (single-line flow style), so this parses
         # cleanly as a nested map under the `musicReview:` key. zod sees the
