@@ -197,6 +197,24 @@ class TestCreatePost:
         assert "test-post" in resp.json()["detail"]
         app.dependency_overrides.clear()
 
+    def test_missing_jwt_returns_401_in_prod_env(self, client):
+        # create_post must be Cognito-gated like every other mutating route
+        # (it previously omitted the dependency — audit S3). Mirror the publish
+        # JWT test: in prod env with no token, the request is rejected before
+        # reaching the service.
+        from unittest.mock import patch
+        import app.core.auth as auth_module
+
+        fake_settings = MagicMock()
+        fake_settings.ENV = "prod"
+        fake_settings.COGNITO_USER_POOL_ID = "ap-northeast-2_TestPool"
+        fake_settings.COGNITO_REGION = "ap-northeast-2"
+
+        with patch.object(auth_module, "settings", fake_settings):
+            resp = client.post("/api/posts", json=self._payload)
+
+        assert resp.status_code == 401
+
 
 class TestUpdatePost:
     def test_update_existing_post_returns_200(self, client, app):
