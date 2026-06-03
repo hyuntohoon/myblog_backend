@@ -109,6 +109,81 @@ class PostDetailResponse(BaseModel):
     subject_best_new: Optional[bool] = None
 
 
+# ====== Review buckets (FEAT-review-bucket-board) ======
+
+class CreateBucketRequest(BaseModel):
+    name: str = Field(min_length=1)
+    color: Optional[str] = None
+
+
+class UpdateBucketRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    # All optional; exclude_unset on the route distinguishes "not provided" from
+    # an explicit clear. is_done toggles the single "작성 완료" column.
+    name: Optional[str] = None
+    color: Optional[str] = None
+    position: Optional[int] = None
+    is_done: Optional[bool] = None
+
+
+class AddBucketItemRequest(BaseModel):
+    album_id: str = Field(min_length=1)
+    note: Optional[str] = None
+
+
+class UpdateBucketItemRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    note: Optional[str] = None
+    status: Optional[Literal["candidate", "drafting", "published"]] = None
+    post_id: Optional[str] = None
+
+
+class ReorderBucket(BaseModel):
+    id: str
+    item_ids: List[str] = Field(default_factory=list)
+
+
+class ReorderRequest(BaseModel):
+    buckets: List[ReorderBucket] = Field(default_factory=list)
+
+
+class AlbumBrief(BaseModel):
+    id: str
+    title: str
+    cover_url: Optional[str] = None
+    release_date: Optional[date] = None
+    popularity: Optional[int] = None
+    artist_names: List[str] = Field(default_factory=list)
+
+
+class BucketItemResponse(BaseModel):
+    id: str
+    album_id: str
+    position: int
+    note: Optional[str] = None
+    status: str
+    post_id: Optional[str] = None
+    rec_reason: Optional[str] = None
+    # Advisory badge: album already has a published review (in post_albums).
+    already_reviewed: bool = False
+    album: AlbumBrief
+
+
+class BucketResponse(BaseModel):
+    id: str
+    name: str
+    position: int
+    color: Optional[str] = None
+    is_done: bool
+    items: List[BucketItemResponse] = Field(default_factory=list)
+
+
+class BucketsResponse(BaseModel):
+    buckets: List[BucketResponse] = Field(default_factory=list)
+
+
 # ====== Categories ======
 
 class CategoryListResponse(BaseModel):
