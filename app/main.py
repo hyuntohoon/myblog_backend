@@ -59,12 +59,14 @@ async def edge_guard(request: Request, call_next):
 # -----------------------------
 from app.api.routes import posts, categories, metrics
 from app.api.routes import publish
+from app.api.routes import buckets
 from app.db.session import get_db
 
 app.include_router(categories.router, prefix="/api/categories",    tags=["categories"])
 app.include_router(posts.router,      prefix="/api/posts",         tags=["posts"])
 app.include_router(metrics.router,    prefix="/api/metrics/batch", tags=["metrics"])
 app.include_router(publish.router,    prefix="/api/publish",       tags=["publish"])
+app.include_router(buckets.router,    prefix="/api/buckets",       tags=["buckets"])
 
 
 # -----------------------------
