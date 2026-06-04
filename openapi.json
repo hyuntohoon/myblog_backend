@@ -196,6 +196,13 @@
       },
       "BucketResponse": {
         "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/BucketResponse"
+            },
+            "title": "Children",
+            "type": "array"
+          },
           "color": {
             "anyOf": [
               {
@@ -449,6 +456,30 @@
           "data"
         ],
         "title": "MetricsBatchResponse",
+        "type": "object"
+      },
+      "MoveBucketRequest": {
+        "properties": {
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "position"
+        ],
+        "title": "MoveBucketRequest",
         "type": "object"
       },
       "NowPlayingResponse": {
@@ -1748,6 +1779,63 @@
           }
         ],
         "summary": "Update Item",
+        "tags": [
+          "buckets"
+        ]
+      }
+    },
+    "/api/buckets/{bucket_id}/move": {
+      "put": {
+        "operationId": "move_bucket_api_buckets__bucket_id__move_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bucket_id",
+            "required": true,
+            "schema": {
+              "title": "Bucket Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveBucketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BucketsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Move Bucket",
         "tags": [
           "buckets"
         ]

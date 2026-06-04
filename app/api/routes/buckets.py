@@ -13,6 +13,7 @@ from app.api.schemas import (
     BucketResponse,
     BucketsResponse,
     CreateBucketRequest,
+    MoveBucketRequest,
     ReorderRequest,
     UpdateBucketItemRequest,
     UpdateBucketRequest,
@@ -58,6 +59,35 @@ def _item_response(item, already_reviewed: bool) -> BucketItemResponse:
     )
 
 
+# ── tree serialization ──────────────────────────────────────────────────────
+# list_buckets() returns root ReviewBucket objects, each carrying its descendants
+# on a transient `children_nodes` list. Serialize recursively into nested
+# BucketResponse, sharing one already_reviewed lookup across the whole tree.
+
+def _iter_tree(roots):
+    """Depth-first yield of every node in the forest (roots + descendants)."""
+    for node in roots:
+        yield node
+        yield from _iter_tree(getattr(node, "children_nodes", []) or [])
+
+
+def _bucket_response(b, reviewed: set) -> BucketResponse:
+    return BucketResponse(
+        id=str(b.id),
+        name=b.name,
+        position=b.position,
+        color=b.color,
+        is_done=b.is_done,
+        items=[
+            _item_response(it, str(it.album_id) in reviewed) for it in b.items
+        ],
+        children=[
+            _bucket_response(child, reviewed)
+            for child in (getattr(b, "children_nodes", []) or [])
+        ],
+    )
+
+
 # ── reads (edge_guard only — no JWT; covered by GET /api/{proxy+}) ──────────────
 
 @router.get("", response_model=BucketsResponse)
@@ -65,25 +95,15 @@ def list_buckets(
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
 ):
-    buckets = svc.list_buckets(db)
-    # Batch the already_reviewed lookup across every queued album (one query).
-    all_album_ids = [str(it.album_id) for b in buckets for it in b.items]
+    roots = svc.list_buckets(db)
+    # Batch the already_reviewed lookup across every queued album in the whole
+    # tree (one query), then serialize roots recursively into nested children.
+    all_album_ids = [
+        str(it.album_id) for b in _iter_tree(roots) for it in b.items
+    ]
     reviewed = svc.reviewed_album_ids(db, all_album_ids)
     return BucketsResponse(
-        buckets=[
-            BucketResponse(
-                id=str(b.id),
-                name=b.name,
-                position=b.position,
-                color=b.color,
-                is_done=b.is_done,
-                items=[
-                    _item_response(it, str(it.album_id) in reviewed)
-                    for it in b.items
-                ],
-            )
-            for b in buckets
-        ]
+        buckets=[_bucket_response(root, reviewed) for root in roots]
     )
 
 
@@ -173,6 +193,28 @@ def reorder(
     except ItemNotFoundError:
         raise HTTPException(status_code=404, detail="Item not found")
     return Response(status_code=204)
+
+
+# ── tree movement (Cognito JWT) ─────────────────────────────────────────────────
+# FEAT-member-dashboard Step 5: reparent + reposition. Path /{bucket_id}/move is
+# unambiguous (move is a literal suffix), so ordering vs /{bucket_id} is fine.
+
+@router.put("/{bucket_id}/move", response_model=BucketsResponse)
+def move_bucket(
+    bucket_id: str,
+    req: MoveBucketRequest,
+    db: Session = Depends(get_db),
+    svc: BucketService = Depends(get_bucket_service),
+    _claims: Dict = Depends(require_cognito_token),
+):
+    try:
+        svc.move_bucket(db, bucket_id, parent_id=req.parent_id, position=req.position)
+    except BucketNotFoundError:
+        raise HTTPException(status_code=404, detail="Bucket not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # Return the full updated nested tree (same shape as GET /api/buckets).
+    return list_buckets(db=db, svc=svc)
 
 
 # ── item operations (Cognito JWT) ───────────────────────────────────────────────

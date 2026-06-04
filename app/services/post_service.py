@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.repositories.post_repository import PostRepository
 from app.repositories.category_repository import CategoryRepository
 from myblog_shared_db.models import (
-    Album, Post, Artist, Track,
+    Album, Post, Artist, Track, ReviewBucketItem,
     post_albums_table as post_albums,
     post_recommended_tracks_table as post_recommended_tracks,
 )
@@ -287,5 +287,13 @@ class PostService:
         # so the route can echo the new status. Mixed return type is intentional;
         # the route layer disambiguates by the `hard` flag it sent.
         if hard:
+            # D22 (FEAT-member-dashboard Step 5): review_bucket_items.post_id is
+            # ON DELETE SET NULL, so a hard post delete would otherwise orphan the
+            # bucket item pointing at it. Detach those rows in the SAME transaction,
+            # BEFORE deleting the post (delete_by_id commits once for both). Hard
+            # path only — soft delete (archive) must NOT touch bucket items.
+            db.query(ReviewBucketItem).filter(
+                ReviewBucketItem.post_id == post_id
+            ).delete(synchronize_session=False)
             return self.post_repo.delete_by_id(db, post_id)
         return self.post_repo.set_status(db, post_id, "archived")

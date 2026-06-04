@@ -21,11 +21,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.services.bucket_service import (
+    BucketNotFoundError,
     BucketService,
     DuplicateItemError,
 )
 from myblog_shared_db.models import (
     Album,
+    Post,
+    ReviewBucket,
     ReviewBucketItem,
     post_albums_table as post_albums,
 )
@@ -187,6 +190,192 @@ class TestDoneBucketConstraint:
         with pytest.raises(IntegrityError):
             svc.update_bucket(db, str(b2.id), is_done=True)
         db.rollback()
+
+
+class TestMoveBucket:
+    """FEAT-member-dashboard Step 5: nested tree + reparent + cycle prevention,
+    against real Postgres (the parent_id self-FK, contiguous renumbering, and the
+    ancestor walk only have meaning at the SQL level)."""
+
+    def test_list_buckets_nests_children_under_parents(self, db, svc):
+        root = svc.create_bucket(db, name="root")
+        child = svc.create_bucket(db, name="child")
+        svc.move_bucket(db, str(child.id), parent_id=str(root.id), position=0)
+
+        roots = svc.list_buckets(db)
+        ids = {str(b.id): b for b in roots}
+        # child no longer at top level
+        assert str(child.id) not in ids
+        assert str(root.id) in ids
+        assert [str(c.id) for c in ids[str(root.id)].children_nodes] == [
+            str(child.id)
+        ]
+
+    def test_move_reparent_sets_parent_id(self, db, svc):
+        root = svc.create_bucket(db, name="r")
+        child = svc.create_bucket(db, name="c")
+        svc.move_bucket(db, str(child.id), parent_id=str(root.id), position=0)
+        db.refresh(child)
+        assert str(child.parent_id) == str(root.id)
+
+    def test_move_to_root_clears_parent_id(self, db, svc):
+        root = svc.create_bucket(db, name="r")
+        child = svc.create_bucket(db, name="c")
+        svc.move_bucket(db, str(child.id), parent_id=str(root.id), position=0)
+        svc.move_bucket(db, str(child.id), parent_id=None, position=0)
+        db.refresh(child)
+        assert child.parent_id is None
+
+    def test_move_renumbers_siblings_contiguous(self, db, svc):
+        parent = svc.create_bucket(db, name="p")
+        a = svc.create_bucket(db, name="a")
+        b = svc.create_bucket(db, name="b")
+        c = svc.create_bucket(db, name="c")
+        svc.move_bucket(db, str(a.id), parent_id=str(parent.id), position=0)
+        svc.move_bucket(db, str(b.id), parent_id=str(parent.id), position=0)
+        # b should now precede a; insert c at the end.
+        svc.move_bucket(db, str(c.id), parent_id=str(parent.id), position=2)
+
+        siblings = (
+            db.query(ReviewBucket)
+            .filter(ReviewBucket.parent_id == parent.id)
+            .order_by(ReviewBucket.position)
+            .all()
+        )
+        assert [s.position for s in siblings] == [0, 1, 2]
+        assert [str(s.id) for s in siblings] == [
+            str(b.id),
+            str(a.id),
+            str(c.id),
+        ]
+
+    def test_move_out_compacts_old_parent(self, db, svc):
+        # Moving a bucket out of a parent must leave the old parent's remaining
+        # siblings contiguous 0..n (no gap where the moved bucket was).
+        p = svc.create_bucket(db, name="p")
+        x = svc.create_bucket(db, name="x")
+        y = svc.create_bucket(db, name="y")
+        z = svc.create_bucket(db, name="z")
+        svc.move_bucket(db, str(x.id), parent_id=str(p.id), position=0)
+        svc.move_bucket(db, str(y.id), parent_id=str(p.id), position=1)
+        svc.move_bucket(db, str(z.id), parent_id=str(p.id), position=2)
+        # Pull the middle child out to root.
+        svc.move_bucket(db, str(y.id), parent_id=None, position=0)
+
+        remaining = (
+            db.query(ReviewBucket)
+            .filter(ReviewBucket.parent_id == p.id)
+            .order_by(ReviewBucket.position)
+            .all()
+        )
+        assert [s.position for s in remaining] == [0, 1]
+        assert [str(s.id) for s in remaining] == [str(x.id), str(z.id)]
+
+    def test_move_self_parent_rejected(self, db, svc):
+        b = svc.create_bucket(db, name="self")
+        with pytest.raises(ValueError):
+            svc.move_bucket(db, str(b.id), parent_id=str(b.id), position=0)
+
+    def test_move_under_own_descendant_rejected(self, db, svc):
+        root = svc.create_bucket(db, name="root")
+        child = svc.create_bucket(db, name="child")
+        grandchild = svc.create_bucket(db, name="grandchild")
+        svc.move_bucket(db, str(child.id), parent_id=str(root.id), position=0)
+        svc.move_bucket(db, str(grandchild.id), parent_id=str(child.id), position=0)
+        # Moving root under grandchild (its own descendant) must be a cycle 400.
+        with pytest.raises(ValueError):
+            svc.move_bucket(
+                db, str(root.id), parent_id=str(grandchild.id), position=0
+            )
+
+    def test_move_missing_bucket_raises(self, db, svc):
+        with pytest.raises(BucketNotFoundError):
+            svc.move_bucket(
+                db,
+                "00000000-0000-0000-0000-000000000000",
+                parent_id=None,
+                position=0,
+            )
+
+    def test_move_missing_parent_raises(self, db, svc):
+        b = svc.create_bucket(db, name="x")
+        with pytest.raises(BucketNotFoundError):
+            svc.move_bucket(
+                db,
+                str(b.id),
+                parent_id="00000000-0000-0000-0000-000000000000",
+                position=0,
+            )
+
+
+class TestHardDeletePostCascade:
+    """D22: a hard post delete must remove review_bucket_items pointing at it, in
+    the same transaction. Real-engine proof (the post_id FK is ON DELETE SET NULL,
+    so without the explicit delete the row would survive with a null post_id)."""
+
+    def test_hard_delete_removes_bucket_item(self, db, svc, album_ids):
+        from datetime import date
+
+        from app.repositories.category_repository import CategoryRepository
+        from app.repositories.post_repository import PostRepository
+        from app.services.post_service import PostService
+
+        post = Post(
+            slug=f"d22-cascade-{date.today().isoformat()}-{album_ids[0][:8]}",
+            title="D22 cascade probe",
+            posted_date=date.today(),
+        )
+        db.add(post)
+        db.flush()
+
+        bucket = svc.create_bucket(db, name="cascade")
+        item = svc.add_item(db, str(bucket.id), album_id=album_ids[0])
+        item.post_id = post.id
+        db.flush()
+        item_id = item.id
+
+        post_svc = PostService(
+            post_repo=PostRepository(), category_repo=CategoryRepository()
+        )
+        assert post_svc.delete(db, str(post.id), hard=True) is True
+
+        # The bucket item is gone (not merely orphaned with a null post_id).
+        remaining = db.execute(
+            select(ReviewBucketItem).where(ReviewBucketItem.id == item_id)
+        ).all()
+        assert remaining == []
+
+    def test_soft_delete_keeps_bucket_item(self, db, svc, album_ids):
+        from datetime import date
+
+        from app.repositories.category_repository import CategoryRepository
+        from app.repositories.post_repository import PostRepository
+        from app.services.post_service import PostService
+
+        post = Post(
+            slug=f"d22-soft-{date.today().isoformat()}-{album_ids[1][:8]}",
+            title="D22 soft probe",
+            posted_date=date.today(),
+        )
+        db.add(post)
+        db.flush()
+
+        bucket = svc.create_bucket(db, name="soft")
+        item = svc.add_item(db, str(bucket.id), album_id=album_ids[1])
+        item.post_id = post.id
+        db.flush()
+        item_id = item.id
+
+        post_svc = PostService(
+            post_repo=PostRepository(), category_repo=CategoryRepository()
+        )
+        post_svc.delete(db, str(post.id), hard=False)
+
+        # Soft delete (archive) must leave the bucket item intact.
+        still_there = db.execute(
+            select(ReviewBucketItem).where(ReviewBucketItem.id == item_id)
+        ).all()
+        assert len(still_there) == 1
 
 
 class TestAlreadyReviewed:
