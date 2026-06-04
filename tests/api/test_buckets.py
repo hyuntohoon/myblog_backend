@@ -178,6 +178,22 @@ class TestUpdateBucket:
         assert kwargs == {"name": "renamed"}
         app.dependency_overrides.clear()
 
+    def test_update_color_null_forwards_explicit_none(self, client, app):
+        # Resetting a bucket to the default ink sends {"color": null}. exclude_unset
+        # must keep the field so color=None reaches the service as an explicit clear
+        # (not stripped like an omitted field). Regression: the service ignored the
+        # clear and the color could be set but never reset.
+        svc = MagicMock()
+        svc.update_bucket.return_value = _bucket(name="꼭")
+        _override(app, svc)
+
+        resp = client.patch("/api/buckets/bk-1", json={"color": None})
+
+        assert resp.status_code == 200
+        kwargs = svc.update_bucket.call_args.kwargs
+        assert kwargs == {"color": None}
+        app.dependency_overrides.clear()
+
 
 class TestDeleteBucket:
     def test_delete_returns_204(self, client, app):

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -13,6 +13,12 @@ from myblog_shared_db.models import (
     ReviewBucketItem,
     post_albums_table as post_albums,
 )
+
+# Sentinel for "argument not provided" — lets update_bucket() tell an omitted
+# field apart from an explicit None. The route strips unsent fields via
+# model_dump(exclude_unset=True), so a color=None reaching the service means the
+# client deliberately sent {"color": null} to reset the bucket to the default ink.
+_UNSET: Any = object()
 
 
 class BucketNotFoundError(Exception):
@@ -257,7 +263,7 @@ class BucketService:
         bucket_id: str,
         *,
         name: Optional[str] = None,
-        color: Optional[str] = None,
+        color: Any = _UNSET,
         position: Optional[int] = None,
         is_done: Optional[bool] = None,
     ) -> ReviewBucket:
@@ -269,8 +275,8 @@ class BucketService:
             if not name:
                 raise ValueError("name cannot be empty")
             bucket.name = name
-        if color is not None:
-            # empty string clears the color label
+        if color is not _UNSET:
+            # None or empty string clears the color label (reset to default ink).
             bucket.color = color or None
         if position is not None:
             bucket.position = int(position)
