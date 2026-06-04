@@ -174,6 +174,8 @@ class BucketService:
                 raise ValueError("cannot move a bucket under its own descendant")
 
         new_parent = str(parent_id) if parent_id is not None else None
+        old_parent_id = bucket.parent_id  # capture before reparenting
+        old_parent = str(old_parent_id) if old_parent_id is not None else None
         bucket.parent_id = parent_id
 
         # Renumber the destination sibling group (same parent_id). Exclude the
@@ -193,6 +195,25 @@ class BucketService:
         ordered = others[:idx] + [bucket] + others[idx:]
         for pos, s in enumerate(ordered):
             s.position = pos
+
+        # When the parent changed, compact the *old* parent's remaining siblings
+        # so their positions stay contiguous 0..n (no gap left where the bucket
+        # was). Filter the moved bucket out by id so its new position is kept
+        # regardless of autoflush ordering.
+        if old_parent != new_parent:
+            old_siblings = (
+                db.query(ReviewBucket)
+                .filter(
+                    ReviewBucket.parent_id.is_(None)
+                    if old_parent is None
+                    else ReviewBucket.parent_id == old_parent_id
+                )
+                .order_by(ReviewBucket.position, ReviewBucket.created_at)
+                .all()
+            )
+            remaining = [s for s in old_siblings if str(s.id) != str(bucket_id)]
+            for pos, s in enumerate(remaining):
+                s.position = pos
 
         db.commit()
         db.refresh(bucket)

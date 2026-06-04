@@ -249,6 +249,28 @@ class TestMoveBucket:
             str(c.id),
         ]
 
+    def test_move_out_compacts_old_parent(self, db, svc):
+        # Moving a bucket out of a parent must leave the old parent's remaining
+        # siblings contiguous 0..n (no gap where the moved bucket was).
+        p = svc.create_bucket(db, name="p")
+        x = svc.create_bucket(db, name="x")
+        y = svc.create_bucket(db, name="y")
+        z = svc.create_bucket(db, name="z")
+        svc.move_bucket(db, str(x.id), parent_id=str(p.id), position=0)
+        svc.move_bucket(db, str(y.id), parent_id=str(p.id), position=1)
+        svc.move_bucket(db, str(z.id), parent_id=str(p.id), position=2)
+        # Pull the middle child out to root.
+        svc.move_bucket(db, str(y.id), parent_id=None, position=0)
+
+        remaining = (
+            db.query(ReviewBucket)
+            .filter(ReviewBucket.parent_id == p.id)
+            .order_by(ReviewBucket.position)
+            .all()
+        )
+        assert [s.position for s in remaining] == [0, 1]
+        assert [str(s.id) for s in remaining] == [str(x.id), str(z.id)]
+
     def test_move_self_parent_rejected(self, db, svc):
         b = svc.create_bucket(db, name="self")
         with pytest.raises(ValueError):
