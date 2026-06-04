@@ -394,6 +394,53 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "LibraryItemResponse": {
+        "properties": {
+          "added_at": {
+            "format": "date-time",
+            "title": "Added At",
+            "type": "string"
+          },
+          "album": {
+            "$ref": "#/components/schemas/AlbumBrief"
+          },
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "album_id",
+          "status",
+          "added_at",
+          "updated_at",
+          "album"
+        ],
+        "title": "LibraryItemResponse",
+        "type": "object"
+      },
+      "LibraryResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "title": "LibraryResponse",
+        "type": "object"
+      },
       "MetricsBatchRequest": {
         "properties": {
           "slugs": {
@@ -662,6 +709,25 @@
           }
         },
         "title": "ReorderRequest",
+        "type": "object"
+      },
+      "SetLibraryStatusRequest": {
+        "properties": {
+          "status": {
+            "enum": [
+              "listening",
+              "listened",
+              "reviewed",
+              "wishlist"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "SetLibraryStatusRequest",
         "type": "object"
       },
       "UpdateBucketItemRequest": {
@@ -1537,6 +1603,123 @@
           }
         },
         "summary": "Ping"
+      }
+    },
+    "/api/library": {
+      "get": {
+        "operationId": "list_library_api_library_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Library",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/{album_id}": {
+      "delete": {
+        "operationId": "delete_library_item_api_library__album_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "album_id",
+            "required": true,
+            "schema": {
+              "title": "Album Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Library Item",
+        "tags": [
+          "library"
+        ]
+      },
+      "put": {
+        "description": "Upsert the library status for an album (set or change).",
+        "operationId": "set_library_status_api_library__album_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "album_id",
+            "required": true,
+            "schema": {
+              "title": "Album Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetLibraryStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryItemResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set Library Status",
+        "tags": [
+          "library"
+        ]
       }
     },
     "/api/metrics/batch": {

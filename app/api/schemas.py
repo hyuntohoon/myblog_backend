@@ -1,7 +1,7 @@
 # app/api/schemas.py
 from pydantic import BaseModel, Field
 from typing import Optional, List, Literal, Dict
-from datetime import date
+from datetime import date, datetime
 
 
 # ====== Posts ======
@@ -182,6 +182,25 @@ class BucketResponse(BaseModel):
 
 class BucketsResponse(BaseModel):
     buckets: List[BucketResponse] = Field(default_factory=list)
+
+
+# ====== Member library (FEAT-member-dashboard Step 2) ======
+
+class SetLibraryStatusRequest(BaseModel):
+    # Exclusive per-album library state. Mirrors LibraryItemStatus in shared_db.
+    status: Literal["listening", "listened", "reviewed", "wishlist"]
+
+
+class LibraryItemResponse(BaseModel):
+    album_id: str
+    status: str
+    added_at: datetime
+    updated_at: datetime
+    album: AlbumBrief
+
+
+class LibraryResponse(BaseModel):
+    items: List[LibraryItemResponse] = Field(default_factory=list)
 
 
 # ====== Categories ======
