@@ -184,23 +184,43 @@ class BucketsResponse(BaseModel):
     buckets: List[BucketResponse] = Field(default_factory=list)
 
 
-# ====== Member library (FEAT-member-dashboard Step 2) ======
+# ====== Member library (FEAT-member-dashboard Step 2, D18) ======
+# Two sources: 들을 것 (to-listen queue, a real table) and 평론한 앨범 (reviewed,
+# a derived view over published posts). 최근 들은 앨범 is Step 3.
 
-class SetLibraryStatusRequest(BaseModel):
-    # Exclusive per-album library state. Mirrors LibraryItemStatus in shared_db.
-    status: Literal["listening", "listened", "reviewed", "wishlist"]
+class AddToListenRequest(BaseModel):
+    album_id: str = Field(min_length=1)
+    note: Optional[str] = None
 
 
-class LibraryItemResponse(BaseModel):
+class ToListenReorderRequest(BaseModel):
+    # Top→bottom item order for the single queue (same idempotent mechanism as
+    # /api/buckets/reorder; one list since to-listen has no columns).
+    item_ids: List[str] = Field(default_factory=list)
+
+
+class ToListenItemResponse(BaseModel):
+    id: str
     album_id: str
-    status: str
+    position: int
+    note: Optional[str] = None
     added_at: datetime
-    updated_at: datetime
     album: AlbumBrief
 
 
-class LibraryResponse(BaseModel):
-    items: List[LibraryItemResponse] = Field(default_factory=list)
+class ToListenResponse(BaseModel):
+    items: List[ToListenItemResponse] = Field(default_factory=list)
+
+
+class ReviewedAlbumResponse(BaseModel):
+    # Card unit = album (D20); review_ids are the album's published posts (M:N).
+    album_id: str
+    review_ids: List[str] = Field(default_factory=list)
+    album: AlbumBrief
+
+
+class ReviewedResponse(BaseModel):
+    items: List[ReviewedAlbumResponse] = Field(default_factory=list)
 
 
 # ====== Categories ======

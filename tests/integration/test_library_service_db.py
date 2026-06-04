@@ -1,11 +1,10 @@
-"""Real-engine integration tests for LibraryService.
+"""Real-engine integration tests for LibraryService (FEAT-member-dashboard Step 2).
 
 Mock unit tests (tests/api/test_library.py) cover the route↔service contract but
-are blind to actual SQL semantics: the UNIQUE(album_id) upsert (set_status must
-update, never insert a second row), the FK to albums, and commit/refresh round-
-trips. Those only surface against a real Postgres (cf.
-feedback-sa-session-lifecycle-mock-blind — LibraryService introduces a new
-commit boundary, so one real-engine test is required).
+are blind to SQL semantics: the UNIQUE(album_id) dedup, dense position rewrite on
+reorder, and the post_albums⋈posts derived reviewed view. Those only surface
+against real Postgres (cf. feedback-sa-session-lifecycle-mock-blind — LibraryService
+owns its commit boundary, so one real-engine test is required).
 
 Gated on TEST_DB_URL (Neon test branch; see reference-test-db-url-source). Each
 test runs inside an outer transaction rolled back on teardown — nothing persists.
@@ -18,8 +17,13 @@ import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 
-from app.services.library_service import AlbumNotFoundError, LibraryService
-from myblog_shared_db.models import LibraryItem
+from app.services.library_service import (
+    AlbumNotFoundError,
+    DuplicateItemError,
+    ItemNotFoundError,
+    LibraryService,
+)
+from myblog_shared_db.models import AlbumToListenItem
 
 TEST_DB_URL = os.environ.get("TEST_DB_URL")
 
@@ -53,8 +57,8 @@ def db(engine):
 def album_ids(db):
     rows = db.execute(text("SELECT id FROM albums LIMIT 5")).all()
     ids = [str(r[0]) for r in rows]
-    if len(ids) < 2:
-        pytest.skip("need ≥2 albums in test DB")
+    if len(ids) < 3:
+        pytest.skip("need ≥3 albums in test DB")
     return ids
 
 
@@ -63,44 +67,64 @@ def svc():
     return LibraryService()
 
 
-class TestSetStatus:
-    def test_create_then_list(self, db, svc, album_ids):
-        item, created = svc.set_status(db, album_ids[0], status="wishlist")
-        assert created is True
-        assert item.status == "wishlist"
+class TestToListen:
+    def test_add_appends_dense_positions(self, db, svc, album_ids):
+        for aid in album_ids[:3]:
+            svc.add_to_listen(db, album_id=aid)
+        items = svc.list_to_listen(db)
+        mine = [i for i in items if str(i.album_id) in album_ids[:3]]
+        assert [i.position for i in mine] == [0, 1, 2]
 
-        listed = svc.list_items(db)
-        assert any(str(i.album_id) == album_ids[0] for i in listed)
-
-    def test_set_status_is_upsert_not_duplicate(self, db, svc, album_ids):
-        aid = album_ids[0]
-        svc.set_status(db, aid, status="listening")
-        item, created = svc.set_status(db, aid, status="reviewed")
-
-        assert created is False
-        assert item.status == "reviewed"
-        # UNIQUE(album_id): exactly one row for the album.
+    def test_duplicate_album_blocked(self, db, svc, album_ids):
+        svc.add_to_listen(db, album_id=album_ids[0])
+        with pytest.raises(DuplicateItemError):
+            svc.add_to_listen(db, album_id=album_ids[0])
         rows = db.execute(
-            select(LibraryItem).where(LibraryItem.album_id == aid)
+            select(AlbumToListenItem).where(
+                AlbumToListenItem.album_id == album_ids[0]
+            )
         ).all()
         assert len(rows) == 1
 
     def test_missing_album_raises(self, db, svc):
         with pytest.raises(AlbumNotFoundError):
-            svc.set_status(
-                db, "00000000-0000-0000-0000-000000000000", status="wishlist"
+            svc.add_to_listen(
+                db, album_id="00000000-0000-0000-0000-000000000000"
             )
 
+    def test_reorder_rewrites_positions(self, db, svc, album_ids):
+        items = [svc.add_to_listen(db, album_id=a) for a in album_ids[:3]]
+        new_order = [str(items[2].id), str(items[0].id), str(items[1].id)]
+        svc.reorder_to_listen(db, new_order)
+        by_id = {str(i.id): i.position for i in svc.list_to_listen(db)}
+        assert by_id[new_order[0]] == 0
+        assert by_id[new_order[1]] == 1
+        assert by_id[new_order[2]] == 2
 
-class TestDelete:
+    def test_reorder_unknown_item_raises(self, db, svc):
+        with pytest.raises(ItemNotFoundError):
+            svc.reorder_to_listen(db, ["00000000-0000-0000-0000-000000000000"])
+
     def test_delete_removes_row(self, db, svc, album_ids):
-        aid = album_ids[0]
-        svc.set_status(db, aid, status="listened")
-        assert svc.delete_item(db, aid) is True
-        rows = db.execute(
-            select(LibraryItem).where(LibraryItem.album_id == aid)
-        ).all()
-        assert rows == []
+        item = svc.add_to_listen(db, album_id=album_ids[0])
+        assert svc.delete_to_listen(db, str(item.id)) is True
+        assert svc.delete_to_listen(db, str(item.id)) is False
 
-    def test_delete_absent_returns_false(self, db, svc, album_ids):
-        assert svc.delete_item(db, album_ids[1]) is False
+
+class TestReviewed:
+    def test_reviewed_returns_albums_with_review_ids(self, db, svc):
+        rows = svc.list_reviewed(db)
+        # Shape contract holds regardless of fixture data volume.
+        for album, review_ids in rows:
+            assert hasattr(album, "id")
+            assert isinstance(review_ids, list) and review_ids
+            # every id is a published post for that album
+            count = db.execute(
+                text(
+                    "SELECT count(*) FROM post_albums pa JOIN posts p "
+                    "ON p.id = pa.post_id "
+                    "WHERE pa.album_id = :aid AND p.status = 'published'"
+                ),
+                {"aid": str(album.id)},
+            ).scalar_one()
+            assert count == len(review_ids)
