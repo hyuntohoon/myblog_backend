@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
+from datetime import datetime
 
 from app.core.config import settings
 
@@ -39,31 +41,64 @@ class SqsClient:
         return True
 
 
-# Connection status changes at most once per admin bootstrap, so cache it across
-# warm Lambda invocations rather than hitting Secrets Manager on every 연동-tab open.
+@dataclass
+class SpotifyConnectionStatus:
+    """Token *validity* for the 연동 tab (D30), not mere presence. ``needs_reauth`` is
+    set by the worker when a refresh hit invalid_grant (token revoked/expired);
+    ``last_successful_refresh_at`` is when the token last worked."""
+
+    connected: bool = False
+    needs_reauth: bool = False
+    last_successful_refresh_at: datetime | None = None
+
+
+def _parse_dt(raw) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+
+
+# Connection status changes only when the worker rotates/invalidates the token (~hourly
+# at most), so cache it across warm Lambda invocations rather than hitting Secrets
+# Manager on every 연동-tab open.
 _CONN_TTL_SEC = 300.0
-_conn_cache: dict = {"val": False, "ts": 0.0}
+_conn_cache: dict = {"val": None, "ts": 0.0}
 
 
-def is_spotify_connected() -> bool:
-    """Whether a Spotify refresh token is stored in Secrets Manager myblog/spotify.
-    Read for the 연동 tab status (TTL-cached); never returns the token itself."""
+def get_spotify_connection_status() -> SpotifyConnectionStatus:
+    """Read the 연동-tab status from Secrets Manager myblog/spotify (TTL-cached).
+
+    ``connected`` = a refresh token is stored; ``needs_reauth`` = the worker's last
+    refresh was rejected (invalid_grant → "재인증 필요"); ``last_successful_refresh_at`` =
+    when the token last worked. Never returns the token itself."""
     import time
 
     arn = settings.SPOTIFY_SECRETS_ARN
     if not arn:
-        return False
+        return SpotifyConnectionStatus()
     now = time.time()
-    if now - _conn_cache["ts"] < _CONN_TTL_SEC and _conn_cache["ts"] > 0:
+    if _conn_cache["val"] is not None and now - _conn_cache["ts"] < _CONN_TTL_SEC:
         return _conn_cache["val"]
     try:
         import boto3
 
         sm = boto3.client("secretsmanager", region_name=settings.AWS_DEFAULT_REGION)
         payload = json.loads(sm.get_secret_value(SecretId=arn)["SecretString"])
-        val = bool(payload.get("refresh_token") or payload.get("SPOTIFY_REFRESH_TOKEN"))
-        _conn_cache.update(val=val, ts=now)
-        return val
+        status = SpotifyConnectionStatus(
+            connected=bool(payload.get("refresh_token") or payload.get("SPOTIFY_REFRESH_TOKEN")),
+            needs_reauth=bool(payload.get("needs_reauth")),
+            last_successful_refresh_at=_parse_dt(payload.get("last_successful_refresh_at")),
+        )
+        _conn_cache.update(val=status, ts=now)
+        return status
     except Exception as e:  # pragma: no cover - IAM/network failure path
         logger.error("Failed to read Spotify connection status: %s", e)
-        return False
+        return SpotifyConnectionStatus()
+
+
+def is_spotify_connected() -> bool:
+    """Back-compat: whether a refresh token is stored (presence only)."""
+    return get_spotify_connection_status().connected
