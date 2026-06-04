@@ -19,7 +19,7 @@ from app.api.schemas import (
     ToListenReorderRequest,
     ToListenResponse,
 )
-from app.clients.sqs_client import is_spotify_connected
+from app.clients.sqs_client import get_spotify_connection_status
 from app.core.auth import require_cognito_token
 from app.db.session import get_db
 from app.di import get_library_service, get_sqs_client
@@ -134,8 +134,14 @@ def now_playing(
 
 @router.get("/spotify-connection", response_model=SpotifyConnectionResponse)
 def spotify_connection():
-    # Thin status for the 연동 tab (D27): is a refresh token bootstrapped?
-    return SpotifyConnectionResponse(connected=is_spotify_connected())
+    # Status for the 연동 tab: token validity, not mere presence (D30). needs_reauth is
+    # flipped by the worker on an invalid_grant; the front then shows "재인증 필요".
+    st = get_spotify_connection_status()
+    return SpotifyConnectionResponse(
+        connected=st.connected,
+        needs_reauth=st.needs_reauth,
+        last_successful_refresh_at=st.last_successful_refresh_at,
+    )
 
 
 # ── to-listen mutations (Cognito JWT) ───────────────────────────────────────────

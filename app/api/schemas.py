@@ -256,9 +256,14 @@ class NowPlayingResponse(BaseModel):
 
 
 class SpotifyConnectionResponse(BaseModel):
-    # Thin status for the /profile → 연동 tab: whether a refresh token is stored
-    # (the in-app OAuth flow is deferred per D27; token is bootstrapped out-of-band).
+    # Status for the /profile → 연동 tab. Reflects token *validity*, not mere presence
+    # (D30): connected = a refresh token is stored; needs_reauth = the worker's last
+    # refresh hit invalid_grant (token revoked/expired → "재인증 필요");
+    # last_successful_refresh_at = when the token last worked. (in-app OAuth still
+    # deferred per D27; token is bootstrapped out-of-band.)
     connected: bool = False
+    needs_reauth: bool = False
+    last_successful_refresh_at: Optional[datetime] = None
 
 
 class RefreshRecentResponse(BaseModel):

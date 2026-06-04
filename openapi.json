@@ -860,6 +860,23 @@
             "default": false,
             "title": "Connected",
             "type": "boolean"
+          },
+          "last_successful_refresh_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Successful Refresh At"
+          },
+          "needs_reauth": {
+            "default": false,
+            "title": "Needs Reauth",
+            "type": "boolean"
           }
         },
         "title": "SpotifyConnectionResponse",

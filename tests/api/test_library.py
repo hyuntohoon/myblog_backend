@@ -305,17 +305,47 @@ class TestNowPlaying:
 
 
 class TestSpotifyConnection:
+    @staticmethod
+    def _patch(status):
+        from app.clients.sqs_client import SpotifyConnectionStatus  # noqa: F401
+        return patch(
+            "app.api.routes.library.get_spotify_connection_status",
+            return_value=status,
+        )
+
     def test_connected(self, client, app):
-        with patch("app.api.routes.library.is_spotify_connected", return_value=True):
+        from app.clients.sqs_client import SpotifyConnectionStatus
+
+        ts = datetime(2026, 6, 4, 7, 21, tzinfo=timezone.utc)
+        with self._patch(SpotifyConnectionStatus(connected=True, last_successful_refresh_at=ts)):
             resp = client.get("/api/library/spotify-connection")
         assert resp.status_code == 200
-        assert resp.json()["connected"] is True
+        body = resp.json()
+        assert body["connected"] is True
+        assert body["needs_reauth"] is False
+        assert body["last_successful_refresh_at"] is not None
+
+    def test_needs_reauth(self, client, app):
+        # token present but the worker's last refresh hit invalid_grant → "재인증 필요"
+        from app.clients.sqs_client import SpotifyConnectionStatus
+
+        with self._patch(SpotifyConnectionStatus(connected=True, needs_reauth=True)):
+            resp = client.get("/api/library/spotify-connection")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["connected"] is True
+        assert body["needs_reauth"] is True
 
     def test_not_connected(self, client, app):
-        with patch("app.api.routes.library.is_spotify_connected", return_value=False):
+        from app.clients.sqs_client import SpotifyConnectionStatus
+
+        with self._patch(SpotifyConnectionStatus(connected=False)):
             resp = client.get("/api/library/spotify-connection")
         assert resp.status_code == 200
-        assert resp.json()["connected"] is False
+        body = resp.json()
+        assert body["connected"] is False
+        assert body["needs_reauth"] is False
+        assert body["last_successful_refresh_at"] is None
 
 
 class TestRefreshRecent:
