@@ -39,7 +39,9 @@ def _item(item_id="it-1", album_id="alb-1", position=0, status="candidate"):
     return it
 
 
-def _bucket(bucket_id="bk-1", name="꼭", position=0, is_done=False, items=()):
+def _bucket(
+    bucket_id="bk-1", name="꼭", position=0, is_done=False, items=(), children=()
+):
     b = MagicMock()
     b.id = bucket_id
     b.name = name
@@ -47,6 +49,10 @@ def _bucket(bucket_id="bk-1", name="꼭", position=0, is_done=False, items=()):
     b.color = None
     b.is_done = is_done
     b.items = list(items)
+    # list_buckets() attaches descendants on the transient `children_nodes`
+    # attribute; the route serializes it recursively. MagicMock would otherwise
+    # auto-vivify a truthy mock here, so set it explicitly.
+    b.children_nodes = list(children)
     return b
 
 
@@ -350,4 +356,114 @@ class TestReorder:
         )
 
         assert resp.status_code == 404
+        app.dependency_overrides.clear()
+
+
+class TestNestedTree:
+    def test_child_nests_under_parent_not_at_top_level(self, client, app):
+        # list_buckets() returns only roots; the child rides on the root's
+        # children_nodes. The serialized response must place the child under
+        # parent.children — never as a second top-level bucket.
+        child = _bucket(bucket_id="bk-child", name="child", items=[_item()])
+        root = _bucket(bucket_id="bk-root", name="root", children=[child])
+        svc = MagicMock()
+        svc.list_buckets.return_value = [root]
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.get("/api/buckets")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        # Exactly one top-level bucket (the root).
+        assert [b["id"] for b in data["buckets"]] == ["bk-root"]
+        top = data["buckets"][0]
+        assert [c["id"] for c in top["children"]] == ["bk-child"]
+        # The child's item is reachable through the nested children, and the
+        # already_reviewed batch covered tree items.
+        assert top["children"][0]["items"][0]["album"]["title"] == "Album"
+        app.dependency_overrides.clear()
+
+    def test_root_with_no_children_serializes_empty_list(self, client, app):
+        svc = MagicMock()
+        svc.list_buckets.return_value = [_bucket(items=[_item()])]
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.get("/api/buckets")
+
+        assert resp.status_code == 200
+        assert resp.json()["buckets"][0]["children"] == []
+        app.dependency_overrides.clear()
+
+
+class TestMoveBucket:
+    def test_move_reparent_success_returns_tree(self, client, app):
+        svc = MagicMock()
+        # move_bucket succeeds (return value unused by route); the route then
+        # re-reads the nested tree via list_buckets.
+        child = _bucket(bucket_id="bk-2", name="child")
+        svc.list_buckets.return_value = [_bucket(bucket_id="bk-1", children=[child])]
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.put(
+            "/api/buckets/bk-2/move", json={"parent_id": "bk-1", "position": 0}
+        )
+
+        assert resp.status_code == 200
+        # Route forwarded parent_id + position to the service.
+        kwargs = svc.move_bucket.call_args.kwargs
+        assert kwargs == {"parent_id": "bk-1", "position": 0}
+        # Returns the full nested tree.
+        data = resp.json()
+        assert [b["id"] for b in data["buckets"]] == ["bk-1"]
+        assert [c["id"] for c in data["buckets"][0]["children"]] == ["bk-2"]
+        app.dependency_overrides.clear()
+
+    def test_move_to_root_parent_null(self, client, app):
+        svc = MagicMock()
+        svc.list_buckets.return_value = [_bucket(bucket_id="bk-2")]
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.put(
+            "/api/buckets/bk-2/move", json={"parent_id": None, "position": 1}
+        )
+
+        assert resp.status_code == 200
+        kwargs = svc.move_bucket.call_args.kwargs
+        assert kwargs == {"parent_id": None, "position": 1}
+        app.dependency_overrides.clear()
+
+    def test_move_cycle_returns_400(self, client, app):
+        svc = MagicMock()
+        svc.move_bucket.side_effect = ValueError(
+            "cannot move a bucket under its own descendant"
+        )
+        _override(app, svc)
+
+        resp = client.put(
+            "/api/buckets/bk-1/move", json={"parent_id": "bk-2", "position": 0}
+        )
+
+        assert resp.status_code == 400
+        app.dependency_overrides.clear()
+
+    def test_move_missing_bucket_returns_404(self, client, app):
+        svc = MagicMock()
+        svc.move_bucket.side_effect = BucketNotFoundError("bk-x")
+        _override(app, svc)
+
+        resp = client.put(
+            "/api/buckets/bk-x/move", json={"parent_id": None, "position": 0}
+        )
+
+        assert resp.status_code == 404
+        app.dependency_overrides.clear()
+
+    def test_move_missing_position_returns_422(self, client, app):
+        _override(app, MagicMock())
+        resp = client.put("/api/buckets/bk-1/move", json={"parent_id": None})
+        assert resp.status_code == 422
         app.dependency_overrides.clear()

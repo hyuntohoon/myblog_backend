@@ -178,10 +178,27 @@ class BucketResponse(BaseModel):
     color: Optional[str] = None
     is_done: bool
     items: List[BucketItemResponse] = Field(default_factory=list)
+    # FEAT-member-dashboard Step 5: nested tree. A bucket's descendants are
+    # inlined here (recursive). The top-level BucketsResponse.buckets list holds
+    # only roots (parent_id IS NULL); every level is ordered (position, created_at).
+    # No parent_id field — the tree is explicit via this children nesting.
+    children: List["BucketResponse"] = Field(default_factory=list)
+
+
+# Resolve the forward reference in the recursive `children` annotation.
+BucketResponse.model_rebuild()
 
 
 class BucketsResponse(BaseModel):
     buckets: List[BucketResponse] = Field(default_factory=list)
+
+
+class MoveBucketRequest(BaseModel):
+    # FEAT-member-dashboard Step 5: reparent + reposition a bucket.
+    # parent_id null => move to root. position is the target slot among the new
+    # parent's children (siblings renumbered 0..n contiguous after the move).
+    parent_id: Optional[str] = None
+    position: int
 
 
 # ====== Member library (FEAT-member-dashboard Step 2, D18) ======

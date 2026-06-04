@@ -117,6 +117,48 @@ class TestDeletePost:
         app.dependency_overrides.clear()
 
 
+class TestHardDeleteBucketItemCascade:
+    """D22: a hard post delete must also remove review_bucket_items pointing at
+    the post (post_id FK is ON DELETE SET NULL, so without this they'd orphan).
+    Soft delete must NOT touch bucket items. Mock-level proof that the service
+    issues the bucket-item delete before delete_by_id, on the hard path only.
+    A real-engine cascade assertion lives in tests/integration/."""
+
+    def test_hard_delete_removes_matching_bucket_items(self):
+        from app.services.post_service import PostService
+        from myblog_shared_db.models import ReviewBucketItem
+
+        db = MagicMock()
+        post_repo = MagicMock()
+        post_repo.delete_by_id.return_value = True
+        svc = PostService(post_repo=post_repo, category_repo=MagicMock())
+
+        result = svc.delete(db, "uuid-1", hard=True)
+
+        assert result is True
+        # The bucket-item delete was queued, filtered on post_id, with
+        # synchronize_session=False, and the post delete still ran (single tx).
+        db.query.assert_called_once_with(ReviewBucketItem)
+        db.query.return_value.filter.return_value.delete.assert_called_once_with(
+            synchronize_session=False
+        )
+        post_repo.delete_by_id.assert_called_once_with(db, "uuid-1")
+
+    def test_soft_delete_does_not_touch_bucket_items(self):
+        from app.services.post_service import PostService
+
+        db = MagicMock()
+        post_repo = MagicMock()
+        post_repo.set_status.return_value = _make_post(status="archived")
+        svc = PostService(post_repo=post_repo, category_repo=MagicMock())
+
+        svc.delete(db, "uuid-1", hard=False)
+
+        # No bucket-item query on the soft path.
+        db.query.assert_not_called()
+        post_repo.set_status.assert_called_once_with(db, "uuid-1", "archived")
+
+
 class TestRestorePost:
     def test_restore_existing_archived_returns_200(self, client, app):
         mock_svc = MagicMock()

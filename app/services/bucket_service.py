@@ -86,13 +86,117 @@ class BucketService:
     # ── reads ─────────────────────────────────────────────────────────────────
 
     def list_buckets(self, db: Session) -> List[ReviewBucket]:
-        """All buckets (column order), each with items already position-ordered
-        by the relationship's order_by."""
-        return (
+        """Nested tree of buckets. Returns only ROOT buckets (parent_id IS NULL);
+        each node carries its descendants on a transient ``children_nodes`` list
+        (recursive), every sibling level ordered by (position, created_at). Items
+        stay populated per bucket via the relationship's order_by.
+
+        ``children_nodes`` is a non-column attribute attached for serialization —
+        it does not exist on the ORM model and is never persisted.
+        """
+        all_buckets = (
             db.query(ReviewBucket)
             .order_by(ReviewBucket.position, ReviewBucket.created_at)
             .all()
         )
+        # Group children by parent_id (None key = roots). The query order is
+        # already (position, created_at), so each group preserves sibling order.
+        children_by_parent: dict = {}
+        for b in all_buckets:
+            children_by_parent.setdefault(
+                str(b.parent_id) if b.parent_id is not None else None, []
+            ).append(b)
+
+        def _attach(node: ReviewBucket) -> ReviewBucket:
+            node.children_nodes = [
+                _attach(child)
+                for child in children_by_parent.get(str(node.id), [])
+            ]
+            return node
+
+        return [_attach(root) for root in children_by_parent.get(None, [])]
+
+    # ── tree movement ─────────────────────────────────────────────────────────
+
+    def _walk_ancestors(self, db: Session, bucket_id: str):
+        """Yield ancestor ids of ``bucket_id`` walking parent_id upward to root.
+
+        No ORM relationship exists for parent_id, so we query id→parent_id in a
+        loop. Bounded by ``_MAX_TREE_DEPTH`` so a corrupt cycle in the data can't
+        spin forever.
+        """
+        current = bucket_id
+        for _ in range(self._MAX_TREE_DEPTH):
+            row = (
+                db.query(ReviewBucket.parent_id)
+                .filter(ReviewBucket.id == current)
+                .first()
+            )
+            if row is None or row[0] is None:
+                return
+            parent = str(row[0])
+            yield parent
+            current = parent
+
+    _MAX_TREE_DEPTH = 1000
+
+    def move_bucket(
+        self,
+        db: Session,
+        bucket_id: str,
+        parent_id: Optional[str],
+        position: int,
+    ) -> ReviewBucket:
+        """Reparent ``bucket_id`` under ``parent_id`` (None => root) at ``position``.
+
+        Cycle prevention: 400 (ValueError) if parent_id == bucket_id, or if
+        bucket_id is an ancestor of parent_id (moving a node under its own
+        descendant). 404 (BucketNotFoundError) if bucket or parent is missing.
+        After reparenting, siblings sharing the new parent_id are renumbered so
+        the moved bucket lands at ``position`` and positions are contiguous 0..n.
+        """
+        bucket = self.get_bucket(db, bucket_id)
+        if bucket is None:
+            raise BucketNotFoundError(bucket_id)
+
+        if parent_id is not None:
+            parent = self.get_bucket(db, parent_id)
+            if parent is None:
+                raise BucketNotFoundError(parent_id)
+            if str(parent_id) == str(bucket_id):
+                raise ValueError("a bucket cannot be its own parent")
+            # Reject if bucket_id is an ancestor of parent_id: walking up from
+            # the new parent must not encounter the bucket we're moving.
+            if any(
+                anc == str(bucket_id)
+                for anc in self._walk_ancestors(db, parent_id)
+            ):
+                raise ValueError("cannot move a bucket under its own descendant")
+
+        new_parent = str(parent_id) if parent_id is not None else None
+        bucket.parent_id = parent_id
+
+        # Renumber the destination sibling group (same parent_id). Exclude the
+        # moved bucket from the ordered baseline, then splice it in at `position`.
+        siblings = (
+            db.query(ReviewBucket)
+            .filter(
+                ReviewBucket.parent_id.is_(None)
+                if new_parent is None
+                else ReviewBucket.parent_id == parent_id
+            )
+            .order_by(ReviewBucket.position, ReviewBucket.created_at)
+            .all()
+        )
+        others = [s for s in siblings if str(s.id) != str(bucket_id)]
+        idx = max(0, min(int(position), len(others)))
+        ordered = others[:idx] + [bucket] + others[idx:]
+        for pos, s in enumerate(ordered):
+            s.position = pos
+
+        db.commit()
+        db.refresh(bucket)
+        return bucket
 
     def reviewed_album_ids(self, db: Session, album_ids: Sequence) -> set:
         """Subset of the given album ids that already have a published review
