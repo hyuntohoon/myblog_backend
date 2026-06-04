@@ -104,6 +104,23 @@ class TestBucketCrud:
         ).all()
         assert remaining == []
 
+    def test_update_color_set_then_clear(self, db, svc):
+        # A color can be set, then reset to the default ink via an explicit None.
+        # The sentinel default lets the service tell "color omitted" (a rename keeps
+        # the color) apart from "color cleared". Regression: None was treated as
+        # "not provided", so the color was set-once and could never be reset.
+        b = svc.create_bucket(db, name="색")
+        svc.update_bucket(db, str(b.id), color="#c8332b")
+        assert svc.get_bucket(db, str(b.id)).color == "#c8332b"
+
+        # A rename with no color argument must preserve the existing color.
+        svc.update_bucket(db, str(b.id), name="색2")
+        assert svc.get_bucket(db, str(b.id)).color == "#c8332b"
+
+        # Explicit None clears it back to the default.
+        svc.update_bucket(db, str(b.id), color=None)
+        assert svc.get_bucket(db, str(b.id)).color is None
+
 
 class TestAddItem:
     def test_positions_stay_dense_and_ordered_by_score(self, db, svc, album_ids):
