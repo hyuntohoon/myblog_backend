@@ -17,6 +17,7 @@
 - **Posts CRUD** — 관리자만 생성·수정·삭제, 일반 사용자는 조회. 발행글 편집·아카이브·복원(restore) 지원
 - **Categories 관리** — 카테고리 생성·조회
 - **글 메타데이터** — 앨범·아티스트 연결, 평점(0~5, 0.5 단위), 커버 URL 저장
+- **Review buckets** — 평론 작성 전 단계 to-review 큐. 사용자 생성 칸반 칼럼 + 아이템 + 드래그앤드롭 reorder + 인라인 작성/발행 (FEAT-review-bucket-board, 2026-06-03)
 - **인증·권한** — Cognito JWT 검증을 통한 관리자 전용 엔드포인트 보호
 - **Publishing** — `POST /api/publish` 가 글 MDX 를 myblog_front 의 content repo 에 GitHub API 로 커밋 → GitHub Actions 가 Astro 빌드 후 S3 + CloudFront 갱신 (ARCH-11 으로 옛 myblog_publish 서비스에서 흡수)
 
@@ -36,6 +37,14 @@
 | `POST`  | `/api/categories`          | 카테고리 생성       | Cognito JWT |
 | `POST`  | `/api/publish`             | 글 발행 (MDX 커밋)  | Cognito JWT |
 | `POST`  | `/api/metrics/batch`       | 좋아요·댓글 카운트  | -           |
+| `GET`   | `/api/buckets`             | 평론 버킷 + 아이템 트리 조회 | -        |
+| `POST`  | `/api/buckets`             | 버킷 생성 (`{name, color?}`) | Cognito JWT |
+| `PATCH` | `/api/buckets/:bucket_id`  | 버킷 이름/색/position/`is_done` 갱신 | Cognito JWT |
+| `DELETE`| `/api/buckets/:bucket_id`  | 버킷 삭제 (아이템 cascade)  | Cognito JWT |
+| `POST`  | `/api/buckets/:bucket_id/items` | 앨범 담기 (`{album_id, note?}`, 자동 position) | Cognito JWT |
+| `PATCH` | `/api/buckets/:bucket_id/items/:item_id` | note/status/post_id 갱신 | Cognito JWT |
+| `DELETE`| `/api/buckets/:bucket_id/items/:item_id` | 아이템 제거 | Cognito JWT |
+| `PUT`   | `/api/buckets/reorder`     | 드래그 결과 일괄 반영 (`{buckets:[{id, item_ids:[...]}]}`) | Cognito JWT |
 
 쓰기·발행 엔드포인트는 API Gateway 의 Cognito authorizer 를 통과한 뒤 Lambda 로 들어옴. 조회 엔드포인트는 CloudFront 의 `x-origin-verify` edge guard 경유 (자세한 흐름: 워크스페이스 `CLAUDE.md` 의 "Auth — two entry points" 참조).
 
