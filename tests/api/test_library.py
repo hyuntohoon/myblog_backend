@@ -261,6 +261,26 @@ class TestNowPlaying:
         assert body["is_playing"] is True
         assert body["track"] == "Airbag"
         assert body["album_id"] == "alb-1"
+        # D28: the row carries progress/duration, but the response must not leak
+        # them (fine-grained activity + frozen progress bar).
+        assert "progress_ms" not in body
+        assert "duration_ms" not in body
+        app.dependency_overrides.clear()
+
+    def test_idle_with_snapshot_carries_updated_at(self, client, app):
+        # D28: idle response still carries updated_at so the UI shows
+        # "동기화 N분 전" rather than asserting liveness.
+        svc = MagicMock()
+        np = MagicMock()
+        np.is_playing = False
+        np.updated_at = datetime(2026, 6, 4, 10, 0, tzinfo=timezone.utc)
+        svc.get_now_playing.return_value = np
+        _override(app, svc)
+        resp = client.get("/api/library/now-playing")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["is_playing"] is False
+        assert body["updated_at"].startswith("2026-06-04T10:00")
         app.dependency_overrides.clear()
 
     def test_nothing_playing(self, client, app):
@@ -269,7 +289,10 @@ class TestNowPlaying:
         _override(app, svc)
         resp = client.get("/api/library/now-playing")
         assert resp.status_code == 200
-        assert resp.json()["is_playing"] is False
+        body = resp.json()
+        assert body["is_playing"] is False
+        # No snapshot exists yet → no timestamp to report.
+        assert body["updated_at"] is None
         app.dependency_overrides.clear()
 
 

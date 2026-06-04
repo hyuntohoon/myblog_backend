@@ -244,8 +244,10 @@ class NowPlayingResponse(BaseModel):
     artist: Optional[str] = None
     album: Optional[str] = None
     album_id: Optional[str] = None
-    progress_ms: Optional[int] = None
-    duration_ms: Optional[int] = None
+    # progress_ms/duration_ms intentionally omitted (D28): now-playing is an
+    # intentionally-public single-admin vanity read, so we don't expose
+    # fine-grained real-time position; a <=1h-stale snapshot also can't advance
+    # a progress bar, so it'd only ever render a misleading frozen one.
     updated_at: Optional[datetime] = None
 
 

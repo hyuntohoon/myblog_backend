@@ -486,32 +486,10 @@
             ],
             "title": "Artist"
           },
-          "duration_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Duration Ms"
-          },
           "is_playing": {
             "default": false,
             "title": "Is Playing",
             "type": "boolean"
-          },
-          "progress_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Progress Ms"
           },
           "track": {
             "anyOf": [

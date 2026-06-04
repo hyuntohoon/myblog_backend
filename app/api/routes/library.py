@@ -115,15 +115,18 @@ def now_playing(
 ):
     np = svc.get_now_playing(db)
     if np is None or not np.is_playing:
-        return NowPlayingResponse(is_playing=False)
+        # Idle still carries updated_at so the UI can show "동기화 N분 전"
+        # instead of asserting liveness (D28). None when no snapshot exists yet.
+        return NowPlayingResponse(
+            is_playing=False,
+            updated_at=np.updated_at if np else None,
+        )
     return NowPlayingResponse(
         is_playing=True,
         track=np.track_name,
         artist=np.artist_name,
         album=np.album_name,
         album_id=str(np.album_id) if np.album_id else None,
-        progress_ms=np.progress_ms,
-        duration_ms=np.duration_ms,
         updated_at=np.updated_at,
     )
 
