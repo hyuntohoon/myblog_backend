@@ -4,7 +4,11 @@ from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from app.di import get_library_service
-from app.services.library_service import AlbumNotFoundError
+from app.services.library_service import (
+    AlbumNotFoundError,
+    DuplicateItemError,
+    ItemNotFoundError,
+)
 
 
 def _album(album_id="alb-1", title="Album", artists=("Artist A",)):
@@ -20,127 +24,113 @@ def _album(album_id="alb-1", title="Album", artists=("Artist A",)):
     return a
 
 
-def _library_item(album_id="alb-1", status="wishlist"):
+def _to_listen_item(item_id="it-1", album_id="alb-1", position=0, note=None):
     it = MagicMock()
+    it.id = item_id
     it.album_id = album_id
-    it.status = status
+    it.position = position
+    it.note = note
     it.added_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
-    it.updated_at = datetime(2026, 6, 2, tzinfo=timezone.utc)
     it.album = _album(album_id=album_id)
     return it
 
 
 def _override(app, svc):
-    # Lazy get_db import: a module-top import pulls app.core.config at collection
-    # time, caching an empty settings singleton (cf. test_buckets._override).
     from app.db.session import get_db
 
     app.dependency_overrides[get_library_service] = lambda: svc
     app.dependency_overrides[get_db] = lambda: MagicMock()
 
 
-class TestListLibrary:
+def _prod_settings():
+    s = MagicMock()
+    s.ENV = "prod"
+    s.COGNITO_USER_POOL_ID = "ap-northeast-2_TestPool"
+    s.COGNITO_REGION = "ap-northeast-2"
+    return s
+
+
+class TestListToListen:
     def test_list_returns_items(self, client, app):
         svc = MagicMock()
-        svc.list_items.return_value = [_library_item(status="listening")]
+        svc.list_to_listen.return_value = [_to_listen_item(note="must hear")]
         _override(app, svc)
 
-        resp = client.get("/api/library")
+        resp = client.get("/api/library/to-listen")
 
         assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["items"]) == 1
-        item = data["items"][0]
-        assert item["album_id"] == "alb-1"
-        assert item["status"] == "listening"
-        assert item["album"]["title"] == "Album"
-        app.dependency_overrides.clear()
-
-    def test_list_empty(self, client, app):
-        svc = MagicMock()
-        svc.list_items.return_value = []
-        _override(app, svc)
-
-        resp = client.get("/api/library")
-
-        assert resp.status_code == 200
-        assert resp.json()["items"] == []
+        items = resp.json()["items"]
+        assert len(items) == 1
+        assert items[0]["album_id"] == "alb-1"
+        assert items[0]["note"] == "must hear"
+        assert items[0]["album"]["title"] == "Album"
         app.dependency_overrides.clear()
 
 
-class TestSetStatus:
-    def test_set_returns_200_created(self, client, app):
+class TestAddToListen:
+    def test_add_returns_201(self, client, app):
         svc = MagicMock()
-        svc.set_status.return_value = (_library_item(status="listened"), True)
+        svc.add_to_listen.return_value = _to_listen_item()
         _override(app, svc)
 
-        resp = client.put("/api/library/alb-1", json={"status": "listened"})
+        resp = client.post("/api/library/to-listen", json={"album_id": "alb-1"})
 
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["album_id"] == "alb-1"
-        assert body["status"] == "listened"
-        assert svc.set_status.call_args.kwargs == {"status": "listened"}
+        assert resp.status_code == 201
+        assert resp.json()["album_id"] == "alb-1"
+        assert svc.add_to_listen.call_args.kwargs == {"album_id": "alb-1", "note": None}
         app.dependency_overrides.clear()
 
-    def test_set_returns_200_updated(self, client, app):
+    def test_add_missing_album_returns_404(self, client, app):
         svc = MagicMock()
-        svc.set_status.return_value = (_library_item(status="reviewed"), False)
+        svc.add_to_listen.side_effect = AlbumNotFoundError("alb-x")
         _override(app, svc)
 
-        resp = client.put("/api/library/alb-1", json={"status": "reviewed"})
-
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "reviewed"
-        app.dependency_overrides.clear()
-
-    def test_set_missing_album_returns_404(self, client, app):
-        svc = MagicMock()
-        svc.set_status.side_effect = AlbumNotFoundError("alb-x")
-        _override(app, svc)
-
-        resp = client.put("/api/library/alb-x", json={"status": "wishlist"})
+        resp = client.post("/api/library/to-listen", json={"album_id": "alb-x"})
 
         assert resp.status_code == 404
         app.dependency_overrides.clear()
 
-    def test_set_bad_status_returns_422(self, client, app):
+    def test_add_duplicate_returns_409(self, client, app):
+        svc = MagicMock()
+        svc.add_to_listen.side_effect = DuplicateItemError("alb-1")
+        _override(app, svc)
+
+        resp = client.post("/api/library/to-listen", json={"album_id": "alb-1"})
+
+        assert resp.status_code == 409
+        app.dependency_overrides.clear()
+
+    def test_missing_album_id_returns_422(self, client, app):
         _override(app, MagicMock())
-        resp = client.put("/api/library/alb-1", json={"status": "bogus"})
+        resp = client.post("/api/library/to-listen", json={})
         assert resp.status_code == 422
         app.dependency_overrides.clear()
 
-    def test_set_requires_jwt_in_prod(self, client):
+    def test_add_requires_jwt_in_prod(self, client):
         import app.core.auth as auth_module
 
-        fake_settings = MagicMock()
-        fake_settings.ENV = "prod"
-        fake_settings.COGNITO_USER_POOL_ID = "ap-northeast-2_TestPool"
-        fake_settings.COGNITO_REGION = "ap-northeast-2"
-
-        with patch.object(auth_module, "settings", fake_settings):
-            resp = client.put("/api/library/alb-1", json={"status": "wishlist"})
-
+        with patch.object(auth_module, "settings", _prod_settings()):
+            resp = client.post("/api/library/to-listen", json={"album_id": "alb-1"})
         assert resp.status_code == 401
 
 
-class TestDeleteItem:
+class TestDeleteToListen:
     def test_delete_returns_204(self, client, app):
         svc = MagicMock()
-        svc.delete_item.return_value = True
+        svc.delete_to_listen.return_value = True
         _override(app, svc)
 
-        resp = client.delete("/api/library/alb-1")
+        resp = client.delete("/api/library/to-listen/it-1")
 
         assert resp.status_code == 204
         app.dependency_overrides.clear()
 
     def test_delete_missing_returns_404(self, client, app):
         svc = MagicMock()
-        svc.delete_item.return_value = False
+        svc.delete_to_listen.return_value = False
         _override(app, svc)
 
-        resp = client.delete("/api/library/no-such")
+        resp = client.delete("/api/library/to-listen/no-such")
 
         assert resp.status_code == 404
         app.dependency_overrides.clear()
@@ -148,12 +138,72 @@ class TestDeleteItem:
     def test_delete_requires_jwt_in_prod(self, client):
         import app.core.auth as auth_module
 
-        fake_settings = MagicMock()
-        fake_settings.ENV = "prod"
-        fake_settings.COGNITO_USER_POOL_ID = "ap-northeast-2_TestPool"
-        fake_settings.COGNITO_REGION = "ap-northeast-2"
-
-        with patch.object(auth_module, "settings", fake_settings):
-            resp = client.delete("/api/library/alb-1")
-
+        with patch.object(auth_module, "settings", _prod_settings()):
+            resp = client.delete("/api/library/to-listen/it-1")
         assert resp.status_code == 401
+
+
+class TestReorderToListen:
+    def test_reorder_returns_204(self, client, app):
+        svc = MagicMock()
+        _override(app, svc)
+
+        resp = client.put(
+            "/api/library/to-listen/reorder",
+            json={"item_ids": ["it-2", "it-1"]},
+        )
+
+        assert resp.status_code == 204
+        assert svc.reorder_to_listen.call_args.args[1] == ["it-2", "it-1"]
+        app.dependency_overrides.clear()
+
+    def test_reorder_unknown_item_returns_404(self, client, app):
+        svc = MagicMock()
+        svc.reorder_to_listen.side_effect = ItemNotFoundError("it-x")
+        _override(app, svc)
+
+        resp = client.put(
+            "/api/library/to-listen/reorder", json={"item_ids": ["it-x"]}
+        )
+
+        assert resp.status_code == 404
+        app.dependency_overrides.clear()
+
+    def test_reorder_requires_jwt_in_prod(self, client):
+        import app.core.auth as auth_module
+
+        with patch.object(auth_module, "settings", _prod_settings()):
+            resp = client.put(
+                "/api/library/to-listen/reorder", json={"item_ids": []}
+            )
+        assert resp.status_code == 401
+
+
+class TestReviewed:
+    def test_reviewed_groups_by_album(self, client, app):
+        svc = MagicMock()
+        svc.list_reviewed.return_value = [
+            (_album(album_id="alb-1"), ["post-1", "post-2"])
+        ]
+        _override(app, svc)
+
+        resp = client.get("/api/library/reviewed?group_by=album")
+
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) == 1
+        assert items[0]["album_id"] == "alb-1"
+        assert items[0]["review_ids"] == ["post-1", "post-2"]
+        assert items[0]["album"]["title"] == "Album"
+        app.dependency_overrides.clear()
+
+    def test_reviewed_empty(self, client, app):
+        svc = MagicMock()
+        svc.list_reviewed.return_value = []
+        _override(app, svc)
+
+        resp = client.get("/api/library/reviewed")
+
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+        app.dependency_overrides.clear()

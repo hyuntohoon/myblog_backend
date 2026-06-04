@@ -1,75 +1,148 @@
 # app/services/library_service.py
 from __future__ import annotations
 
-from typing import List, Tuple
+from datetime import date
+from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from myblog_shared_db.models import Album, LibraryItem
+from myblog_shared_db.models import (
+    Album,
+    AlbumToListenItem,
+    Post,
+    post_albums_table as post_albums,
+)
 
 
 class AlbumNotFoundError(Exception):
     """Raised when an album id does not exist. Route maps to 404."""
 
 
-class LibraryService:
-    """Single-user personal library: one row per album with an exclusive status
-    (listening / listened / reviewed / wishlist).
+class ItemNotFoundError(Exception):
+    """Raised when a to-listen item id does not exist. Route maps to 404."""
 
-    Single user → no user_id / ownership checks. Transaction boundary lives in
-    the service (commit once per mutation), mirroring BucketService. The
-    UNIQUE(album_id) constraint guarantees at most one status per album, so
-    set_status is an upsert keyed on album_id.
+
+class DuplicateItemError(Exception):
+    """Raised when an album is already in the to-listen queue. Route maps to 409."""
+
+
+class LibraryService:
+    """Member-dashboard Library tab (FEAT-member-dashboard Step 2, D18).
+
+    Two of the three Library sources live here:
+      - 들을 것 (to-listen): a manual, position-ordered queue (album_to_listen_items).
+      - 평론한 앨범 (reviewed): a read-only view derived from published posts
+        (post_albums ⋈ posts where status='published'), grouped by album.
+    "최근 들은 앨범" (Spotify cache) is Step 3, not here.
+
+    Single user → no user_id / ownership checks. Commit per mutation (mirrors
+    BucketService).
     """
 
-    # ── reads ─────────────────────────────────────────────────────────────────
+    # ── to-listen: reads ────────────────────────────────────────────────────────
 
-    def list_items(self, db: Session) -> List[LibraryItem]:
-        """Every library row, most-recently-changed first."""
+    def list_to_listen(self, db: Session) -> List[AlbumToListenItem]:
         return (
-            db.query(LibraryItem)
-            .order_by(LibraryItem.updated_at.desc(), LibraryItem.added_at.desc())
+            db.query(AlbumToListenItem)
+            .order_by(AlbumToListenItem.position, AlbumToListenItem.added_at)
             .all()
         )
 
-    # ── mutations ───────────────────────────────────────────────────────────────
+    # ── to-listen: mutations ──────────────────────────────────────────────────────
 
-    def set_status(
-        self, db: Session, album_id: str, *, status: str
-    ) -> Tuple[LibraryItem, bool]:
-        """Upsert the library status for an album. Returns (item, created).
-
-        Creating requires the album to exist (FK); a non-existent album raises
-        AlbumNotFoundError (404) rather than surfacing an opaque IntegrityError.
-        """
+    def add_to_listen(
+        self, db: Session, *, album_id: str, note: Optional[str] = None
+    ) -> AlbumToListenItem:
+        """Append an album to the end of the queue. Album must exist; an album
+        already queued raises DuplicateItemError (UNIQUE album_id)."""
         album = db.query(Album).filter(Album.id == album_id).first()
         if album is None:
             raise AlbumNotFoundError(album_id)
 
-        item = (
-            db.query(LibraryItem).filter(LibraryItem.album_id == album_id).first()
+        exists = (
+            db.query(AlbumToListenItem.id)
+            .filter(AlbumToListenItem.album_id == album_id)
+            .first()
         )
-        created = item is None
-        if item is None:
-            item = LibraryItem(album_id=album_id, status=status)
-            db.add(item)
-        else:
-            item.status = status
-            # No onupdate on the column (matches ReviewBucketItem); bump
-            # explicitly so list ordering reflects the latest change.
-            item.updated_at = func.now()
+        if exists is not None:
+            raise DuplicateItemError(album_id)
+
+        next_pos = db.execute(
+            select(func.coalesce(func.max(AlbumToListenItem.position), -1))
+        ).scalar_one()
+        item = AlbumToListenItem(
+            album_id=album_id, note=note, position=int(next_pos) + 1
+        )
+        db.add(item)
         db.commit()
         db.refresh(item)
-        return item, created
+        return item
 
-    def delete_item(self, db: Session, album_id: str) -> bool:
-        """Remove an album from the library. Returns False if it wasn't there."""
+    def delete_to_listen(self, db: Session, item_id: str) -> bool:
         item = (
-            db.query(LibraryItem).filter(LibraryItem.album_id == album_id).first()
+            db.query(AlbumToListenItem)
+            .filter(AlbumToListenItem.id == item_id)
+            .first()
         )
         if item is None:
             return False
         db.delete(item)
         db.commit()
         return True
+
+    def reorder_to_listen(self, db: Session, item_ids: List[str]) -> None:
+        """Rewrite queue positions 0..n from the given top→bottom order. Same
+        idempotent mechanism as bucket reorder; an unknown id raises
+        ItemNotFoundError."""
+        items_by_id = {
+            str(it.id): it
+            for it in db.query(AlbumToListenItem)
+            .filter(AlbumToListenItem.id.in_(item_ids))
+            .all()
+        }
+        unknown = [iid for iid in item_ids if str(iid) not in items_by_id]
+        if unknown:
+            raise ItemNotFoundError(unknown[0])
+
+        for pos, item_id in enumerate(item_ids):
+            items_by_id[str(item_id)].position = pos
+        db.commit()
+
+    # ── reviewed: derived view ────────────────────────────────────────────────────
+
+    def list_reviewed(self, db: Session) -> List[Tuple[Album, List[str]]]:
+        """One entry per album that has ≥1 published review, with the album's
+        published post ids. Albums ordered by most-recent review first.
+
+        Derived from post_albums ⋈ posts(status='published') — no table. The
+        album↔review M:N is preserved (review_ids is a list).
+        """
+        rows = db.execute(
+            select(post_albums.c.album_id, Post.id, Post.posted_date)
+            .join(Post, Post.id == post_albums.c.post_id)
+            .where(Post.status == "published")
+            .order_by(Post.posted_date.desc())
+        ).all()
+
+        review_ids: Dict[str, List[str]] = {}
+        latest: Dict[str, date] = {}
+        for album_id, post_id, posted_date in rows:
+            aid = str(album_id)
+            review_ids.setdefault(aid, []).append(str(post_id))
+            if aid not in latest:
+                latest[aid] = posted_date  # first seen = newest (rows are desc)
+
+        if not review_ids:
+            return []
+
+        albums = {
+            str(a.id): a
+            for a in db.query(Album).filter(Album.id.in_(list(review_ids))).all()
+        }
+        ordered = sorted(
+            (aid for aid in review_ids if aid in albums),
+            key=lambda aid: latest[aid],
+            reverse=True,
+        )
+        return [(albums[aid], review_ids[aid]) for aid in ordered]

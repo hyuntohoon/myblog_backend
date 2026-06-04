@@ -6,15 +6,23 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
+    AddToListenRequest,
     AlbumBrief,
-    LibraryItemResponse,
-    LibraryResponse,
-    SetLibraryStatusRequest,
+    ReviewedAlbumResponse,
+    ReviewedResponse,
+    ToListenItemResponse,
+    ToListenReorderRequest,
+    ToListenResponse,
 )
 from app.core.auth import require_cognito_token
 from app.db.session import get_db
 from app.di import get_library_service
-from app.services.library_service import AlbumNotFoundError, LibraryService
+from app.services.library_service import (
+    AlbumNotFoundError,
+    DuplicateItemError,
+    ItemNotFoundError,
+    LibraryService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,52 +40,97 @@ def _album_brief(album) -> AlbumBrief:
     )
 
 
-def _item_response(item) -> LibraryItemResponse:
-    return LibraryItemResponse(
+def _to_listen_response(item) -> ToListenItemResponse:
+    return ToListenItemResponse(
+        id=str(item.id),
         album_id=str(item.album_id),
-        status=item.status,
+        position=item.position,
+        note=item.note,
         added_at=item.added_at,
-        updated_at=item.updated_at,
         album=_album_brief(item.album),
     )
 
 
 # ── reads (edge_guard only — no JWT; covered by GET /api/{proxy+}) ──────────────
 
-@router.get("", response_model=LibraryResponse)
-def list_library(
+@router.get("/to-listen", response_model=ToListenResponse)
+def list_to_listen(
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
 ):
-    items = svc.list_items(db)
-    return LibraryResponse(items=[_item_response(it) for it in items])
+    items = svc.list_to_listen(db)
+    return ToListenResponse(items=[_to_listen_response(it) for it in items])
 
 
-# ── mutations (Cognito JWT) ─────────────────────────────────────────────────────
+@router.get("/reviewed", response_model=ReviewedResponse)
+def list_reviewed(
+    group_by: str = "album",
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    # group_by is fixed to "album" for now (D20); accepted as a query param so the
+    # contract is forward-compatible if a by-review grouping is ever added.
+    rows = svc.list_reviewed(db)
+    return ReviewedResponse(
+        items=[
+            ReviewedAlbumResponse(
+                album_id=str(album.id),
+                review_ids=review_ids,
+                album=_album_brief(album),
+            )
+            for album, review_ids in rows
+        ]
+    )
 
-@router.put("/{album_id}", response_model=LibraryItemResponse)
-def set_library_status(
-    album_id: str,
-    req: SetLibraryStatusRequest,
+
+# ── to-listen mutations (Cognito JWT) ───────────────────────────────────────────
+# /to-listen/reorder is declared before /to-listen/{item_id} so the literal path
+# is unambiguous.
+
+@router.put("/to-listen/reorder", status_code=204)
+def reorder_to_listen(
+    req: ToListenReorderRequest,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
-    """Upsert the library status for an album (set or change)."""
     try:
-        item, _created = svc.set_status(db, album_id, status=req.status)
+        svc.reorder_to_listen(db, req.item_ids)
+    except ItemNotFoundError:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return Response(status_code=204)
+
+
+@router.post(
+    "/to-listen",
+    response_model=ToListenItemResponse,
+    status_code=201,
+    responses={409: {"description": "Album already in the to-listen queue"}},
+)
+def add_to_listen(
+    req: AddToListenRequest,
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+    _claims: Dict = Depends(require_cognito_token),
+):
+    try:
+        item = svc.add_to_listen(db, album_id=req.album_id, note=req.note)
     except AlbumNotFoundError:
         raise HTTPException(status_code=404, detail="Album not found")
-    return _item_response(item)
+    except DuplicateItemError:
+        raise HTTPException(
+            status_code=409, detail="Album already in the to-listen queue"
+        )
+    return _to_listen_response(item)
 
 
-@router.delete("/{album_id}", status_code=204)
-def delete_library_item(
-    album_id: str,
+@router.delete("/to-listen/{item_id}", status_code=204)
+def delete_to_listen(
+    item_id: str,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
-    if not svc.delete_item(db, album_id):
-        raise HTTPException(status_code=404, detail="Library item not found")
+    if not svc.delete_to_listen(db, item_id):
+        raise HTTPException(status_code=404, detail="Item not found")
     return Response(status_code=204)

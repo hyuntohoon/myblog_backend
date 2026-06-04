@@ -40,6 +40,31 @@
         "title": "AddCategoryRequest",
         "type": "object"
       },
+      "AddToListenRequest": {
+        "properties": {
+          "album_id": {
+            "minLength": 1,
+            "title": "Album Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "album_id"
+        ],
+        "title": "AddToListenRequest",
+        "type": "object"
+      },
       "AlbumBrief": {
         "properties": {
           "artist_names": {
@@ -394,53 +419,6 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
-      "LibraryItemResponse": {
-        "properties": {
-          "added_at": {
-            "format": "date-time",
-            "title": "Added At",
-            "type": "string"
-          },
-          "album": {
-            "$ref": "#/components/schemas/AlbumBrief"
-          },
-          "album_id": {
-            "title": "Album Id",
-            "type": "string"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "updated_at": {
-            "format": "date-time",
-            "title": "Updated At",
-            "type": "string"
-          }
-        },
-        "required": [
-          "album_id",
-          "status",
-          "added_at",
-          "updated_at",
-          "album"
-        ],
-        "title": "LibraryItemResponse",
-        "type": "object"
-      },
-      "LibraryResponse": {
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/LibraryItemResponse"
-            },
-            "title": "Items",
-            "type": "array"
-          }
-        },
-        "title": "LibraryResponse",
-        "type": "object"
-      },
       "MetricsBatchRequest": {
         "properties": {
           "slugs": {
@@ -711,23 +689,111 @@
         "title": "ReorderRequest",
         "type": "object"
       },
-      "SetLibraryStatusRequest": {
+      "ReviewedAlbumResponse": {
         "properties": {
-          "status": {
-            "enum": [
-              "listening",
-              "listened",
-              "reviewed",
-              "wishlist"
-            ],
-            "title": "Status",
+          "album": {
+            "$ref": "#/components/schemas/AlbumBrief"
+          },
+          "album_id": {
+            "title": "Album Id",
             "type": "string"
+          },
+          "review_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Review Ids",
+            "type": "array"
           }
         },
         "required": [
-          "status"
+          "album_id",
+          "album"
         ],
-        "title": "SetLibraryStatusRequest",
+        "title": "ReviewedAlbumResponse",
+        "type": "object"
+      },
+      "ReviewedResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewedAlbumResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "title": "ReviewedResponse",
+        "type": "object"
+      },
+      "ToListenItemResponse": {
+        "properties": {
+          "added_at": {
+            "format": "date-time",
+            "title": "Added At",
+            "type": "string"
+          },
+          "album": {
+            "$ref": "#/components/schemas/AlbumBrief"
+          },
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "album_id",
+          "position",
+          "added_at",
+          "album"
+        ],
+        "title": "ToListenItemResponse",
+        "type": "object"
+      },
+      "ToListenReorderRequest": {
+        "properties": {
+          "item_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Item Ids",
+            "type": "array"
+          }
+        },
+        "title": "ToListenReorderRequest",
+        "type": "object"
+      },
+      "ToListenResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ToListenItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "title": "ToListenResponse",
         "type": "object"
       },
       "UpdateBucketItemRequest": {
@@ -1605,37 +1671,166 @@
         "summary": "Ping"
       }
     },
-    "/api/library": {
+    "/api/library/reviewed": {
       "get": {
-        "operationId": "list_library_api_library_get",
+        "operationId": "list_reviewed_api_library_reviewed_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "album",
+              "title": "Group By",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LibraryResponse"
+                  "$ref": "#/components/schemas/ReviewedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Reviewed",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/to-listen": {
+      "get": {
+        "operationId": "list_to_listen_api_library_to_listen_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToListenResponse"
                 }
               }
             },
             "description": "Successful Response"
           }
         },
-        "summary": "List Library",
+        "summary": "List To Listen",
+        "tags": [
+          "library"
+        ]
+      },
+      "post": {
+        "operationId": "add_to_listen_api_library_to_listen_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddToListenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToListenItemResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Album already in the to-listen queue"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Add To Listen",
         "tags": [
           "library"
         ]
       }
     },
-    "/api/library/{album_id}": {
+    "/api/library/to-listen/reorder": {
+      "put": {
+        "operationId": "reorder_to_listen_api_library_to_listen_reorder_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToListenReorderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reorder To Listen",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/to-listen/{item_id}": {
       "delete": {
-        "operationId": "delete_library_item_api_library__album_id__delete",
+        "operationId": "delete_to_listen_api_library_to_listen__item_id__delete",
         "parameters": [
           {
             "in": "path",
-            "name": "album_id",
+            "name": "item_id",
             "required": true,
             "schema": {
-              "title": "Album Id",
+              "title": "Item Id",
               "type": "string"
             }
           }
@@ -1660,63 +1855,7 @@
             "HTTPBearer": []
           }
         ],
-        "summary": "Delete Library Item",
-        "tags": [
-          "library"
-        ]
-      },
-      "put": {
-        "description": "Upsert the library status for an album (set or change).",
-        "operationId": "set_library_status_api_library__album_id__put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "album_id",
-            "required": true,
-            "schema": {
-              "title": "Album Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetLibraryStatusRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LibraryItemResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Set Library Status",
+        "summary": "Delete To Listen",
         "tags": [
           "library"
         ]
