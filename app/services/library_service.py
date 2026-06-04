@@ -163,6 +163,11 @@ class LibraryService:
         )
         return [(r.album, r.last_played_at) for r in rows if r.album is not None]
 
+    def last_recent_synced_at(self, db: Session) -> Optional[datetime]:
+        """When the worker last wrote the recently-listened cache (max synced_at),
+        or None when empty. The UI polls this after a manual refresh (D31)."""
+        return db.query(func.max(SpotifyRecentAlbum.synced_at)).scalar()
+
     def get_now_playing(self, db: Session) -> Optional[SpotifyNowPlaying]:
         """The single-row now-playing cache (id=1), or None if never synced."""
         return (

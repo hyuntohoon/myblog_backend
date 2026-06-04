@@ -217,25 +217,33 @@ class TestRecentlyListened:
         svc.list_recently_listened.return_value = [
             (_album(album_id="alb-1"), datetime(2026, 6, 4, 10, 0, tzinfo=timezone.utc))
         ]
+        svc.last_recent_synced_at.return_value = datetime(2026, 6, 4, 10, 5, tzinfo=timezone.utc)
         _override(app, svc)
 
         resp = client.get("/api/library/recently-listened")
 
         assert resp.status_code == 200
-        items = resp.json()["items"]
+        body = resp.json()
+        items = body["items"]
         assert len(items) == 1
         assert items[0]["album_id"] == "alb-1"
         assert items[0]["last_played_at"].startswith("2026-06-04T10:00")
         assert items[0]["album"]["title"] == "Album"
+        # D31: response carries last_synced_at for the UI poll.
+        assert body["last_synced_at"].startswith("2026-06-04T10:05")
         app.dependency_overrides.clear()
 
     def test_empty(self, client, app):
         svc = MagicMock()
         svc.list_recently_listened.return_value = []
+        svc.last_recent_synced_at.return_value = None
         _override(app, svc)
         resp = client.get("/api/library/recently-listened")
         assert resp.status_code == 200
-        assert resp.json()["items"] == []
+        body = resp.json()
+        assert body["items"] == []
+        # D31: empty cache → no sync timestamp to report.
+        assert body["last_synced_at"] is None
         app.dependency_overrides.clear()
 
 

@@ -236,6 +236,10 @@ class RecentlyListenedItem(BaseModel):
 
 class RecentlyListenedResponse(BaseModel):
     items: List[RecentlyListenedItem] = Field(default_factory=list)
+    # When the worker last wrote this cache (max synced_at), or None when empty.
+    # The /profile UI polls this after a manual refresh until it advances (D31),
+    # instead of guessing with a fixed delay.
+    last_synced_at: Optional[datetime] = None
 
 
 class NowPlayingResponse(BaseModel):
