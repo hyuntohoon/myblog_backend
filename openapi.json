@@ -451,6 +451,95 @@
         "title": "MetricsBatchResponse",
         "type": "object"
       },
+      "NowPlayingResponse": {
+        "properties": {
+          "album": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album"
+          },
+          "album_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
+          },
+          "artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "is_playing": {
+            "default": false,
+            "title": "Is Playing",
+            "type": "boolean"
+          },
+          "progress_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progress Ms"
+          },
+          "track": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "title": "NowPlayingResponse",
+        "type": "object"
+      },
       "PostDetailResponse": {
         "properties": {
           "album_ids": {
@@ -656,6 +745,55 @@
         "title": "PostMetrics",
         "type": "object"
       },
+      "RecentlyListenedItem": {
+        "properties": {
+          "album": {
+            "$ref": "#/components/schemas/AlbumBrief"
+          },
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "last_played_at": {
+            "format": "date-time",
+            "title": "Last Played At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "album_id",
+          "last_played_at",
+          "album"
+        ],
+        "title": "RecentlyListenedItem",
+        "type": "object"
+      },
+      "RecentlyListenedResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RecentlyListenedItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "title": "RecentlyListenedResponse",
+        "type": "object"
+      },
+      "RefreshRecentResponse": {
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "RefreshRecentResponse",
+        "type": "object"
+      },
       "ReorderBucket": {
         "properties": {
           "id": {
@@ -724,6 +862,17 @@
           }
         },
         "title": "ReviewedResponse",
+        "type": "object"
+      },
+      "SpotifyConnectionResponse": {
+        "properties": {
+          "connected": {
+            "default": false,
+            "title": "Connected",
+            "type": "boolean"
+          }
+        },
+        "title": "SpotifyConnectionResponse",
         "type": "object"
       },
       "ToListenItemResponse": {
@@ -1671,6 +1820,74 @@
         "summary": "Ping"
       }
     },
+    "/api/library/now-playing": {
+      "get": {
+        "operationId": "now_playing_api_library_now_playing_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NowPlayingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Now Playing",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/recently-listened": {
+      "get": {
+        "operationId": "list_recently_listened_api_library_recently_listened_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecentlyListenedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Recently Listened",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/refresh-recent": {
+      "post": {
+        "operationId": "refresh_recent_api_library_refresh_recent_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefreshRecentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Refresh Recent",
+        "tags": [
+          "library"
+        ]
+      }
+    },
     "/api/library/reviewed": {
       "get": {
         "operationId": "list_reviewed_api_library_reviewed_get",
@@ -1709,6 +1926,27 @@
           }
         },
         "summary": "List Reviewed",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/spotify-connection": {
+      "get": {
+        "operationId": "spotify_connection_api_library_spotify_connection_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpotifyConnectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Spotify Connection",
         "tags": [
           "library"
         ]

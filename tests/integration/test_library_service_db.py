@@ -111,6 +111,26 @@ class TestToListen:
         assert svc.delete_to_listen(db, str(item.id)) is False
 
 
+class TestRecentlyListened:
+    def test_reads_cache_ordered_by_last_played(self, db, svc, album_ids):
+        # seed two cache rows (rolled back on teardown via savepoint)
+        db.execute(
+            text(
+                "INSERT INTO spotify_recent_albums (album_id, last_played_at) "
+                "VALUES (:a, '2026-06-04T09:00:00Z'), (:b, '2026-06-04T10:00:00Z')"
+            ),
+            {"a": album_ids[0], "b": album_ids[1]},
+        )
+        rows = svc.list_recently_listened(db)
+        mine = [(str(a.id), lp) for a, lp in rows if str(a.id) in album_ids[:2]]
+        # most-recent first → album_ids[1] (10:00) precedes album_ids[0] (09:00)
+        assert [aid for aid, _ in mine] == [album_ids[1], album_ids[0]]
+
+    def test_now_playing_none_when_empty(self, db, svc):
+        db.execute(text("DELETE FROM spotify_now_playing"))
+        assert svc.get_now_playing(db) is None
+
+
 class TestReviewed:
     def test_reviewed_returns_albums_with_review_ids(self, db, svc):
         rows = svc.list_reviewed(db)

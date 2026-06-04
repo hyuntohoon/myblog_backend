@@ -1,7 +1,7 @@
 # app/services/library_service.py
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import func, select
@@ -11,6 +11,8 @@ from myblog_shared_db.models import (
     Album,
     AlbumToListenItem,
     Post,
+    SpotifyNowPlaying,
+    SpotifyRecentAlbum,
     post_albums_table as post_albums,
 )
 
@@ -146,3 +148,25 @@ class LibraryService:
             reverse=True,
         )
         return [(albums[aid], review_ids[aid]) for aid in ordered]
+
+    # ── 최근 들은 앨범 + now-playing: read-only Spotify cache (Step 3, D25/D5) ────────
+    # Populated by the worker (EventBridge cron + manual SQS refresh). These reads
+    # never touch Spotify (hard rule #9).
+
+    def list_recently_listened(self, db: Session) -> List[Tuple[Album, datetime]]:
+        """The distinct recently-played album set, most-recently-played first.
+        Returns (album, last_played_at) pairs."""
+        rows = (
+            db.query(SpotifyRecentAlbum)
+            .order_by(SpotifyRecentAlbum.last_played_at.desc())
+            .all()
+        )
+        return [(r.album, r.last_played_at) for r in rows if r.album is not None]
+
+    def get_now_playing(self, db: Session) -> Optional[SpotifyNowPlaying]:
+        """The single-row now-playing cache (id=1), or None if never synced."""
+        return (
+            db.query(SpotifyNowPlaying)
+            .filter(SpotifyNowPlaying.id == 1)
+            .first()
+        )
