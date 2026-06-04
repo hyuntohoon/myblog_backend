@@ -754,6 +754,18 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
           }
         },
         "title": "RecentlyListenedResponse",

@@ -104,7 +104,8 @@ def list_recently_listened(
                 album=_album_brief(album),
             )
             for album, last_played_at in rows
-        ]
+        ],
+        last_synced_at=svc.last_recent_synced_at(db),
     )
 
 
