@@ -223,6 +223,42 @@ class ReviewedResponse(BaseModel):
     items: List[ReviewedAlbumResponse] = Field(default_factory=list)
 
 
+# ====== Member listening (FEAT-member-dashboard Step 3, D25/D26/D5) ======
+# 최근 들은 앨범 + now-playing, read from a worker/EventBridge-fed Spotify cache
+# (spotify_recent_albums / spotify_now_playing). No synchronous Spotify call from
+# these endpoints (hard rule #9).
+
+class RecentlyListenedItem(BaseModel):
+    album_id: str
+    last_played_at: datetime
+    album: AlbumBrief
+
+
+class RecentlyListenedResponse(BaseModel):
+    items: List[RecentlyListenedItem] = Field(default_factory=list)
+
+
+class NowPlayingResponse(BaseModel):
+    is_playing: bool = False
+    track: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    album_id: Optional[str] = None
+    progress_ms: Optional[int] = None
+    duration_ms: Optional[int] = None
+    updated_at: Optional[datetime] = None
+
+
+class SpotifyConnectionResponse(BaseModel):
+    # Thin status for the /profile → 연동 tab: whether a refresh token is stored
+    # (the in-app OAuth flow is deferred per D27; token is bootstrapped out-of-band).
+    connected: bool = False
+
+
+class RefreshRecentResponse(BaseModel):
+    status: str  # "queued"
+
+
 # ====== Categories ======
 
 class CategoryListResponse(BaseModel):

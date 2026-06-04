@@ -20,6 +20,12 @@ def get_library_service() -> LibraryService:
     return LibraryService()
 
 
+def get_sqs_client():
+    from app.clients.sqs_client import SqsClient
+
+    return SqsClient()
+
+
 def get_post_service():
     post_repo = PostRepository()
     category_repo = CategoryRepository()

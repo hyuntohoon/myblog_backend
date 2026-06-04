@@ -8,15 +8,21 @@ from sqlalchemy.orm import Session
 from app.api.schemas import (
     AddToListenRequest,
     AlbumBrief,
+    NowPlayingResponse,
+    RecentlyListenedItem,
+    RecentlyListenedResponse,
+    RefreshRecentResponse,
     ReviewedAlbumResponse,
     ReviewedResponse,
+    SpotifyConnectionResponse,
     ToListenItemResponse,
     ToListenReorderRequest,
     ToListenResponse,
 )
+from app.clients.sqs_client import is_spotify_connected
 from app.core.auth import require_cognito_token
 from app.db.session import get_db
-from app.di import get_library_service
+from app.di import get_library_service, get_sqs_client
 from app.services.library_service import (
     AlbumNotFoundError,
     DuplicateItemError,
@@ -83,6 +89,51 @@ def list_reviewed(
     )
 
 
+@router.get("/recently-listened", response_model=RecentlyListenedResponse)
+def list_recently_listened(
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    # 최근 들은 앨범 (D25/D26) — read from the worker-fed cache; never calls Spotify.
+    rows = svc.list_recently_listened(db)
+    return RecentlyListenedResponse(
+        items=[
+            RecentlyListenedItem(
+                album_id=str(album.id),
+                last_played_at=last_played_at,
+                album=_album_brief(album),
+            )
+            for album, last_played_at in rows
+        ]
+    )
+
+
+@router.get("/now-playing", response_model=NowPlayingResponse)
+def now_playing(
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    np = svc.get_now_playing(db)
+    if np is None or not np.is_playing:
+        return NowPlayingResponse(is_playing=False)
+    return NowPlayingResponse(
+        is_playing=True,
+        track=np.track_name,
+        artist=np.artist_name,
+        album=np.album_name,
+        album_id=str(np.album_id) if np.album_id else None,
+        progress_ms=np.progress_ms,
+        duration_ms=np.duration_ms,
+        updated_at=np.updated_at,
+    )
+
+
+@router.get("/spotify-connection", response_model=SpotifyConnectionResponse)
+def spotify_connection():
+    # Thin status for the 연동 tab (D27): is a refresh token bootstrapped?
+    return SpotifyConnectionResponse(connected=is_spotify_connected())
+
+
 # ── to-listen mutations (Cognito JWT) ───────────────────────────────────────────
 # /to-listen/reorder is declared before /to-listen/{item_id} so the literal path
 # is unambiguous.
@@ -134,3 +185,15 @@ def delete_to_listen(
     if not svc.delete_to_listen(db, item_id):
         raise HTTPException(status_code=404, detail="Item not found")
     return Response(status_code=204)
+
+
+# ── 최근 들은 앨범: manual "지금 새로고침" (Cognito JWT) ──────────────────────────────
+# Pushes an async SQS job; the worker does the Spotify read (rule #9 — never sync).
+
+@router.post("/refresh-recent", response_model=RefreshRecentResponse, status_code=202)
+def refresh_recent(
+    _claims: Dict = Depends(require_cognito_token),
+    sqs=Depends(get_sqs_client),
+):
+    sqs.send_listening_refresh()
+    return RefreshRecentResponse(status="queued")

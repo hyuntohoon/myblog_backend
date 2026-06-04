@@ -32,6 +32,18 @@ class Settings(BaseSettings):
     COGNITO_REGION: str = "ap-northeast-2"
     COGNITO_USER_POOL_ID: str = ""
 
+    # AWS / SQS — FEAT-member-dashboard Step 3 manual "지금 새로고침" trigger.
+    # The backend only *produces* one message ({"job":"spotify_refresh"}); the
+    # worker consumes it and does the Spotify read (rule #9 — never sync here).
+    AWS_DEFAULT_REGION: str = "ap-northeast-2"
+    LOCALSTACK_ENDPOINT: str | None = None
+    SQS_QUEUE_URL: str = ""
+
+    # Spotify connection status (refresh-token presence) — Secrets Manager
+    # myblog/spotify. Read on demand by the 연동 tab; the token itself is only ever
+    # used by the worker.
+    SPOTIFY_SECRETS_ARN: str = ""
+
     # GitHub (loaded from Secrets Manager in prod)
     GITHUB_TOKEN: str = ""
     GITHUB_REPO_OWNER: str = ""
