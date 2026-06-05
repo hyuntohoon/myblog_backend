@@ -30,8 +30,22 @@ def _get_jwks() -> Dict[str, Any]:
 def require_cognito_token(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> Dict[str, Any]:
-    if settings.ENV in ("local", "dev") or not settings.COGNITO_USER_POOL_ID:
+    if settings.ENV in ("local", "dev"):
         return {}
+
+    # STAB-2 / AUTH-5: in prod a missing pool id is a MISCONFIGURATION, not a
+    # reason to skip auth. Fail CLOSED — never silently fall open (the old
+    # `or not COGNITO_USER_POOL_ID: return {}` made require_cognito_token a
+    # no-op in prod because the backend Lambda env never set the pool id).
+    if not settings.COGNITO_USER_POOL_ID:
+        logger.error(
+            "COGNITO_USER_POOL_ID unset while ENV=%s — refusing to fail open",
+            settings.ENV,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Auth not configured",
+        )
 
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
