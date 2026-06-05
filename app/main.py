@@ -3,9 +3,11 @@ from typing import List
 
 from fastapi import FastAPI, Depends, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from mangum import Mangum
 
 from app.core.config import settings
+from app.core.auth import verify_token
 
 APP_ENV = settings.ENV
 
@@ -43,13 +45,29 @@ async def edge_guard(request: Request, call_next):
         return await call_next(request)
 
     if request.url.path.startswith(PROTECTED_PREFIXES):
-        # API Gateway validates JWT before invoking Lambda; those requests carry
-        # Authorization: Bearer but no x-origin-verify (CloudFront adds the latter).
-        # Trust either: a matching edge secret (CloudFront path) or a Bearer token
-        # (API Gateway path — Cognito JWT already validated at ingress).
-        has_bearer = request.headers.get("authorization", "").startswith("Bearer ")
-        if not has_bearer and request.headers.get("x-origin-verify") != settings.EDGE_SECRET:
-            raise HTTPException(status_code=403, detail="Forbidden")
+        # Trusted CloudFront edge: every front request (incl. the public metrics
+        # beacon and category list) reaches the backend through CloudFront, which
+        # injects x-origin-verify == EDGE_SECRET. Trust that and pass through.
+        if request.headers.get("x-origin-verify") == settings.EDGE_SECRET:
+            return await call_next(request)
+
+        # No edge secret => a direct (raw invoke domain) request. It must carry a
+        # REAL Cognito JWT. STAB-2 / AUTH-3: the old guard trusted the literal
+        # "Bearer " prefix, so a garbage `Bearer x` bypassed it on every
+        # authorizer-less route. Validate the token instead of trusting the prefix.
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            try:
+                verify_token(auth_header[len("Bearer "):])
+                return await call_next(request)
+            except HTTPException as exc:
+                # JWKS outage (503) stays 503; a bad/expired/forged token => 403
+                # (clean reject — the old reject path raised inside middleware and
+                # surfaced as a 500, STAB-2 / P8-7).
+                code = exc.status_code if exc.status_code == 503 else 403
+                return JSONResponse(status_code=code, content={"detail": exc.detail})
+
+        return JSONResponse(status_code=403, content={"detail": "Forbidden"})
 
     return await call_next(request)
 
