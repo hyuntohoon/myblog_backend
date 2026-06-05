@@ -27,12 +27,14 @@ def _get_jwks() -> Dict[str, Any]:
     return resp.json()
 
 
-def require_cognito_token(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> Dict[str, Any]:
-    if settings.ENV in ("local", "dev"):
-        return {}
+def verify_token(token: str) -> Dict[str, Any]:
+    """Validate a Cognito JWT string, returning its claims or raising HTTPException.
 
+    Shared by `require_cognito_token` (FastAPI dependency) and `edge_guard`
+    (middleware, STAB-2 Step 2) so both layers validate identically. A missing
+    pool id raises 503 (fail closed — never a silent no-op); a JWKS-fetch outage
+    raises 503; a bad/expired/malformed token raises 401.
+    """
     # STAB-2 / AUTH-5: in prod a missing pool id is a MISCONFIGURATION, not a
     # reason to skip auth. Fail CLOSED — never silently fall open (the old
     # `or not COGNITO_USER_POOL_ID: return {}` made require_cognito_token a
@@ -47,10 +49,6 @@ def require_cognito_token(
             detail="Auth not configured",
         )
 
-    if credentials is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
-
-    token = credentials.credentials
     try:
         header = jwt.get_unverified_header(token)
         kid = header.get("kid")
@@ -92,3 +90,26 @@ def require_cognito_token(
     except JWTError as e:
         logger.warning("JWT validation failed: %s", e)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+
+def require_cognito_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> Dict[str, Any]:
+    if settings.ENV in ("local", "dev"):
+        return {}
+
+    if credentials is None:
+        # Fail closed on misconfiguration even when no token was sent, so a
+        # missing pool id can never be masked as a plain 401 (matches verify_token).
+        if not settings.COGNITO_USER_POOL_ID:
+            logger.error(
+                "COGNITO_USER_POOL_ID unset while ENV=%s — refusing to fail open",
+                settings.ENV,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Auth not configured",
+            )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
+
+    return verify_token(credentials.credentials)
