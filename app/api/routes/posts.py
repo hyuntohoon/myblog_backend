@@ -44,6 +44,7 @@ def list_posts(
             posted_date=p.posted_date,
             rating=p.rating,
             category=p.section.name if p.section else None,
+            tags=[t.name for t in p.tags],
         )
         for p in posts
     ]
@@ -72,6 +73,7 @@ def create_post(
             posted_date=req.posted_date,
             status=req.status,
             section_name=section_name,
+            tags=req.tags,
             album_ids=req.album_ids,
             artist_ids=req.artist_ids,
             rating=req.rating,
@@ -120,6 +122,7 @@ def get_post(
         posted_date=post.posted_date,
         rating=post.rating,
         category=post.section.name if post.section else None,
+        tags=[t.name for t in post.tags],
         album_ids=[str(a.id) for a in post.albums],
         artist_ids=[str(a.id) for a in post.artists],
         recommended_track_ids=svc.list_recommended_track_ids(db, post.id),
