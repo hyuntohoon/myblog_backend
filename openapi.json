@@ -607,6 +607,13 @@
             ],
             "title": "Subject Best New"
           },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
           "title": {
             "title": "Title",
             "type": "string"
@@ -672,6 +679,13 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
           },
           "title": {
             "title": "Title",
@@ -915,6 +929,40 @@
           }
         },
         "title": "SpotifyConnectionResponse",
+        "type": "object"
+      },
+      "TagItem": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "slug"
+        ],
+        "title": "TagItem",
+        "type": "object"
+      },
+      "TagListResponse": {
+        "properties": {
+          "tags": {
+            "items": {
+              "$ref": "#/components/schemas/TagItem"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tags"
+        ],
+        "title": "TagListResponse",
         "type": "object"
       },
       "ToListenItemResponse": {
@@ -1210,6 +1258,20 @@
             ],
             "title": "Subject Best New"
           },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          },
           "title": {
             "anyOf": [
               {
@@ -1371,6 +1433,13 @@
               }
             ],
             "title": "Subject Best New"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
           },
           "title": {
             "minLength": 1,
@@ -2560,6 +2629,27 @@
         "summary": "List Sections",
         "tags": [
           "sections"
+        ]
+      }
+    },
+    "/api/tags": {
+      "get": {
+        "operationId": "list_tags_api_tags_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Tags",
+        "tags": [
+          "tags"
         ]
       }
     },

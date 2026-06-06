@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.repositories.post_repository import PostRepository
 from app.repositories.section_repository import SectionRepository
+from app.repositories.tag_repository import TagRepository
 from myblog_shared_db.models import (
     Album, Post, Artist, Track, ReviewBucketItem,
     post_albums_table as post_albums,
@@ -39,9 +40,37 @@ class PostService:
     - 트랜잭션: service 레벨에서 한 번에 commit
     """
 
-    def __init__(self, post_repo: PostRepository, section_repo: SectionRepository):
+    def __init__(
+        self,
+        post_repo: PostRepository,
+        section_repo: SectionRepository,
+        tag_repo: Optional[TagRepository] = None,
+    ):
         self.post_repo = post_repo
         self.section_repo = section_repo
+        # tag_repo added in STAB-5 Step 4; defaulted so the many existing
+        # construction sites (and tests) need no churn. DI injects it explicitly.
+        self.tag_repo = tag_repo or TagRepository()
+
+    def _resolve_tags(self, db: Session, names) -> list:
+        """Resolve seeded tag names → Tag rows; reject unknown (no get-or-create).
+
+        Mirrors the section reject-unknown policy. Order/dupes don't matter
+        (M:N set). Raises ValueError on any unknown name (route → 400).
+        """
+        clean = list(dict.fromkeys(
+            n.strip() for n in (names or []) if isinstance(n, str) and n.strip()
+        ))
+        if not clean:
+            return []
+        rows = self.tag_repo.get_many_by_names(db, clean)
+        found = {t.name for t in rows}
+        unknown = [n for n in clean if n not in found]
+        if unknown:
+            raise ValueError(
+                "unknown tag(s): " + ", ".join(repr(u) for u in unknown)
+            )
+        return rows
 
     def create(
         self,
@@ -53,6 +82,7 @@ class PostService:
         posted_date: date,
         status: str = "published",
         section_name: Optional[str] = None,
+        tags: Optional[list[str]] = None,
         album_ids: Optional[list[str]] = None,
         artist_ids: Optional[list[str]] = None,
         album_cover_url: Optional[str] = None,
@@ -76,6 +106,10 @@ class PostService:
             section_id = sec.id
         else:
             section_id = None
+
+        # 1b) 태그 처리 — 시드된 태그만 허용 (섹션과 동일 reject-unknown 정책).
+        # 이름→Tag 해석을 INSERT 전에 끝내 unknown이면 글을 만들지 않고 거부.
+        tag_objs = self._resolve_tags(db, tags)
 
         # 2) 슬러그 생성 + 중복 시 hard block
         slug = slugify_title(title)
@@ -120,6 +154,10 @@ class PostService:
             artists = db.query(Artist).filter(Artist.id.in_(unique_artist_ids)).all()
             for ar in artists:
                 post.artists.append(ar)
+
+        # 6b) 리뷰 태그 연결 (M:N). tag_objs는 1b에서 이미 검증됨 (unknown 거부).
+        if tag_objs:
+            post.tags = tag_objs
 
         # 7) 추천 트랙 저장 — set of picked track IDs. album_id is resolved
         #    from tracks.album_id and validated against the post's linked albums.
@@ -185,6 +223,7 @@ class PostService:
         # JSON field stays `category` (contract rename deferred to Step 5);
         # it resolves to the renamed `section_id` FK.
         section_name = fields.pop("category", _MISSING)
+        tags = fields.pop("tags", _MISSING)
         album_ids = fields.pop("album_ids", _MISSING)
         artist_ids = fields.pop("artist_ids", _MISSING)
         recommended_track_ids = fields.pop("recommended_track_ids", _MISSING)
@@ -200,8 +239,17 @@ class PostService:
             else:
                 fields["section_id"] = None
 
+        # Resolve tag names BEFORE the column update so an unknown tag rejects
+        # the whole edit (no partial write). Empty list = explicit clear.
+        tag_objs = _MISSING if tags is _MISSING else self._resolve_tags(db, tags)
+
         if fields:
             post = self.post_repo.update(db, post, **fields)
+
+        if tag_objs is not _MISSING:
+            post.tags = tag_objs
+            db.commit()
+            db.refresh(post)
 
         if album_ids is not _MISSING:
             unique = list({aid for aid in (album_ids or []) if aid})

@@ -21,6 +21,10 @@ class WritePostRequest(BaseModel):
     category: Optional[str] = None
     search_index: Optional[bool] = Field(default=None)  # None이면 서비스에서 자동 결정
 
+    # STAB-5 Step 4: review tags (cross-cutting M:N). List of seeded tag *names*;
+    # unknown names are rejected (400). Empty list / omitted = no tags.
+    tags: List[str] = Field(default_factory=list)
+
     album_ids: List[str] = Field(default_factory=list)
     artist_ids: List[str] = Field(default_factory=list)
 
@@ -59,6 +63,8 @@ class PostListItem(BaseModel):
     posted_date: date
     rating: Optional[float]
     category: Optional[str] = None
+    # STAB-5 Step 4: review tag names attached to the post (admin list view).
+    tags: List[str] = Field(default_factory=list)
 
 
 class PostListResponse(BaseModel):
@@ -82,6 +88,9 @@ class UpdatePostRequest(BaseModel):
     category: Optional[str] = None
     album_ids: Optional[List[str]] = None
     artist_ids: Optional[List[str]] = None
+    # STAB-5 Step 4: review tag names. Empty list = explicit clear; None = "not
+    # provided" (no change). exclude_unset on the route preserves the distinction.
+    tags: Optional[List[str]] = None
     # Same shape as create — set of track IDs (no position/note).
     # Empty list = explicit clear; None = "not provided" (no change).
     recommended_track_ids: Optional[List[str]] = None
@@ -102,6 +111,8 @@ class PostDetailResponse(BaseModel):
     category: Optional[str]
     album_ids: List[str]
     artist_ids: List[str]
+    # STAB-5 Step 4: review tag names (seeds the writer's tag picker on edit).
+    tags: List[str] = Field(default_factory=list)
     recommended_track_ids: List[str] = Field(default_factory=list)
     # FEAT-writer-lowfreq-redesign Step 5: joined from the post's subject album
     # so the writer's edit flow can seed the BEST NEW pill on load. Null when
@@ -299,6 +310,19 @@ class SectionItem(BaseModel):
 
 class SectionListResponse(BaseModel):
     sections: List[SectionItem]
+
+
+# ====== Tags (STAB-5 Step 4) ======
+# Read-only seeded review-tag vocabulary. Cross-cutting M:N over `post_tags`,
+# distinct from the single-FK section. No create endpoint (mirrors sections).
+
+class TagItem(BaseModel):
+    name: str
+    slug: str
+
+
+class TagListResponse(BaseModel):
+    tags: List[TagItem]
 
 
 # ====== Metrics ======
