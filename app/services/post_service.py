@@ -8,7 +8,7 @@ import re
 from sqlalchemy.orm import Session
 
 from app.repositories.post_repository import PostRepository
-from app.repositories.category_repository import CategoryRepository
+from app.repositories.section_repository import SectionRepository
 from myblog_shared_db.models import (
     Album, Post, Artist, Track, ReviewBucketItem,
     post_albums_table as post_albums,
@@ -34,14 +34,14 @@ class DuplicateSlugError(Exception):
 
 class PostService:
     """
-    - 카테고리: 이름이 오면 get_or_create로 upsert (없으면 생성)
+    - 섹션(STAB-5): 이름이 오면 시드된 섹션에서 조회, 없으면 거부 (get-or-create 제거)
     - 슬러그: 제목에서 생성, 중복이면 DuplicateSlugError (자동 suffix 없음)
     - 트랜잭션: service 레벨에서 한 번에 commit
     """
 
-    def __init__(self, post_repo: PostRepository, category_repo: CategoryRepository):
+    def __init__(self, post_repo: PostRepository, section_repo: SectionRepository):
         self.post_repo = post_repo
-        self.category_repo = category_repo
+        self.section_repo = section_repo
 
     def create(
         self,
@@ -52,7 +52,7 @@ class PostService:
         body_mdx: Optional[str] = None,
         posted_date: date,
         status: str = "published",
-        category_name: Optional[str] = None,
+        section_name: Optional[str] = None,
         album_ids: Optional[list[str]] = None,
         artist_ids: Optional[list[str]] = None,
         album_cover_url: Optional[str] = None,
@@ -67,12 +67,15 @@ class PostService:
         album_classics = album_classics or {}
         recommended_track_ids = recommended_track_ids or []
 
-        # 1) 카테고리 처리
-        category_name = (category_name or "").strip() or "default"
-        cat = self.category_repo.get_by_name(db, category_name)
-        if not cat:
-            cat = self.category_repo.create(db, category_name)
-        category_id = cat.id
+        # 1) 섹션 처리 — 시드된 섹션만 허용 (get-or-create 제거, unknown 거부)
+        section_name = (section_name or "").strip()
+        if section_name:
+            sec = self.section_repo.get_by_name(db, section_name)
+            if not sec:
+                raise ValueError(f"unknown section: {section_name!r}")
+            section_id = sec.id
+        else:
+            section_id = None
 
         # 2) 슬러그 생성 + 중복 시 hard block
         slug = slugify_title(title)
@@ -93,7 +96,7 @@ class PostService:
             body_mdx=body_mdx,
             posted_date=posted_date,
             status=status,
-            category_id=category_id,
+            section_id=section_id,
             album_cover_url=album_cover_url,
             rating=rating,
             rating_scale=rating_scale,
@@ -179,21 +182,23 @@ class PostService:
         # is what matters — `exclude_unset=True` on the route side already filtered
         # out keys the client didn't send, so any key still in `fields` is an
         # intentional write (including a clear-to-empty / clear-to-null).
-        category_name = fields.pop("category", _MISSING)
+        # JSON field stays `category` (contract rename deferred to Step 5);
+        # it resolves to the renamed `section_id` FK.
+        section_name = fields.pop("category", _MISSING)
         album_ids = fields.pop("album_ids", _MISSING)
         artist_ids = fields.pop("artist_ids", _MISSING)
         recommended_track_ids = fields.pop("recommended_track_ids", _MISSING)
         subject_best_new = fields.pop("subject_best_new", _MISSING)
 
-        if category_name is not _MISSING:
-            if isinstance(category_name, str) and category_name.strip():
-                name = category_name.strip()
-                cat = self.category_repo.get_by_name(db, name)
-                if not cat:
-                    cat = self.category_repo.create(db, name)
-                fields["category_id"] = cat.id
+        if section_name is not _MISSING:
+            if isinstance(section_name, str) and section_name.strip():
+                name = section_name.strip()
+                sec = self.section_repo.get_by_name(db, name)
+                if not sec:
+                    raise ValueError(f"unknown section: {name!r}")
+                fields["section_id"] = sec.id
             else:
-                fields["category_id"] = None
+                fields["section_id"] = None
 
         if fields:
             post = self.post_repo.update(db, post, **fields)

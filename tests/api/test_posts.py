@@ -16,8 +16,8 @@ def _make_post(post_id="uuid-1", slug="test-post", title="Test Post", status="pu
     p.status = status
     p.posted_date = date(2026, 5, 27)
     p.rating = 4.0
-    p.category = MagicMock()
-    p.category.name = "music"
+    p.section = MagicMock()
+    p.section.name = "music"
     return p
 
 
@@ -131,7 +131,7 @@ class TestHardDeleteBucketItemCascade:
         db = MagicMock()
         post_repo = MagicMock()
         post_repo.delete_by_id.return_value = True
-        svc = PostService(post_repo=post_repo, category_repo=MagicMock())
+        svc = PostService(post_repo=post_repo, section_repo=MagicMock())
 
         result = svc.delete(db, "uuid-1", hard=True)
 
@@ -150,7 +150,7 @@ class TestHardDeleteBucketItemCascade:
         db = MagicMock()
         post_repo = MagicMock()
         post_repo.set_status.return_value = _make_post(status="archived")
-        svc = PostService(post_repo=post_repo, category_repo=MagicMock())
+        svc = PostService(post_repo=post_repo, section_repo=MagicMock())
 
         svc.delete(db, "uuid-1", hard=False)
 
@@ -394,8 +394,8 @@ class TestGetPost:
         p.status = "published"
         p.posted_date = date(2026, 5, 27)
         p.rating = 4.0
-        p.category = MagicMock()
-        p.category.name = "music"
+        p.section = MagicMock()
+        p.section.name = "music"
         p.albums = [MagicMock(id=aid) for aid in albums]
         p.artists = [MagicMock(id=aid) for aid in artists]
         return p

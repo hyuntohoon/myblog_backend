@@ -42,7 +42,7 @@ class PostRepository:
         body_mdx: Optional[str],  # NULL 허용
         posted_date: date,
         status: str,
-        category_id: int,
+        section_id: Optional[int],
         album_cover_url: Optional[str] = None,
         rating: Optional[float] = None,
         rating_scale: int = 5,           # 추가
@@ -55,7 +55,7 @@ class PostRepository:
             body_mdx=body_mdx,
             posted_date=posted_date,
             status=status,
-            category_id=category_id,
+            section_id=section_id,
             album_cover_url=album_cover_url,
             rating=rating,
             rating_scale=rating_scale,

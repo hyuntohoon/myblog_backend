@@ -43,7 +43,7 @@ def list_posts(
             status=p.status,
             posted_date=p.posted_date,
             rating=p.rating,
-            category=p.category.name if p.category else None,
+            category=p.section.name if p.section else None,
         )
         for p in posts
     ]
@@ -62,7 +62,7 @@ def create_post(
     _claims: Dict = Depends(require_cognito_token),
 ):
     try:
-        category_name = (req.category or "default").strip()
+        section_name = (req.category or "").strip() or None
 
         post = svc.create(
             db,
@@ -71,7 +71,7 @@ def create_post(
             body_mdx=req.body_mdx,
             posted_date=req.posted_date,
             status=req.status,
-            category_name=category_name,
+            section_name=section_name,
             album_ids=req.album_ids,
             artist_ids=req.artist_ids,
             rating=req.rating,
@@ -119,7 +119,7 @@ def get_post(
         status=post.status,
         posted_date=post.posted_date,
         rating=post.rating,
-        category=post.category.name if post.category else None,
+        category=post.section.name if post.section else None,
         album_ids=[str(a.id) for a in post.albums],
         artist_ids=[str(a.id) for a in post.artists],
         recommended_track_ids=svc.list_recommended_track_ids(db, post.id),
@@ -136,7 +136,11 @@ def update_post(
     _claims: Dict = Depends(require_cognito_token),
 ):
     updates = req.model_dump(exclude_unset=True)
-    post = svc.update(db, post_id, **updates)
+    try:
+        post = svc.update(db, post_id, **updates)
+    except ValueError as e:
+        # unknown section (no get-or-create) → reject cleanly, not a 500
+        raise HTTPException(status_code=400, detail=str(e))
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
     return WritePostResponse(id=str(post.id), slug=post.slug)

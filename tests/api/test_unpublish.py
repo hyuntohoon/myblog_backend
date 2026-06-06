@@ -242,7 +242,7 @@ class TestRestoreRepublishes:
         p.status = "published"
         p.albums = []          # → derive_subject_meta short-circuits, no db.query
         p.artists = []
-        p.category = None
+        p.section = None
         p.album_cover_url = None
         p.rating = None
         p.rating_scale = 5
