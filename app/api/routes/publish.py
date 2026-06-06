@@ -35,6 +35,11 @@ class CreatePostReq(BaseModel):
     # the MDX frontmatter so the static read page can render the album
     # tracklist with picks marked without a runtime auth-gated lookup.
     recommended_track_ids: list[str] = Field(default_factory=list)
+    # STAB-5: review tags written to MDX frontmatter so the public /reviews
+    # page can filter + render them at build time. Seeded vocabulary (the
+    # writer picker emits seeded labels); the DB-side attach is the /api/posts
+    # `tags` field — this carries them onto the static page.
+    tags: list[str] = Field(default_factory=list)
 
 
 @router.post("")
@@ -84,6 +89,7 @@ def create_post(
             best_new=best_new,
             recommended_track_ids=req.recommended_track_ids,
             music_review=music_review,
+            tags=req.tags,
         )
     except RuntimeError as e:
         raise HTTPException(502, detail=str(e))
