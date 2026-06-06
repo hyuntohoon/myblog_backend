@@ -65,6 +65,39 @@ class TestPublishHappyPath:
         assert "index.mdx" in body["path"]
         assert "testowner/testrepo" in body["github_url"]
 
+    def test_tags_written_to_frontmatter(self, client):
+        # STAB-5: review tags must land in the MDX frontmatter so the static
+        # /reviews page can filter + render them at build time.
+        mock_get, mock_put = _mock_github(201)
+        payload = {**VALID_PAYLOAD, "tags": ["album review", "reissue"]}
+        with (
+            patch("app.services.publish_service.requests.get", mock_get),
+            patch("app.services.publish_service.requests.put", mock_put),
+        ):
+            resp = client.post("/api/publish", json=payload)
+
+        assert resp.status_code == 200
+        import base64, json
+        sent = json.loads(mock_put.call_args.kwargs["data"])
+        body = base64.b64decode(sent["content"]).decode("utf-8")
+        line = next(ln for ln in body.splitlines() if ln.startswith("tags:"))
+        assert json.loads(line.split("tags:", 1)[1].strip()) == ["album review", "reissue"]
+
+    def test_no_tags_emits_empty_list(self, client):
+        # Omitted tags ⇒ `tags: []` (parses cleanly; /reviews sees no tags).
+        mock_get, mock_put = _mock_github(201)
+        with (
+            patch("app.services.publish_service.requests.get", mock_get),
+            patch("app.services.publish_service.requests.put", mock_put),
+        ):
+            resp = client.post("/api/publish", json=VALID_PAYLOAD)
+
+        assert resp.status_code == 200
+        import base64, json
+        sent = json.loads(mock_put.call_args.kwargs["data"])
+        body = base64.b64decode(sent["content"]).decode("utf-8")
+        assert "tags: []" in body
+
     def test_slug_auto_generated_from_title(self, client):
         mock_get, mock_put = _mock_github(201)
         payload = {**VALID_PAYLOAD, "title": "My New Post", "slug": None}

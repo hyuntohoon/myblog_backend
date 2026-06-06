@@ -129,4 +129,5 @@ def republish_post_content(
         best_new=best_new,
         recommended_track_ids=recommended_track_ids,
         music_review=music_review,
+        tags=[t.name for t in post.tags],
     )

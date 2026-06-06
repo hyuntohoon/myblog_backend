@@ -34,6 +34,7 @@ def make_mdx_frontmatter(
     best_new: bool = False,
     recommended_track_ids: Optional[list[str]] = None,
     music_review: Optional[dict] = None,
+    tags: Optional[list[str]] = None,
 ) -> str:
     cat = (category or "default").strip() or "default"
     lines = [
@@ -43,6 +44,9 @@ def make_mdx_frontmatter(
         f"description: {(description or '')!r}",
         f"date: {posted_date.isoformat()}",
         f"category: {cat!r}",
+        # STAB-5: review tags surfaced to the static site so /reviews can filter
+        # + render them (build-time getCollection reads this). JSON = YAML flow.
+        f"tags: {json.dumps(tags or [], ensure_ascii=False)}",
         "draft: false",
         f"albumIds: {json.dumps(album_ids or [], ensure_ascii=False)}",
         f"artistIds: {json.dumps(artist_ids or [], ensure_ascii=False)}",
@@ -169,6 +173,7 @@ def publish_to_github(
     best_new: bool = False,
     recommended_track_ids: Optional[list[str]] = None,
     music_review: Optional[dict] = None,
+    tags: Optional[list[str]] = None,
 ) -> dict:
     path = content_path(content_dir, posted_date, slug)
     body_content = body_mdx.strip() if body_mdx else ""
@@ -189,6 +194,7 @@ def publish_to_github(
             best_new=best_new,
             recommended_track_ids=recommended_track_ids,
             music_review=music_review,
+            tags=tags,
         )
         + body_content
         + "\n"
