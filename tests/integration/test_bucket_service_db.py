@@ -333,7 +333,7 @@ class TestHardDeletePostCascade:
     def test_hard_delete_removes_bucket_item(self, db, svc, album_ids):
         from datetime import date
 
-        from app.repositories.category_repository import CategoryRepository
+        from app.repositories.section_repository import SectionRepository
         from app.repositories.post_repository import PostRepository
         from app.services.post_service import PostService
 
@@ -352,7 +352,7 @@ class TestHardDeletePostCascade:
         item_id = item.id
 
         post_svc = PostService(
-            post_repo=PostRepository(), category_repo=CategoryRepository()
+            post_repo=PostRepository(), section_repo=SectionRepository()
         )
         assert post_svc.delete(db, str(post.id), hard=True) is True
 
@@ -365,7 +365,7 @@ class TestHardDeletePostCascade:
     def test_soft_delete_keeps_bucket_item(self, db, svc, album_ids):
         from datetime import date
 
-        from app.repositories.category_repository import CategoryRepository
+        from app.repositories.section_repository import SectionRepository
         from app.repositories.post_repository import PostRepository
         from app.services.post_service import PostService
 
@@ -384,7 +384,7 @@ class TestHardDeletePostCascade:
         item_id = item.id
 
         post_svc = PostService(
-            post_repo=PostRepository(), category_repo=CategoryRepository()
+            post_repo=PostRepository(), section_repo=SectionRepository()
         )
         post_svc.delete(db, str(post.id), hard=False)
 

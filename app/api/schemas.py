@@ -287,14 +287,18 @@ class RefreshRecentResponse(BaseModel):
     status: str  # "queued"
 
 
-# ====== Categories ======
+# ====== Sections (STAB-5) ======
+# Read-only seeded taxonomy. The post request/response bodies keep the JSON
+# field name `category` for now (contract rename deferred to Step 5); only the
+# DB axis + this list endpoint moved to `section`.
 
-class CategoryListResponse(BaseModel):
-    categories: List[str]
+class SectionItem(BaseModel):
+    name: str
+    slug: str
 
 
-class AddCategoryRequest(BaseModel):
-    name: str = Field(min_length=1)
+class SectionListResponse(BaseModel):
+    sections: List[SectionItem]
 
 
 # ====== Metrics ======

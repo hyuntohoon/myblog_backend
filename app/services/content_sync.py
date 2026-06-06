@@ -118,7 +118,7 @@ def republish_post_content(
         slug=post.slug,
         description=post.description or "",
         posted_date=post.posted_date,
-        category=post.category.name if post.category else None,
+        category=post.section.name if post.section else None,
         album_ids=album_ids,
         artist_ids=artist_ids,
         post_id=str(post.id),

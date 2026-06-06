@@ -26,20 +26,6 @@
         "title": "AddBucketItemRequest",
         "type": "object"
       },
-      "AddCategoryRequest": {
-        "properties": {
-          "name": {
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "title": "AddCategoryRequest",
-        "type": "object"
-      },
       "AddToListenRequest": {
         "properties": {
           "album_id": {
@@ -258,22 +244,6 @@
           }
         },
         "title": "BucketsResponse",
-        "type": "object"
-      },
-      "CategoryListResponse": {
-        "properties": {
-          "categories": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Categories",
-            "type": "array"
-          }
-        },
-        "required": [
-          "categories"
-        ],
-        "title": "CategoryListResponse",
         "type": "object"
       },
       "CreateBucketRequest": {
@@ -883,6 +853,40 @@
           }
         },
         "title": "ReviewedResponse",
+        "type": "object"
+      },
+      "SectionItem": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "slug"
+        ],
+        "title": "SectionItem",
+        "type": "object"
+      },
+      "SectionListResponse": {
+        "properties": {
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/SectionItem"
+            },
+            "title": "Sections",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sections"
+        ],
+        "title": "SectionListResponse",
         "type": "object"
       },
       "SpotifyConnectionResponse": {
@@ -1841,64 +1845,6 @@
         ]
       }
     },
-    "/api/categories": {
-      "get": {
-        "operationId": "list_categories_api_categories_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CategoryListResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Categories",
-        "tags": [
-          "categories"
-        ]
-      },
-      "post": {
-        "operationId": "add_category_api_categories_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AddCategoryRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Add Category",
-        "tags": [
-          "categories"
-        ]
-      }
-    },
     "/api/db/ping": {
       "get": {
         "operationId": "ping_api_db_ping_get",
@@ -2593,6 +2539,27 @@
         "summary": "Create Post",
         "tags": [
           "publish"
+        ]
+      }
+    },
+    "/api/sections": {
+      "get": {
+        "operationId": "list_sections_api_sections_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SectionListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Sections",
+        "tags": [
+          "sections"
         ]
       }
     },

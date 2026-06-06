@@ -1,15 +1,15 @@
 # app/di.py
 from app.services.post_service import PostService
-from app.services.category_service import CategoryService
+from app.services.section_service import SectionService
 from app.services.bucket_service import BucketService
 from app.services.library_service import LibraryService
 from app.repositories.post_repository import PostRepository
-from app.repositories.category_repository import CategoryRepository
+from app.repositories.section_repository import SectionRepository
 from app.repositories.metrics_repository import MetricsRepository, SqlMetricsRepository
 
 
-def get_category_service() -> CategoryService:
-    return CategoryService()
+def get_section_service() -> SectionService:
+    return SectionService()
 
 
 def get_bucket_service() -> BucketService:
@@ -28,8 +28,8 @@ def get_sqs_client():
 
 def get_post_service():
     post_repo = PostRepository()
-    category_repo = CategoryRepository()
-    return PostService(post_repo, category_repo)
+    section_repo = SectionRepository()
+    return PostService(post_repo, section_repo)
 
 
 _metrics_repo: MetricsRepository = SqlMetricsRepository()
