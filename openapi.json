@@ -403,6 +403,58 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "ListenedAlbumItem": {
+        "properties": {
+          "album": {
+            "$ref": "#/components/schemas/AlbumBrief"
+          },
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "first_played_at": {
+            "format": "date-time",
+            "title": "First Played At",
+            "type": "string"
+          },
+          "last_played_at": {
+            "format": "date-time",
+            "title": "Last Played At",
+            "type": "string"
+          },
+          "play_count": {
+            "title": "Play Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "album_id",
+          "play_count",
+          "first_played_at",
+          "last_played_at",
+          "album"
+        ],
+        "title": "ListenedAlbumItem",
+        "type": "object"
+      },
+      "ListenedAlbumsResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ListenedAlbumItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "title": "ListenedAlbumsResponse",
+        "type": "object"
+      },
       "MetricsBatchRequest": {
         "properties": {
           "slugs": {
@@ -644,6 +696,17 @@
       },
       "PostListItem": {
         "properties": {
+          "album_cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Cover Url"
+          },
           "category": {
             "anyOf": [
               {
@@ -743,6 +806,98 @@
           "comments"
         ],
         "title": "PostMetrics",
+        "type": "object"
+      },
+      "RecentTrackItem": {
+        "properties": {
+          "album": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlbumBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "album_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
+          },
+          "album_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Name"
+          },
+          "artist_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Name"
+          },
+          "played_at": {
+            "format": "date-time",
+            "title": "Played At",
+            "type": "string"
+          },
+          "spotify_track_id": {
+            "title": "Spotify Track Id",
+            "type": "string"
+          },
+          "track_name": {
+            "title": "Track Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "spotify_track_id",
+          "track_name",
+          "played_at"
+        ],
+        "title": "RecentTrackItem",
+        "type": "object"
+      },
+      "RecentTracksResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RecentTrackItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          }
+        },
+        "title": "RecentTracksResponse",
         "type": "object"
       },
       "RecentlyListenedItem": {
@@ -1937,6 +2092,59 @@
         "summary": "Ping"
       }
     },
+    "/api/library/listened-albums": {
+      "get": {
+        "operationId": "list_listened_albums_api_library_listened_albums_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListenedAlbumsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Listened Albums",
+        "tags": [
+          "library"
+        ]
+      }
+    },
     "/api/library/now-playing": {
       "get": {
         "operationId": "now_playing_api_library_now_playing_get",
@@ -1953,6 +2161,27 @@
           }
         },
         "summary": "Now Playing",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/recent-tracks": {
+      "get": {
+        "operationId": "list_recent_tracks_api_library_recent_tracks_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecentTracksResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Recent Tracks",
         "tags": [
           "library"
         ]
