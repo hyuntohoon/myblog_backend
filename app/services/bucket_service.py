@@ -1,16 +1,18 @@
 # app/services/bucket_service.py
 from __future__ import annotations
 
-from datetime import date
-from typing import Any, List, Optional, Sequence
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, List, Optional, Sequence, Tuple
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from myblog_shared_db.models import (
     Album,
     ReviewBucket,
     ReviewBucketItem,
+    SpotifyLibraryAlbum,
     post_albums_table as post_albums,
 )
 
@@ -49,6 +51,14 @@ W_RECENCY = 0.6
 W_POPULARITY = 0.4
 # Linear recency decay window: an album older than this scores 0 on recency.
 RECENCY_WINDOW_DAYS = 365 * 2
+
+# FEAT-spotify-library-sync: the single special bucket mirroring the owner's Spotify
+# saved-albums Library. Get-or-create lives in the BACKEND (the worker creates none).
+SPOTIFY_LIBRARY_BUCKET_KIND = "spotify_library"
+SPOTIFY_LIBRARY_BUCKET_NAME = "Spotify 라이브러리"
+# Server-side debounce: ignore a sync POST if one ran within this window (derived
+# from max(spotify_library_albums.last_synced_at)). ~30s per the interface spec.
+LIBRARY_SYNC_DEBOUNCE_SECONDS = 30
 
 
 class BucketService:
@@ -446,3 +456,99 @@ class BucketService:
                 item.position = pos
 
         db.commit()
+
+    # ── Spotify Library sync (FEAT-spotify-library-sync) ──────────────────────────
+    # The single kind='spotify_library' bucket mirrors the owner's Spotify saved
+    # albums. Get-or-create is the BACKEND's job (the worker creates none). The POST
+    # endpoint only enqueues an async job — Spotify is never touched here (rule #9).
+
+    def get_or_create_spotify_library_bucket(self, db: Session) -> ReviewBucket:
+        """Return the single kind='spotify_library' bucket, creating it (as a root
+        column appended after existing buckets) if it does not exist yet. The DB
+        partial-unique index guarantees at most one such bucket."""
+        bucket = (
+            db.query(ReviewBucket)
+            .filter(ReviewBucket.kind == SPOTIFY_LIBRARY_BUCKET_KIND)
+            .first()
+        )
+        if bucket is not None:
+            return bucket
+        next_pos = db.execute(
+            select(func.coalesce(func.max(ReviewBucket.position), -1))
+        ).scalar_one()
+        bucket = ReviewBucket(
+            name=SPOTIFY_LIBRARY_BUCKET_NAME,
+            kind=SPOTIFY_LIBRARY_BUCKET_KIND,
+            position=int(next_pos) + 1,
+        )
+        db.add(bucket)
+        try:
+            db.commit()
+        except IntegrityError:
+            # Two concurrent POSTs both passed the .first() guard and raced to
+            # insert; the partial-unique index idx_review_buckets_single_spotify_library
+            # rejects the loser. Roll back and return the winner's row.
+            db.rollback()
+            return (
+                db.query(ReviewBucket)
+                .filter(ReviewBucket.kind == SPOTIFY_LIBRARY_BUCKET_KIND)
+                .one()
+            )
+        db.refresh(bucket)
+        return bucket
+
+    def library_last_synced_at(self, db: Session) -> Optional[datetime]:
+        """max(spotify_library_albums.last_synced_at), or None when nothing synced.
+        Drives both the debounce window and the GET-state poll timestamp."""
+        return db.execute(
+            select(func.max(SpotifyLibraryAlbum.last_synced_at))
+        ).scalar_one()
+
+    def library_sync_debounced(
+        self,
+        db: Session,
+        *,
+        window_seconds: int = LIBRARY_SYNC_DEBOUNCE_SECONDS,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """True when a sync ran within ``window_seconds`` (so a fresh POST is a
+        no-op). Derived from max(last_synced_at); None (never synced) => not
+        debounced. Both sides are coerced to tz-aware UTC for a safe comparison."""
+        last = self.library_last_synced_at(db)
+        if last is None:
+            return False
+        now = now or datetime.now(timezone.utc)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        return (now - last) < timedelta(seconds=window_seconds)
+
+    def list_spotify_library_albums(
+        self, db: Session
+    ) -> List[SpotifyLibraryAlbum]:
+        """Every spotify_library_albums row (with its joined Album eager-loaded),
+        ordered newest-touched first. Read-only — populated by the worker."""
+        return (
+            db.query(SpotifyLibraryAlbum)
+            .order_by(
+                SpotifyLibraryAlbum.last_synced_at.desc().nullslast(),
+                SpotifyLibraryAlbum.created_at.desc(),
+            )
+            .all()
+        )
+
+    def get_spotify_library_state(
+        self, db: Session
+    ) -> Tuple[Optional[ReviewBucket], Optional[datetime], List[SpotifyLibraryAlbum]]:
+        """Read the special bucket (if any), the last-synced timestamp, and the
+        spotify_library_albums rows for the GET /state endpoint. Pure read — the
+        bucket is NOT created here (only the POST sync get-or-creates it)."""
+        bucket = (
+            db.query(ReviewBucket)
+            .filter(ReviewBucket.kind == SPOTIFY_LIBRARY_BUCKET_KIND)
+            .first()
+        )
+        last_synced_at = self.library_last_synced_at(db)
+        albums = self.list_spotify_library_albums(db)
+        return bucket, last_synced_at, albums

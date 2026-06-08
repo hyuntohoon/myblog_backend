@@ -15,12 +15,17 @@ from app.api.schemas import (
     CreateBucketRequest,
     MoveBucketRequest,
     ReorderRequest,
+    SpotifyLibraryAlbumState,
+    SpotifyLibraryStateResponse,
+    SpotifyLibrarySyncResponse,
     UpdateBucketItemRequest,
     UpdateBucketRequest,
 )
+from app.clients.sqs_client import get_spotify_connection_status
 from app.core.auth import require_cognito_token
+from app.core.config import get_settings
 from app.db.session import get_db
-from app.di import get_bucket_service
+from app.di import get_bucket_service, get_sqs_client
 from app.services.bucket_service import (
     AlbumNotFoundError,
     BucketNotFoundError,
@@ -78,6 +83,7 @@ def _bucket_response(b, reviewed: set) -> BucketResponse:
         position=b.position,
         color=b.color,
         is_done=b.is_done,
+        kind=b.kind,
         items=[
             _item_response(it, str(it.album_id) in reviewed) for it in b.items
         ],
@@ -107,6 +113,66 @@ def list_buckets(
     )
 
 
+# ── Spotify Library sync (FEAT-spotify-library-sync) ────────────────────────────
+# The single kind='spotify_library' bucket mirrors the owner's Spotify saved albums.
+# State GET rides the edge_guard catch-all (no apigateway route); the sync POST is
+# Cognito-JWT (matching apigateway route added in infra/apigateway.tf). Declared with
+# literal /spotify-library/* paths (unambiguous vs the /{bucket_id} patterns below).
+
+
+@router.get("/spotify-library/state", response_model=SpotifyLibraryStateResponse)
+def spotify_library_state(
+    db: Session = Depends(get_db),
+    svc: BucketService = Depends(get_bucket_service),
+):
+    # Pure read of the worker-written spotify_library_albums table (rule #9 — no
+    # Spotify call). The bucket is NOT created here (only the sync POST get-or-creates).
+    bucket, last_synced_at, albums = svc.get_spotify_library_state(db)
+    conn = get_spotify_connection_status()
+    return SpotifyLibraryStateResponse(
+        bucket_id=str(bucket.id) if bucket is not None else None,
+        last_synced_at=last_synced_at,
+        needs_reauth=conn.needs_reauth,
+        # Read-only mirror of the worker write gate, for the "검토 모드" banner.
+        writes_enabled=get_settings().SPOTIFY_LIBRARY_WRITES_ENABLED,
+        albums=[
+            SpotifyLibraryAlbumState(
+                album_id=str(row.album_id),
+                spotify_id=row.spotify_id,
+                source=row.source,
+                state=row.state,
+                in_bucket=row.in_bucket,
+                in_spotify=row.in_spotify,
+                last_error=row.last_error,
+            )
+            for row in albums
+        ],
+    )
+
+
+@router.post(
+    "/spotify-library/sync",
+    response_model=SpotifyLibrarySyncResponse,
+    status_code=202,
+)
+def spotify_library_sync(
+    db: Session = Depends(get_db),
+    svc: BucketService = Depends(get_bucket_service),
+    sqs=Depends(get_sqs_client),
+    _claims: Dict = Depends(require_cognito_token),
+):
+    # Get-or-create the special bucket so the worker always has a destination, then
+    # enqueue the async job. Rule #9: this only ENQUEUES — never calls Spotify; the
+    # worker does the reads/diffs/writes. Server-side debounce makes a rapid re-tap
+    # a no-op (status="debounced") without hitting the queue again.
+    svc.get_or_create_spotify_library_bucket(db)
+    if svc.library_sync_debounced(db):
+        logger.info("spotify library sync debounced (recent sync within window)")
+        return SpotifyLibrarySyncResponse(status="debounced")
+    sqs.send_library_sync()
+    return SpotifyLibrarySyncResponse(status="queued")
+
+
 # ── bucket CRUD (Cognito JWT) ───────────────────────────────────────────────────
 
 @router.post("", response_model=BucketResponse, status_code=201)
@@ -126,6 +192,7 @@ def create_bucket(
         position=bucket.position,
         color=bucket.color,
         is_done=bucket.is_done,
+        kind=bucket.kind,
         items=[],
     )
 
@@ -158,6 +225,7 @@ def update_bucket(
         position=bucket.position,
         color=bucket.color,
         is_done=bucket.is_done,
+        kind=bucket.kind,
         items=[
             _item_response(it, str(it.album_id) in reviewed) for it in bucket.items
         ],

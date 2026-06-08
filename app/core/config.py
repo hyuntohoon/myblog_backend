@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     # used by the worker.
     SPOTIFY_SECRETS_ARN: str = ""
 
+    # FEAT-spotify-library-sync: read-only MIRROR of the worker's write gate, used
+    # only to drive the /profile UI banner ("검토 모드: Spotify에 실제 반영 안 됨").
+    # The backend NEVER writes to Spotify (rule #9) — the worker reads its OWN copy
+    # of this flag to decide whether to issue real PUT/DELETE /me/albums; a stray
+    # message can't force a write. Keep this in sync with the worker setting.
+    SPOTIFY_LIBRARY_WRITES_ENABLED: bool = False
+
     # GitHub (loaded from Secrets Manager in prod)
     GITHUB_TOKEN: str = ""
     GITHUB_REPO_OWNER: str = ""

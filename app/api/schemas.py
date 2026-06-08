@@ -191,6 +191,10 @@ class BucketResponse(BaseModel):
     position: int
     color: Optional[str] = None
     is_done: bool
+    # FEAT-spotify-library-sync: 'review' (normal kanban column) or 'spotify_library'
+    # (the single bucket mirroring the owner's Spotify saved-albums Library). Lets the
+    # FRONT identify/filter the special bucket out of the normal tree.
+    kind: str = "review"
     items: List[BucketItemResponse] = Field(default_factory=list)
     # FEAT-member-dashboard Step 5: nested tree. A bucket's descendants are
     # inlined here (recursive). The top-level BucketsResponse.buckets list holds
@@ -213,6 +217,45 @@ class MoveBucketRequest(BaseModel):
     # parent's children (siblings renumbered 0..n contiguous after the move).
     parent_id: Optional[str] = None
     position: int
+
+
+# ====== Spotify Library sync (FEAT-spotify-library-sync) ======
+# The single kind='spotify_library' bucket mirrors the owner's Spotify saved-albums
+# Library. POST .../sync only ENQUEUES an async job (rule #9 — never calls Spotify);
+# the worker does the reads/diffs/writes. GET .../state reads the worker-written
+# spotify_library_albums table for the /profile board badges + banners.
+
+class SpotifyLibrarySyncResponse(BaseModel):
+    # "queued" = a sync job was enqueued; "debounced" = a sync ran within the
+    # server-side debounce window (~30s) so this call was a no-op.
+    status: str
+
+
+class SpotifyLibraryAlbumState(BaseModel):
+    album_id: str
+    spotify_id: str
+    # source: "myblog_added" | "preexisting" (first-touch stamp by the worker).
+    source: str
+    # state: "pending" | "synced" | "failed" | "needs_attention".
+    state: str
+    # Bucket intent vs last-observed Spotify Library membership.
+    in_bucket: bool
+    in_spotify: bool
+    last_error: Optional[str] = None
+
+
+class SpotifyLibraryStateResponse(BaseModel):
+    # Null when the special bucket doesn't exist yet (no sync ever run).
+    bucket_id: Optional[str] = None
+    # max(spotify_library_albums.last_synced_at) — the UI polls this after a manual
+    # sync until it advances, then refetches (mirrors recently-listened's poll).
+    last_synced_at: Optional[datetime] = None
+    # From get_spotify_connection_status(): the worker's last refresh hit invalid_grant.
+    needs_reauth: bool = False
+    # Read-only mirror of the worker write gate (SPOTIFY_LIBRARY_WRITES_ENABLED), for
+    # the "검토 모드" banner. False = plan-only; the worker issues no real Spotify writes.
+    writes_enabled: bool = False
+    albums: List[SpotifyLibraryAlbumState] = Field(default_factory=list)
 
 
 # ====== Member library (FEAT-member-dashboard Step 2, D18) ======
