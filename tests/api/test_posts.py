@@ -16,6 +16,7 @@ def _make_post(post_id="uuid-1", slug="test-post", title="Test Post", status="pu
     p.status = status
     p.posted_date = date(2026, 5, 27)
     p.rating = 4.0
+    p.album_cover_url = "https://cdn/cover.jpg"
     p.section = MagicMock()
     p.section.name = "music"
     return p

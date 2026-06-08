@@ -8,9 +8,13 @@ from sqlalchemy.orm import Session
 from app.api.schemas import (
     AddToListenRequest,
     AlbumBrief,
+    ListenedAlbumItem,
+    ListenedAlbumsResponse,
     NowPlayingResponse,
     RecentlyListenedItem,
     RecentlyListenedResponse,
+    RecentTrackItem,
+    RecentTracksResponse,
     RefreshRecentResponse,
     ReviewedAlbumResponse,
     ReviewedResponse,
@@ -106,6 +110,58 @@ def list_recently_listened(
             for album, last_played_at in rows
         ],
         last_synced_at=svc.last_recent_synced_at(db),
+    )
+
+
+@router.get("/recent-tracks", response_model=RecentTracksResponse)
+def list_recent_tracks(
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    # 최근 재생 트랙 (D-B) — worker-fed rolling cache; never calls Spotify. Row 0 is
+    # also the "최근 재생" latest-played fallback for the now-playing surface (D-C).
+    rows = svc.list_recent_tracks(db)
+    return RecentTracksResponse(
+        items=[
+            RecentTrackItem(
+                spotify_track_id=r.spotify_track_id,
+                track_name=r.track_name,
+                artist_name=r.artist_name,
+                album_name=r.album_name,
+                album_id=str(r.album_id) if r.album_id else None,
+                album=_album_brief(r.album) if r.album is not None else None,
+                played_at=r.played_at,
+            )
+            for r in rows
+        ],
+        last_synced_at=svc.last_recent_tracks_synced_at(db),
+    )
+
+
+@router.get("/listened-albums", response_model=ListenedAlbumsResponse)
+def list_listened_albums(
+    limit: int = 200,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    # 들은 앨범(누적) (D-A) — aggregate of the append-only spotify_play_events log
+    # (per-album play_count + first/last play); no rollup table. DB-only read.
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    rows, total = svc.list_listened_albums(db, limit=limit, offset=offset)
+    return ListenedAlbumsResponse(
+        items=[
+            ListenedAlbumItem(
+                album_id=str(album.id),
+                play_count=play_count,
+                first_played_at=first_played_at,
+                last_played_at=last_played_at,
+                album=_album_brief(album),
+            )
+            for album, play_count, first_played_at, last_played_at in rows
+        ],
+        total=total,
     )
 
 

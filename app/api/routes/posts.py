@@ -44,6 +44,7 @@ def list_posts(
             posted_date=p.posted_date,
             rating=p.rating,
             category=p.section.name if p.section else None,
+            album_cover_url=p.album_cover_url,
             tags=[t.name for t in p.tags],
         )
         for p in posts

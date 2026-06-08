@@ -12,7 +12,9 @@ from myblog_shared_db.models import (
     AlbumToListenItem,
     Post,
     SpotifyNowPlaying,
+    SpotifyPlayEvent,
     SpotifyRecentAlbum,
+    SpotifyRecentTrack,
     post_albums_table as post_albums,
 )
 
@@ -175,3 +177,52 @@ class LibraryService:
             .filter(SpotifyNowPlaying.id == 1)
             .first()
         )
+
+    # ── 최근 재생 트랙 + 들은 앨범(누적): durable data (FEAT-member-dashboard-realdata) ──
+    # recent-tracks is the worker-fed rolling cache (D-B); listened-albums aggregates
+    # the append-only spotify_play_events log (D-A, no rollup table). Neither calls
+    # Spotify (hard rule #9).
+
+    def list_recent_tracks(self, db: Session) -> List[SpotifyRecentTrack]:
+        """The recently-played track window, most-recently-played first. Rows carry
+        denormalized track/artist/album text; `.album` is set only when the track's
+        album is in our catalog (album_id FK). Row 0 is the "최근 재생" latest play."""
+        return (
+            db.query(SpotifyRecentTrack)
+            .order_by(SpotifyRecentTrack.played_at.desc())
+            .all()
+        )
+
+    def last_recent_tracks_synced_at(self, db: Session) -> Optional[datetime]:
+        """When the worker last wrote the recent-tracks cache (max synced_at)."""
+        return db.query(func.max(SpotifyRecentTrack.synced_at)).scalar()
+
+    def list_listened_albums(
+        self, db: Session, *, limit: int = 200, offset: int = 0
+    ) -> Tuple[List[Tuple[Album, int, datetime, datetime]], int]:
+        """The cumulative listened-album archive, derived (D-A) from the append-only
+        spotify_play_events log — no rollup table. One entry per album with its
+        play_count + first/last play, most-recently-played first, paginated.
+
+        Returns ((album, play_count, first_played_at, last_played_at)…, total) where
+        total is the distinct-album count (for pagination / a "N albums" stat).
+        """
+        agg = (
+            select(
+                SpotifyPlayEvent.album_id.label("album_id"),
+                func.count().label("play_count"),
+                func.min(SpotifyPlayEvent.played_at).label("first_played_at"),
+                func.max(SpotifyPlayEvent.played_at).label("last_played_at"),
+            )
+            .group_by(SpotifyPlayEvent.album_id)
+            .subquery()
+        )
+        total = db.execute(select(func.count()).select_from(agg)).scalar_one()
+        rows = db.execute(
+            select(Album, agg.c.play_count, agg.c.first_played_at, agg.c.last_played_at)
+            .join(Album, Album.id == agg.c.album_id)
+            .order_by(agg.c.last_played_at.desc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+        return [(r[0], r[1], r[2], r[3]) for r in rows], int(total)

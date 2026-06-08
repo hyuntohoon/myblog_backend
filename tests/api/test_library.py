@@ -348,6 +348,95 @@ class TestSpotifyConnection:
         assert body["last_successful_refresh_at"] is None
 
 
+class TestRecentTracks:
+    @staticmethod
+    def _track(tid="t-1", album=None):
+        r = MagicMock()
+        r.spotify_track_id = tid
+        r.track_name = "Song"
+        r.artist_name = "Artist A"
+        r.album_name = "An Album"
+        r.album_id = album.id if album is not None else None
+        r.album = album
+        r.played_at = datetime(2026, 6, 4, 10, 0, tzinfo=timezone.utc)
+        return r
+
+    def test_lists_tracks_with_catalog_and_noncatalog(self, client, app):
+        svc = MagicMock()
+        svc.list_recent_tracks.return_value = [
+            self._track(tid="t-1", album=_album(album_id="alb-1")),  # catalog → album brief
+            self._track(tid="t-2", album=None),                        # non-catalog → null album
+        ]
+        svc.last_recent_tracks_synced_at.return_value = datetime(2026, 6, 4, 10, 5, tzinfo=timezone.utc)
+        _override(app, svc)
+
+        resp = client.get("/api/library/recent-tracks")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        items = body["items"]
+        assert [i["spotify_track_id"] for i in items] == ["t-1", "t-2"]
+        assert items[0]["album"]["title"] == "Album"   # catalog album resolved
+        assert items[0]["album_id"] == "alb-1"
+        assert items[1]["album"] is None               # non-catalog → still shown, null album
+        assert items[1]["album_id"] is None
+        assert items[1]["track_name"] == "Song"
+        assert body["last_synced_at"].startswith("2026-06-04T10:05")
+        app.dependency_overrides.clear()
+
+    def test_empty(self, client, app):
+        svc = MagicMock()
+        svc.list_recent_tracks.return_value = []
+        svc.last_recent_tracks_synced_at.return_value = None
+        _override(app, svc)
+        resp = client.get("/api/library/recent-tracks")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["items"] == []
+        assert body["last_synced_at"] is None
+        app.dependency_overrides.clear()
+
+
+class TestListenedAlbums:
+    def test_lists_albums_with_counts(self, client, app):
+        svc = MagicMock()
+        svc.list_listened_albums.return_value = (
+            [(
+                _album(album_id="alb-1"),
+                7,
+                datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc),
+                datetime(2026, 6, 4, 10, 0, tzinfo=timezone.utc),
+            )],
+            1,
+        )
+        _override(app, svc)
+
+        resp = client.get("/api/library/listened-albums")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        item = body["items"][0]
+        assert item["album_id"] == "alb-1"
+        assert item["play_count"] == 7
+        assert item["first_played_at"].startswith("2026-05-01T09:00")
+        assert item["last_played_at"].startswith("2026-06-04T10:00")
+        assert item["album"]["title"] == "Album"
+        # limit/offset clamped + forwarded to the service
+        assert svc.list_listened_albums.call_args.kwargs == {"limit": 200, "offset": 0}
+        app.dependency_overrides.clear()
+
+    def test_limit_offset_clamped(self, client, app):
+        svc = MagicMock()
+        svc.list_listened_albums.return_value = ([], 0)
+        _override(app, svc)
+        resp = client.get("/api/library/listened-albums?limit=9999&offset=-5")
+        assert resp.status_code == 200
+        # limit clamped to 500, offset floored to 0
+        assert svc.list_listened_albums.call_args.kwargs == {"limit": 500, "offset": 0}
+        app.dependency_overrides.clear()
+
+
 class TestRefreshRecent:
     def test_enqueues_and_returns_202(self, client, app):
         from app.di import get_sqs_client

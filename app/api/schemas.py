@@ -63,6 +63,9 @@ class PostListItem(BaseModel):
     posted_date: date
     rating: Optional[float]
     category: Optional[str] = None
+    # FEAT-member-dashboard-realdata Step 3: album cover for the /profile draft card
+    # (Post.album_cover_url). Lets a draft review render a cover without a second fetch.
+    album_cover_url: Optional[str] = None
     # STAB-5 Step 4: review tag names attached to the post (admin list view).
     tags: List[str] = Field(default_factory=list)
 
@@ -296,6 +299,45 @@ class SpotifyConnectionResponse(BaseModel):
 
 class RefreshRecentResponse(BaseModel):
     status: str  # "queued"
+
+
+# ====== Member listening — durable data (FEAT-member-dashboard-realdata) ======
+# Goal 5 keeps these distinct from the cache above:
+#   - 최근 재생 트랙  → spotify_recent_tracks (rolling track-level CACHE, D-B). Its
+#     head doubles as the "최근 재생" (latest-played) now-playing fallback (D-C).
+#   - 들은 앨범(누적) → aggregate of spotify_play_events (append-only log), NOT a
+#     table (D-A): per-album play_count + first/last play, the durable archive.
+
+class RecentTrackItem(BaseModel):
+    spotify_track_id: str
+    track_name: str
+    artist_name: Optional[str] = None
+    album_name: Optional[str] = None
+    # Resolved catalog album id + brief when the track's album is in our catalog;
+    # null/None for tracks whose album we don't have (still shown, denormalized).
+    album_id: Optional[str] = None
+    album: Optional[AlbumBrief] = None
+    played_at: datetime
+
+
+class RecentTracksResponse(BaseModel):
+    items: List[RecentTrackItem] = Field(default_factory=list)
+    # When the worker last wrote the recent-tracks cache (max synced_at), or None.
+    last_synced_at: Optional[datetime] = None
+
+
+class ListenedAlbumItem(BaseModel):
+    album_id: str
+    play_count: int
+    first_played_at: datetime
+    last_played_at: datetime
+    album: AlbumBrief
+
+
+class ListenedAlbumsResponse(BaseModel):
+    items: List[ListenedAlbumItem] = Field(default_factory=list)
+    # Total distinct listened albums (for pagination / a "N albums" stat).
+    total: int = 0
 
 
 # ====== Sections (STAB-5) ======
