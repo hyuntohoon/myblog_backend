@@ -1,8 +1,9 @@
 # app/clients/sqs_client.py
-# Thin SQS producer for the backend. The only message the backend sends is the
-# manual "지금 새로고침" listening-refresh trigger ({"job": "spotify_refresh"}); the
-# worker consumes it and performs the actual Spotify read (hard rule #9 — the
-# user-facing endpoint must never call Spotify synchronously).
+# Thin SQS producer for the backend. The backend sends two messages, both async
+# job triggers the worker consumes (hard rule #9 — a user-facing endpoint must
+# never call Spotify synchronously):
+#   {"job": "spotify_refresh"}        — manual "지금 새로고침" listening-refresh
+#   {"job": "spotify_library_sync"}   — explicit Spotify Library bucket reconcile
 from __future__ import annotations
 
 import json
@@ -38,6 +39,29 @@ class SqsClient:
             MessageBody=json.dumps({"job": "spotify_refresh"}),
         )
         logger.info("enqueued listening refresh job")
+        return True
+
+    def send_library_sync(self) -> bool:
+        """Enqueue a Spotify-Library sync job ({"job": "spotify_library_sync"}); the
+        worker consumes it and performs the actual Spotify reads/diffs/writes (hard
+        rule #9 — the user-facing endpoint must never call Spotify synchronously).
+        Returns False (and logs) when no queue is configured — e.g. local dev — so
+        the endpoint degrades to a no-op instead of 500ing."""
+        if not self.queue_url:
+            logger.info("SQS_QUEUE_URL unset; library sync not enqueued (local/dev)")
+            return False
+        import boto3
+
+        sqs = boto3.client(
+            "sqs",
+            region_name=settings.AWS_DEFAULT_REGION,
+            endpoint_url=(settings.LOCALSTACK_ENDPOINT or None),
+        )
+        sqs.send_message(
+            QueueUrl=self.queue_url,
+            MessageBody=json.dumps({"job": "spotify_library_sync"}),
+        )
+        logger.info("enqueued spotify library sync job")
         return True
 
 

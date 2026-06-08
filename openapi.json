@@ -215,6 +215,11 @@
             "title": "Items",
             "type": "array"
           },
+          "kind": {
+            "default": "review",
+            "title": "Kind",
+            "type": "string"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -1093,6 +1098,114 @@
         "title": "SpotifyConnectionResponse",
         "type": "object"
       },
+      "SpotifyLibraryAlbumState": {
+        "properties": {
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "in_bucket": {
+            "title": "In Bucket",
+            "type": "boolean"
+          },
+          "in_spotify": {
+            "title": "In Spotify",
+            "type": "boolean"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "spotify_id": {
+            "title": "Spotify Id",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "album_id",
+          "spotify_id",
+          "source",
+          "state",
+          "in_bucket",
+          "in_spotify"
+        ],
+        "title": "SpotifyLibraryAlbumState",
+        "type": "object"
+      },
+      "SpotifyLibraryStateResponse": {
+        "properties": {
+          "albums": {
+            "items": {
+              "$ref": "#/components/schemas/SpotifyLibraryAlbumState"
+            },
+            "title": "Albums",
+            "type": "array"
+          },
+          "bucket_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bucket Id"
+          },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          },
+          "needs_reauth": {
+            "default": false,
+            "title": "Needs Reauth",
+            "type": "boolean"
+          },
+          "writes_enabled": {
+            "default": false,
+            "title": "Writes Enabled",
+            "type": "boolean"
+          }
+        },
+        "title": "SpotifyLibraryStateResponse",
+        "type": "object"
+      },
+      "SpotifyLibrarySyncResponse": {
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "SpotifyLibrarySyncResponse",
+        "type": "object"
+      },
       "TagItem": {
         "properties": {
           "name": {
@@ -1746,6 +1859,53 @@
           }
         ],
         "summary": "Reorder",
+        "tags": [
+          "buckets"
+        ]
+      }
+    },
+    "/api/buckets/spotify-library/state": {
+      "get": {
+        "operationId": "spotify_library_state_api_buckets_spotify_library_state_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpotifyLibraryStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Spotify Library State",
+        "tags": [
+          "buckets"
+        ]
+      }
+    },
+    "/api/buckets/spotify-library/sync": {
+      "post": {
+        "operationId": "spotify_library_sync_api_buckets_spotify_library_sync_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpotifyLibrarySyncResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Spotify Library Sync",
         "tags": [
           "buckets"
         ]

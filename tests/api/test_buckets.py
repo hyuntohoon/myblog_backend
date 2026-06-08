@@ -40,7 +40,8 @@ def _item(item_id="it-1", album_id="alb-1", position=0, status="candidate"):
 
 
 def _bucket(
-    bucket_id="bk-1", name="꼭", position=0, is_done=False, items=(), children=()
+    bucket_id="bk-1", name="꼭", position=0, is_done=False, items=(),
+    children=(), kind="review",
 ):
     b = MagicMock()
     b.id = bucket_id
@@ -48,6 +49,9 @@ def _bucket(
     b.position = position
     b.color = None
     b.is_done = is_done
+    # FEAT-spotify-library-sync: BucketResponse now carries `kind` (validated as a
+    # str), so set it explicitly — a bare MagicMock auto-vivifies a non-string here.
+    b.kind = kind
     b.items = list(items)
     # list_buckets() attaches descendants on the transient `children_nodes`
     # attribute; the route serializes it recursively. MagicMock would otherwise
