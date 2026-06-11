@@ -110,6 +110,147 @@
         "title": "AlbumBrief",
         "type": "object"
       },
+      "AlbumResearchResponse": {
+        "properties": {
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "last_instruction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Instruction"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "prompt_version": {
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "refine_count": {
+            "default": 0,
+            "title": "Refine Count",
+            "type": "integer"
+          },
+          "requested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested At"
+          },
+          "result_md": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Md"
+          },
+          "search_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Count"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tokens_in": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens In"
+          },
+          "tokens_out": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens Out"
+          }
+        },
+        "required": [
+          "album_id",
+          "prompt_version",
+          "status"
+        ],
+        "title": "AlbumResearchResponse",
+        "type": "object"
+      },
       "BucketItemResponse": {
         "properties": {
           "album": {
@@ -164,6 +305,11 @@
               }
             ],
             "title": "Rec Reason"
+          },
+          "research_selected": {
+            "default": false,
+            "title": "Research Selected",
+            "type": "boolean"
           },
           "status": {
             "title": "Status",
@@ -227,6 +373,11 @@
           "position": {
             "title": "Position",
             "type": "integer"
+          },
+          "research_mode": {
+            "default": "off",
+            "title": "Research Mode",
+            "type": "string"
           }
         },
         "required": [
@@ -999,6 +1150,38 @@
         "title": "ReorderRequest",
         "type": "object"
       },
+      "ResearchTriggerRequest": {
+        "properties": {
+          "instruction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "restart",
+                  "refine"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          }
+        },
+        "title": "ResearchTriggerRequest",
+        "type": "object"
+      },
       "ReviewedAlbumResponse": {
         "properties": {
           "album": {
@@ -1334,6 +1517,17 @@
             ],
             "title": "Post Id"
           },
+          "research_selected": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Research Selected"
+          },
           "status": {
             "anyOf": [
               {
@@ -1399,6 +1593,22 @@
               }
             ],
             "title": "Position"
+          },
+          "research_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "all",
+                  "selected"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Research Mode"
           }
         },
         "title": "UpdateBucketRequest",
@@ -3004,6 +3214,103 @@
         "summary": "Create Post",
         "tags": [
           "publish"
+        ]
+      }
+    },
+    "/api/research/albums/{album_id}": {
+      "get": {
+        "operationId": "get_album_research_api_research_albums__album_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "album_id",
+            "required": true,
+            "schema": {
+              "title": "Album Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumResearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Album Research",
+        "tags": [
+          "research"
+        ]
+      },
+      "post": {
+        "operationId": "trigger_album_research_api_research_albums__album_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "album_id",
+            "required": true,
+            "schema": {
+              "title": "Album Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResearchTriggerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumResearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Trigger Album Research",
+        "tags": [
+          "research"
         ]
       }
     },

@@ -276,6 +276,7 @@ class BucketService:
         color: Any = _UNSET,
         position: Optional[int] = None,
         is_done: Optional[bool] = None,
+        research_mode: Optional[str] = None,
     ) -> ReviewBucket:
         bucket = self.get_bucket(db, bucket_id)
         if bucket is None:
@@ -290,6 +291,12 @@ class BucketService:
             bucket.color = color or None
         if position is not None:
             bucket.position = int(position)
+        if research_mode is not None:
+            # FEAT-album-research-notes: opt-in auto-research scope. Schema Literal
+            # gates the request layer; guard here for direct service callers.
+            if research_mode not in ("off", "all", "selected"):
+                raise ValueError("research_mode must be off|all|selected")
+            bucket.research_mode = research_mode
         if is_done is not None:
             # The partial unique index (idx_review_buckets_single_done) enforces
             # at-most-one done bucket; a second true surfaces as IntegrityError →
@@ -379,6 +386,7 @@ class BucketService:
         note: Optional[str] = None,
         status: Optional[str] = None,
         post_id: Optional[str] = None,
+        research_selected: Optional[bool] = None,
     ) -> ReviewBucketItem:
         item = (
             db.query(ReviewBucketItem)
@@ -396,6 +404,9 @@ class BucketService:
             item.status = status
         if post_id is not None:
             item.post_id = post_id or None
+        if research_selected is not None:
+            # FEAT-album-research-notes: per-item auto-research checkbox.
+            item.research_selected = bool(research_selected)
         db.commit()
         db.refresh(item)
         return item

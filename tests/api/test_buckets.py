@@ -35,6 +35,9 @@ def _item(item_id="it-1", album_id="alb-1", position=0, status="candidate"):
     it.status = status
     it.post_id = None
     it.rec_reason = "신보"
+    # research_selected is a validated bool on BucketItemResponse — a bare MagicMock
+    # would fail validation, so set it explicitly (same reason as bucket.kind below).
+    it.research_selected = False
     it.album = _album(album_id=album_id)
     return it
 
@@ -52,6 +55,9 @@ def _bucket(
     # FEAT-spotify-library-sync: BucketResponse now carries `kind` (validated as a
     # str), so set it explicitly — a bare MagicMock auto-vivifies a non-string here.
     b.kind = kind
+    # research_mode is a validated str on BucketResponse (off|all|selected) — set it
+    # explicitly so a bare MagicMock doesn't auto-vivify a non-string / truthy value.
+    b.research_mode = "off"
     b.items = list(items)
     # list_buckets() attaches descendants on the transient `children_nodes`
     # attribute; the route serializes it recursively. MagicMock would otherwise

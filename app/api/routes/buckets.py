@@ -25,7 +25,7 @@ from app.clients.sqs_client import get_spotify_connection_status
 from app.core.auth import require_cognito_token
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.di import get_bucket_service, get_sqs_client
+from app.di import get_bucket_service, get_research_service, get_sqs_client
 from app.services.bucket_service import (
     AlbumNotFoundError,
     BucketNotFoundError,
@@ -33,10 +33,40 @@ from app.services.bucket_service import (
     DuplicateItemError,
     ItemNotFoundError,
 )
+from app.services.research_service import ResearchService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ── auto-research enqueue (FEAT-album-research-notes) ────────────────────────────
+# Fire-and-forget: a research hiccup must NEVER fail the bucket op (log + continue).
+# The response is built from already-committed bucket state before these run, so a
+# rollback here can't corrupt it. In $0 mode the enqueue is a plain INSERT (no SQS).
+
+def _safe_enqueue_album(db, research_svc, album_id) -> None:
+    try:
+        research_svc.enqueue_album(db, str(album_id))
+    except Exception:
+        db.rollback()
+        logger.warning(
+            "research auto-enqueue failed for album %s (continuing)", album_id,
+            exc_info=True,
+        )
+
+
+def _safe_enqueue_bucket(db, research_svc, bucket) -> None:
+    try:
+        n = research_svc.enqueue_bucket(db, bucket)
+        if n:
+            logger.info("auto-enqueued %d research row(s) for bucket %s", n, bucket.id)
+    except Exception:
+        db.rollback()
+        logger.warning(
+            "research bucket enqueue failed for bucket %s (continuing)", bucket.id,
+            exc_info=True,
+        )
 
 
 def _album_brief(album) -> AlbumBrief:
@@ -60,6 +90,7 @@ def _item_response(item, already_reviewed: bool) -> BucketItemResponse:
         post_id=str(item.post_id) if item.post_id else None,
         rec_reason=item.rec_reason,
         already_reviewed=already_reviewed,
+        research_selected=item.research_selected,
         album=_album_brief(item.album),
     )
 
@@ -84,6 +115,7 @@ def _bucket_response(b, reviewed: set) -> BucketResponse:
         color=b.color,
         is_done=b.is_done,
         kind=b.kind,
+        research_mode=b.research_mode,
         items=[
             _item_response(it, str(it.album_id) in reviewed) for it in b.items
         ],
@@ -193,6 +225,7 @@ def create_bucket(
         color=bucket.color,
         is_done=bucket.is_done,
         kind=bucket.kind,
+        research_mode=bucket.research_mode,
         items=[],
     )
 
@@ -203,6 +236,7 @@ def update_bucket(
     req: UpdateBucketRequest,
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
+    research_svc: ResearchService = Depends(get_research_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
     updates = req.model_dump(exclude_unset=True)
@@ -219,17 +253,23 @@ def update_bucket(
             status_code=409, detail='"작성 완료" 버킷은 하나만 지정할 수 있습니다.'
         )
     reviewed = svc.reviewed_album_ids(db, [str(it.album_id) for it in bucket.items])
-    return BucketResponse(
+    resp = BucketResponse(
         id=str(bucket.id),
         name=bucket.name,
         position=bucket.position,
         color=bucket.color,
         is_done=bucket.is_done,
         kind=bucket.kind,
+        research_mode=bucket.research_mode,
         items=[
             _item_response(it, str(it.album_id) in reviewed) for it in bucket.items
         ],
     )
+    # Auto-research: switching a bucket to 'all'/'selected' enqueues its note-less
+    # in-scope items (dedup-gated; flipping modes never re-calls noted albums).
+    if updates.get("research_mode") in ("all", "selected"):
+        _safe_enqueue_bucket(db, research_svc, bucket)
+    return resp
 
 
 @router.delete("/{bucket_id}", status_code=204)
@@ -298,6 +338,7 @@ def add_item(
     req: AddBucketItemRequest,
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
+    research_svc: ResearchService = Depends(get_research_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
     try:
@@ -309,7 +350,12 @@ def add_item(
     except DuplicateItemError:
         raise HTTPException(status_code=409, detail="Album already in this bucket")
     reviewed = svc.reviewed_album_ids(db, [str(item.album_id)])
-    return _item_response(item, str(item.album_id) in reviewed)
+    resp = _item_response(item, str(item.album_id) in reviewed)
+    # Auto-research: an item added to an 'all'-mode bucket is enqueued (dedup-gated).
+    bucket = svc.get_bucket(db, bucket_id)
+    if bucket is not None and bucket.research_mode == "all":
+        _safe_enqueue_album(db, research_svc, item.album_id)
+    return resp
 
 
 @router.patch(
@@ -321,6 +367,7 @@ def update_item(
     req: UpdateBucketItemRequest,
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
+    research_svc: ResearchService = Depends(get_research_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
     updates = req.model_dump(exclude_unset=True)
@@ -329,7 +376,14 @@ def update_item(
     except ItemNotFoundError:
         raise HTTPException(status_code=404, detail="Item not found")
     reviewed = svc.reviewed_album_ids(db, [str(item.album_id)])
-    return _item_response(item, str(item.album_id) in reviewed)
+    resp = _item_response(item, str(item.album_id) in reviewed)
+    # Auto-research: checking research_selected while the bucket is 'selected' mode
+    # enqueues that album (dedup-gated). Unchecking/other updates trigger nothing.
+    if updates.get("research_selected") is True:
+        bucket = svc.get_bucket(db, bucket_id)
+        if bucket is not None and bucket.research_mode == "selected":
+            _safe_enqueue_album(db, research_svc, item.album_id)
+    return resp
 
 
 @router.delete("/{bucket_id}/items/{item_id}", status_code=204)

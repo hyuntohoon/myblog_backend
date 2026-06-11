@@ -4,6 +4,7 @@ from app.services.section_service import SectionService
 from app.services.tag_service import TagService
 from app.services.bucket_service import BucketService
 from app.services.library_service import LibraryService
+from app.services.research_service import ResearchService
 from app.repositories.post_repository import PostRepository
 from app.repositories.section_repository import SectionRepository
 from app.repositories.tag_repository import TagRepository
@@ -24,6 +25,10 @@ def get_bucket_service() -> BucketService:
 
 def get_library_service() -> LibraryService:
     return LibraryService()
+
+
+def get_research_service() -> ResearchService:
+    return ResearchService()
 
 
 def get_sqs_client():
