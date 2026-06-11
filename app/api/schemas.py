@@ -190,6 +190,11 @@ class BucketItemResponse(BaseModel):
     already_reviewed: bool = False
     # FEAT-album-research-notes: per-item auto-research checkbox (see UpdateBucketItemRequest).
     research_selected: bool = False
+    # FEAT-album-research-notes: latest research-note status for this album
+    # ('queued'|'running'|'done'|'failed'), or null when never researched. Lets the
+    # cover badge render the done/in-progress dot on first paint without a per-cover
+    # GET (the note GET stays the on-open / live-poll source of truth).
+    research_status: Optional[str] = None
     album: AlbumBrief
 
 

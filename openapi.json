@@ -311,6 +311,17 @@
             "title": "Research Selected",
             "type": "boolean"
           },
+          "research_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Research Status"
+          },
           "status": {
             "title": "Status",
             "type": "string"
