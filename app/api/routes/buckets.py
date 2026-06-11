@@ -80,7 +80,9 @@ def _album_brief(album) -> AlbumBrief:
     )
 
 
-def _item_response(item, already_reviewed: bool) -> BucketItemResponse:
+def _item_response(
+    item, already_reviewed: bool, research_status: str | None = None
+) -> BucketItemResponse:
     return BucketItemResponse(
         id=str(item.id),
         album_id=str(item.album_id),
@@ -91,6 +93,7 @@ def _item_response(item, already_reviewed: bool) -> BucketItemResponse:
         rec_reason=item.rec_reason,
         already_reviewed=already_reviewed,
         research_selected=item.research_selected,
+        research_status=research_status,
         album=_album_brief(item.album),
     )
 
@@ -107,7 +110,7 @@ def _iter_tree(roots):
         yield from _iter_tree(getattr(node, "children_nodes", []) or [])
 
 
-def _bucket_response(b, reviewed: set) -> BucketResponse:
+def _bucket_response(b, reviewed: set, research: dict[str, str]) -> BucketResponse:
     return BucketResponse(
         id=str(b.id),
         name=b.name,
@@ -117,10 +120,13 @@ def _bucket_response(b, reviewed: set) -> BucketResponse:
         kind=b.kind,
         research_mode=b.research_mode,
         items=[
-            _item_response(it, str(it.album_id) in reviewed) for it in b.items
+            _item_response(
+                it, str(it.album_id) in reviewed, research.get(str(it.album_id))
+            )
+            for it in b.items
         ],
         children=[
-            _bucket_response(child, reviewed)
+            _bucket_response(child, reviewed, research)
             for child in (getattr(b, "children_nodes", []) or [])
         ],
     )
@@ -132,16 +138,18 @@ def _bucket_response(b, reviewed: set) -> BucketResponse:
 def list_buckets(
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
+    research_svc: ResearchService = Depends(get_research_service),
 ):
     roots = svc.list_buckets(db)
-    # Batch the already_reviewed lookup across every queued album in the whole
-    # tree (one query), then serialize roots recursively into nested children.
+    # Batch the already_reviewed + research-status lookups across every album in the
+    # whole tree (one query each), then serialize roots recursively into children.
     all_album_ids = [
         str(it.album_id) for b in _iter_tree(roots) for it in b.items
     ]
     reviewed = svc.reviewed_album_ids(db, all_album_ids)
+    research = research_svc.status_map(db, all_album_ids)
     return BucketsResponse(
-        buckets=[_bucket_response(root, reviewed) for root in roots]
+        buckets=[_bucket_response(root, reviewed, research) for root in roots]
     )
 
 
@@ -252,7 +260,9 @@ def update_bucket(
         raise HTTPException(
             status_code=409, detail='"작성 완료" 버킷은 하나만 지정할 수 있습니다.'
         )
-    reviewed = svc.reviewed_album_ids(db, [str(it.album_id) for it in bucket.items])
+    album_ids = [str(it.album_id) for it in bucket.items]
+    reviewed = svc.reviewed_album_ids(db, album_ids)
+    research = research_svc.status_map(db, album_ids)
     resp = BucketResponse(
         id=str(bucket.id),
         name=bucket.name,
@@ -262,7 +272,10 @@ def update_bucket(
         kind=bucket.kind,
         research_mode=bucket.research_mode,
         items=[
-            _item_response(it, str(it.album_id) in reviewed) for it in bucket.items
+            _item_response(
+                it, str(it.album_id) in reviewed, research.get(str(it.album_id))
+            )
+            for it in bucket.items
         ],
     )
     # Auto-research: switching a bucket to 'all'/'selected' enqueues its note-less
@@ -313,6 +326,7 @@ def move_bucket(
     req: MoveBucketRequest,
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
+    research_svc: ResearchService = Depends(get_research_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
     try:
@@ -322,7 +336,7 @@ def move_bucket(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     # Return the full updated nested tree (same shape as GET /api/buckets).
-    return list_buckets(db=db, svc=svc)
+    return list_buckets(db=db, svc=svc, research_svc=research_svc)
 
 
 # ── item operations (Cognito JWT) ───────────────────────────────────────────────
@@ -350,7 +364,10 @@ def add_item(
     except DuplicateItemError:
         raise HTTPException(status_code=409, detail="Album already in this bucket")
     reviewed = svc.reviewed_album_ids(db, [str(item.album_id)])
-    resp = _item_response(item, str(item.album_id) in reviewed)
+    research = research_svc.status_map(db, [str(item.album_id)])
+    resp = _item_response(
+        item, str(item.album_id) in reviewed, research.get(str(item.album_id))
+    )
     # Auto-research: an item added to an 'all'-mode bucket is enqueued (dedup-gated).
     bucket = svc.get_bucket(db, bucket_id)
     if bucket is not None and bucket.research_mode == "all":
@@ -376,7 +393,10 @@ def update_item(
     except ItemNotFoundError:
         raise HTTPException(status_code=404, detail="Item not found")
     reviewed = svc.reviewed_album_ids(db, [str(item.album_id)])
-    resp = _item_response(item, str(item.album_id) in reviewed)
+    research = research_svc.status_map(db, [str(item.album_id)])
+    resp = _item_response(
+        item, str(item.album_id) in reviewed, research.get(str(item.album_id))
+    )
     # Auto-research: checking research_selected while the bucket is 'selected' mode
     # enqueues that album (dedup-gated). Unchecking/other updates trigger nothing.
     if updates.get("research_selected") is True:

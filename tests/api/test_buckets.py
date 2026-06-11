@@ -66,15 +66,23 @@ def _bucket(
     return b
 
 
-def _override(app, svc):
+def _override(app, svc, research_svc=None):
     # Import get_db lazily: a module-top import would pull app.core.config at
     # pytest collection time (before the autouse local_env fixture sets env),
     # caching an empty settings singleton that breaks content_sync in other
     # test modules.
     from app.db.session import get_db
+    from app.di import get_research_service
 
     app.dependency_overrides[get_bucket_service] = lambda: svc
     app.dependency_overrides[get_db] = lambda: MagicMock()
+    # The bucket reads/mutations now batch research status (cover-badge seed). The
+    # real ResearchService would run a query against the MagicMock db, so override
+    # it; default returns an empty map → research_status=None on every item.
+    if research_svc is None:
+        research_svc = MagicMock()
+        research_svc.status_map.return_value = {}
+    app.dependency_overrides[get_research_service] = lambda: research_svc
 
 
 class TestListBuckets:
@@ -106,6 +114,35 @@ class TestListBuckets:
 
         assert resp.status_code == 200
         assert resp.json()["buckets"][0]["items"][0]["already_reviewed"] is True
+        app.dependency_overrides.clear()
+
+    def test_research_status_defaults_null_when_never_researched(self, client, app):
+        svc = MagicMock()
+        svc.list_buckets.return_value = [_bucket(items=[_item()])]
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)  # default research_svc → empty status map
+
+        resp = client.get("/api/buckets")
+
+        assert resp.status_code == 200
+        assert resp.json()["buckets"][0]["items"][0]["research_status"] is None
+        app.dependency_overrides.clear()
+
+    def test_research_status_seeded_from_status_map(self, client, app):
+        svc = MagicMock()
+        svc.list_buckets.return_value = [_bucket(items=[_item(album_id="alb-done")])]
+        svc.reviewed_album_ids.return_value = set()
+        research_svc = MagicMock()
+        research_svc.status_map.return_value = {"alb-done": "done"}
+        _override(app, svc, research_svc)
+
+        resp = client.get("/api/buckets")
+
+        assert resp.status_code == 200
+        item = resp.json()["buckets"][0]["items"][0]
+        # The cover badge can now paint the done dot on first paint (no per-cover GET).
+        assert item["research_status"] == "done"
+        research_svc.status_map.assert_called_once()
         app.dependency_overrides.clear()
 
 

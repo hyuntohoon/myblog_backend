@@ -41,6 +41,26 @@ class ResearchService:
             .first()
         )
 
+    def status_map(self, db: Session, album_ids) -> dict[str, str]:
+        """Batch: {album_id -> research status} for the current PROMPT_VERSION.
+
+        Albums with no research row are absent from the map (the caller renders
+        those as "never researched"). One query for the whole bucket tree, mirroring
+        BucketService.reviewed_album_ids — so the cover badge can paint the done/
+        in-progress dot from the bucket payload without a per-cover GET."""
+        ids = {str(a) for a in album_ids}
+        if not ids:
+            return {}
+        rows = (
+            db.query(AlbumResearch.album_id, AlbumResearch.status)
+            .filter(
+                AlbumResearch.album_id.in_(ids),
+                AlbumResearch.prompt_version == PROMPT_VERSION,
+            )
+            .all()
+        )
+        return {str(album_id): status for album_id, status in rows}
+
     def _album_exists(self, db: Session, album_id: str) -> bool:
         return db.query(Album.id).filter(Album.id == album_id).first() is not None
 
