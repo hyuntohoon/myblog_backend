@@ -209,6 +209,7 @@ class TestBucketKindField:
         root.color = None
         root.is_done = False
         root.kind = "review"
+        root.research_mode = "off"
         root.items = []
         root.children_nodes = []
 
@@ -219,6 +220,7 @@ class TestBucketKindField:
         lib.color = None
         lib.is_done = False
         lib.kind = "spotify_library"
+        lib.research_mode = "off"
         lib.items = []
         lib.children_nodes = []
 

@@ -139,6 +139,9 @@ class UpdateBucketRequest(BaseModel):
     color: Optional[str] = None
     position: Optional[int] = None
     is_done: Optional[bool] = None
+    # FEAT-album-research-notes: opt-in auto-research scope for this bucket. A PATCH
+    # to 'all'/'selected' enqueues note-less in-scope items (fire-and-forget).
+    research_mode: Optional[Literal["off", "all", "selected"]] = None
 
 
 class AddBucketItemRequest(BaseModel):
@@ -152,6 +155,9 @@ class UpdateBucketItemRequest(BaseModel):
     note: Optional[str] = None
     status: Optional[Literal["candidate", "drafting", "published"]] = None
     post_id: Optional[str] = None
+    # FEAT-album-research-notes: per-item checkbox, meaningful only while the parent
+    # bucket's research_mode='selected'. Checking it (in 'selected' mode) enqueues.
+    research_selected: Optional[bool] = None
 
 
 class ReorderBucket(BaseModel):
@@ -182,6 +188,8 @@ class BucketItemResponse(BaseModel):
     rec_reason: Optional[str] = None
     # Advisory badge: album already has a published review (in post_albums).
     already_reviewed: bool = False
+    # FEAT-album-research-notes: per-item auto-research checkbox (see UpdateBucketItemRequest).
+    research_selected: bool = False
     album: AlbumBrief
 
 
@@ -195,6 +203,9 @@ class BucketResponse(BaseModel):
     # (the single bucket mirroring the owner's Spotify saved-albums Library). Lets the
     # FRONT identify/filter the special bucket out of the normal tree.
     kind: str = "review"
+    # FEAT-album-research-notes: auto-research scope for this bucket
+    # ('off' | 'all' | 'selected'). The front renders the off/전체/선택 control.
+    research_mode: str = "off"
     items: List[BucketItemResponse] = Field(default_factory=list)
     # FEAT-member-dashboard Step 5: nested tree. A bucket's descendants are
     # inlined here (recursive). The top-level BucketsResponse.buckets list holds
@@ -209,6 +220,35 @@ BucketResponse.model_rebuild()
 
 class BucketsResponse(BaseModel):
     buckets: List[BucketResponse] = Field(default_factory=list)
+
+
+# ====== Album research notes (FEAT-album-research-notes) ======
+
+class ResearchTriggerRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    # No mode = first-time manual trigger (no-op if a row already exists).
+    # 'restart' = full redo (clears the note); 'refine' = incremental update that
+    # keeps the existing note and applies `instruction` (valid on a done row only).
+    mode: Optional[Literal["restart", "refine"]] = None
+    instruction: Optional[str] = None
+
+
+class AlbumResearchResponse(BaseModel):
+    album_id: str
+    prompt_version: str
+    status: str  # queued | running | done | failed
+    model: Optional[str] = None
+    result_md: Optional[str] = None
+    tokens_in: Optional[int] = None
+    tokens_out: Optional[int] = None
+    search_count: Optional[int] = None
+    error: Optional[str] = None
+    refine_count: int = 0
+    last_instruction: Optional[str] = None
+    requested_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
 
 
 class MoveBucketRequest(BaseModel):
