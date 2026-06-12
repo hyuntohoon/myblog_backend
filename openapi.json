@@ -438,6 +438,53 @@
         "title": "CreateBucketRequest",
         "type": "object"
       },
+      "CreateGenreRequest": {
+        "properties": {
+          "definition_md": {
+            "default": "",
+            "title": "Definition Md",
+            "type": "string"
+          },
+          "label": {
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          },
+          "slug": {
+            "minLength": 1,
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "label"
+        ],
+        "title": "CreateGenreRequest",
+        "type": "object"
+      },
       "CreatePostReq": {
         "properties": {
           "album_cover_url": {
@@ -555,6 +602,73 @@
           "posted_date"
         ],
         "title": "CreatePostReq",
+        "type": "object"
+      },
+      "GenreNode": {
+        "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/GenreNode"
+            },
+            "title": "Children",
+            "type": "array"
+          },
+          "definition_md": {
+            "default": "",
+            "title": "Definition Md",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "position": {
+            "default": 0,
+            "title": "Position",
+            "type": "integer"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "label"
+        ],
+        "title": "GenreNode",
+        "type": "object"
+      },
+      "GenreTreeResponse": {
+        "properties": {
+          "genres": {
+            "items": {
+              "$ref": "#/components/schemas/GenreNode"
+            },
+            "title": "Genres",
+            "type": "array"
+          }
+        },
+        "required": [
+          "genres"
+        ],
+        "title": "GenreTreeResponse",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1625,6 +1739,45 @@
         "title": "UpdateBucketRequest",
         "type": "object"
       },
+      "UpdateGenreRequest": {
+        "properties": {
+          "definition_md": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Definition Md"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          }
+        },
+        "title": "UpdateGenreRequest",
+        "type": "object"
+      },
       "UpdatePostRequest": {
         "properties": {
           "album_ids": {
@@ -2471,6 +2624,130 @@
           }
         },
         "summary": "Ping"
+      }
+    },
+    "/api/genres": {
+      "post": {
+        "operationId": "create_genre_api_genres_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGenreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenreNode"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Genre",
+        "tags": [
+          "genres"
+        ]
+      }
+    },
+    "/api/genres/tree": {
+      "get": {
+        "operationId": "genre_tree_api_genres_tree_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenreTreeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Genre Tree",
+        "tags": [
+          "genres"
+        ]
+      }
+    },
+    "/api/genres/{genre_id}": {
+      "put": {
+        "operationId": "update_genre_api_genres__genre_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "genre_id",
+            "required": true,
+            "schema": {
+              "title": "Genre Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateGenreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenreNode"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Genre",
+        "tags": [
+          "genres"
+        ]
       }
     },
     "/api/library/listened-albums": {

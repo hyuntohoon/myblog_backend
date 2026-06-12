@@ -468,3 +468,44 @@ class PostMetrics(BaseModel):
 
 class MetricsBatchResponse(BaseModel):
     data: Dict[str, PostMetrics]
+
+
+# ====== Genres (FEAT-genre-system Step 4) ======
+# Machine-labeled tier-0 taxonomy (12 fixed nodes) + owner-editable definitions.
+# parent_id ships now so the tier-1 sub-genre RFC attaches without migration.
+# GET /api/genres/tree is public (edge_guard catch-all); POST/PUT are Cognito-JWT.
+
+class GenreNode(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: str
+    slug: str
+    label: str
+    parent_id: Optional[str] = None
+    definition_md: str = ""
+    position: int = 0
+    # Nested children (tier-1 under tier-0). Empty for leaf/tier-1 nodes today.
+    children: List["GenreNode"] = Field(default_factory=list)
+
+
+class GenreTreeResponse(BaseModel):
+    genres: List[GenreNode]
+
+
+class CreateGenreRequest(BaseModel):
+    slug: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    parent_id: Optional[str] = None
+    definition_md: str = ""
+    position: Optional[int] = None
+
+
+class UpdateGenreRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    # All optional; exclude_unset on the route distinguishes "not provided" from an
+    # explicit clear (definition_md=""). slug/parent_id are not mutable here — the
+    # taxonomy shape is owner-stable; only label/definition/order are edited.
+    label: Optional[str] = None
+    definition_md: Optional[str] = None
+    position: Optional[int] = None
