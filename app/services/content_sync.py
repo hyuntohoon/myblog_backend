@@ -18,9 +18,31 @@ from app.services.publish_service import (
     github_delete_file,
     publish_to_github,
 )
-from myblog_shared_db.models import Album, Post
+from myblog_shared_db.models import Album, AlbumGenre, Genre, Post
 
 logger = logging.getLogger(__name__)
+
+
+def _album_genre_labels(db: Session, album_id: str) -> list[str]:
+    """Real tier-0 genre labels for an album's frontmatter (FEAT-genre-system F8).
+
+    Prefers high-confidence rows; falls back to the album's own low-confidence
+    rows only when no high-confidence row exists. (Owner decision 2026-06-13:
+    high-first, else low. The RFC's "zero-high should not happen post-Step 3"
+    was wrong — 269/983 albums are low-only, all carrying real 12-vocab English
+    labels, so emitting their low rows beats reverting to the artist-copy fake.)
+    Ordered by the genre's display `position` (matches /genres ordering).
+    Returns [] only when the album has no album_genres rows at all.
+    """
+    rows = (
+        db.query(Genre.label, AlbumGenre.confidence)
+        .join(AlbumGenre, AlbumGenre.genre_id == Genre.id)
+        .filter(AlbumGenre.album_id == album_id)
+        .order_by(Genre.position)
+        .all()
+    )
+    high = [label for label, conf in rows if conf == "high"]
+    return high or [label for label, _conf in rows]
 
 
 def _github_config() -> Optional[tuple[str, str, str]]:
@@ -51,17 +73,19 @@ def derive_subject_meta(db: Session, album_ids: list[str]) -> tuple[bool, Option
         al = db.query(Album).filter(Album.id == album_ids[0]).first()
         if al is not None:
             best_new = bool(getattr(al, "best_new", False))
-            primary_artist = al.artists[0] if al.artists else None
-            artist_genres: list[str] = []
-            if primary_artist is not None and getattr(primary_artist, "genres", None):
-                raw = primary_artist.genres or []
-                artist_genres = [str(g) for g in raw if g]
+            # Real tier-0 genres from album_genres; artist-copy strings are only a
+            # fallback for an album with no album_genres rows (FEAT-genre-system F8).
+            genres = _album_genre_labels(db, album_ids[0])
+            if not genres:
+                primary_artist = al.artists[0] if al.artists else None
+                if primary_artist is not None and getattr(primary_artist, "genres", None):
+                    genres = [str(g) for g in (primary_artist.genres or []) if g]
             music_review = {
                 "subject": "album",
                 "title": al.title,
                 "artists": [a.name for a in al.artists],
                 "releaseDate": al.release_date.isoformat() if al.release_date else None,
-                "genres": artist_genres,
+                "genres": genres,
                 "label": al.label,
                 "cover": {"src": al.cover_url} if al.cover_url else None,
             }
