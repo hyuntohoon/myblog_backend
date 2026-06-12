@@ -110,9 +110,7 @@ class TestGithubDeleteFile:
 
 # ── content_sync.derive_subject_meta (shared by publish + restore) ────────────
 class TestDeriveSubjectMeta:
-    def test_single_album_derives_meta(self):
-        from app.services import content_sync
-
+    def _album(self):
         album = MagicMock()
         album.id = "alb-1"
         album.title = "Inland Empire"
@@ -122,17 +120,35 @@ class TestDeriveSubjectMeta:
         album.best_new = True
         artist = MagicMock()
         artist.name = "YUTO"
-        artist.genres = ["Electronic"]
+        artist.genres = ["한국 랩"]  # ko-KR artist-copy = the fake fallback source
         album.artists = [artist]
+        return album
+
+    def test_single_album_uses_real_album_genres(self):
+        from app.services import content_sync
+
+        album = self._album()
         db = MagicMock()
         db.query.return_value.filter.return_value.first.return_value = album
-
-        best_new, mr = content_sync.derive_subject_meta(db, ["alb-1"])
+        with patch.object(
+            content_sync, "_album_genre_labels", return_value=["Hip-Hop", "R&B-Soul"]
+        ):
+            best_new, mr = content_sync.derive_subject_meta(db, ["alb-1"])
         assert best_new is True
         assert mr["title"] == "Inland Empire"
-        assert mr["genres"] == ["Electronic"]
+        assert mr["genres"] == ["Hip-Hop", "R&B-Soul"]  # real 12-vocab, not 한국 랩
         assert mr["releaseDate"] == "2026-03-14"
         assert mr["cover"] == {"src": "https://cdn.example.com/c.jpg"}
+
+    def test_falls_back_to_artist_copy_when_no_album_genres(self):
+        from app.services import content_sync
+
+        album = self._album()
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = album
+        with patch.object(content_sync, "_album_genre_labels", return_value=[]):
+            _best_new, mr = content_sync.derive_subject_meta(db, ["alb-1"])
+        assert mr["genres"] == ["한국 랩"]
 
     def test_zero_or_multi_album_no_meta(self):
         from app.services import content_sync
@@ -140,6 +156,34 @@ class TestDeriveSubjectMeta:
         db = MagicMock()
         assert content_sync.derive_subject_meta(db, []) == (False, None)
         assert content_sync.derive_subject_meta(db, ["a", "b"]) == (False, None)
+
+
+# ── content_sync._album_genre_labels (high-first, else low) ───────────────────
+class TestAlbumGenreLabels:
+    def _db_returning(self, rows):
+        db = MagicMock()
+        chain = db.query.return_value.join.return_value.filter.return_value.order_by.return_value
+        chain.all.return_value = rows
+        return db
+
+    def test_prefers_high_confidence(self):
+        from app.services import content_sync
+
+        db = self._db_returning([("Hip-Hop", "high"), ("Pop", "low"), ("Rock", "high")])
+        # low 'Pop' is dropped when any high row exists (open-Q4: low hidden under high)
+        assert content_sync._album_genre_labels(db, "alb-1") == ["Hip-Hop", "Rock"]
+
+    def test_low_only_album_uses_low(self):
+        from app.services import content_sync
+
+        db = self._db_returning([("Pop", "low"), ("Latin", "low")])
+        assert content_sync._album_genre_labels(db, "alb-1") == ["Pop", "Latin"]
+
+    def test_no_rows_returns_empty(self):
+        from app.services import content_sync
+
+        db = self._db_returning([])
+        assert content_sync._album_genre_labels(db, "alb-1") == []
 
 
 # ── DELETE route un-publishes the MDX ────────────────────────────────────────
