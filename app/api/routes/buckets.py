@@ -305,6 +305,7 @@ def reorder(
     req: ReorderRequest,
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
+    research_svc: ResearchService = Depends(get_research_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
     try:
@@ -313,6 +314,15 @@ def reorder(
         raise HTTPException(status_code=404, detail="Bucket not found")
     except ItemNotFoundError:
         raise HTTPException(status_code=404, detail="Item not found")
+    # Auto-research: dragging an album INTO an 'all'-mode bucket persists through
+    # this cross-bucket reorder (bucket_id reassigned), which add_item's enqueue
+    # never sees — so a moved-in album would otherwise never get a research row.
+    # Enqueue each touched 'all' bucket's note-less items here too (dedup-gated, so
+    # already-noted/queued albums and pure within-bucket reorders are no-ops).
+    for b in req.buckets:
+        bucket = svc.get_bucket(db, b.id)
+        if bucket is not None and bucket.research_mode == "all":
+            _safe_enqueue_bucket(db, research_svc, bucket)
     return Response(status_code=204)
 
 
