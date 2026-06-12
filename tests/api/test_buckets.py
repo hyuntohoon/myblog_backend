@@ -395,6 +395,41 @@ class TestReorder:
         assert payload == [{"id": "bk-1", "item_ids": ["it-2", "it-1"]}]
         app.dependency_overrides.clear()
 
+    def test_reorder_into_all_mode_bucket_enqueues_research(self, client, app):
+        # An album dragged into an 'all'-mode bucket persists via /reorder (not
+        # add_item), so the reorder path must enqueue the now-resident items.
+        svc = MagicMock()
+        all_bucket = _bucket(bucket_id="bk-all")
+        all_bucket.research_mode = "all"
+        svc.get_bucket.return_value = all_bucket
+        research_svc = MagicMock()
+        research_svc.enqueue_bucket.return_value = 1
+        _override(app, svc, research_svc)
+
+        resp = client.put(
+            "/api/buckets/reorder",
+            json={"buckets": [{"id": "bk-all", "item_ids": ["it-1"]}]},
+        )
+
+        assert resp.status_code == 204
+        research_svc.enqueue_bucket.assert_called_once()
+        app.dependency_overrides.clear()
+
+    def test_reorder_into_off_mode_bucket_skips_research(self, client, app):
+        svc = MagicMock()
+        svc.get_bucket.return_value = _bucket(bucket_id="bk-off")  # research_mode='off'
+        research_svc = MagicMock()
+        _override(app, svc, research_svc)
+
+        resp = client.put(
+            "/api/buckets/reorder",
+            json={"buckets": [{"id": "bk-off", "item_ids": ["it-1"]}]},
+        )
+
+        assert resp.status_code == 204
+        research_svc.enqueue_bucket.assert_not_called()
+        app.dependency_overrides.clear()
+
     def test_reorder_unknown_bucket_returns_404(self, client, app):
         svc = MagicMock()
         svc.reorder.side_effect = BucketNotFoundError("bk-x")
