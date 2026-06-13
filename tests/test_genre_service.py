@@ -50,11 +50,11 @@ class TestListTree:
 
 class TestLabelsMap:
     def _db_rows(self, rows):
-        """A MagicMock db whose query(...).join().filter().filter().order_by().all()
-        yields `rows` (the chain labels_map issues)."""
+        """A MagicMock db whose query(...).join().filter().order_by().all() yields
+        `rows` (the chain labels_map issues; rows are (album_id, label, confidence))."""
         db = MagicMock()
         chain = db.query.return_value.join.return_value.filter.return_value
-        chain.filter.return_value.order_by.return_value.all.return_value = rows
+        chain.order_by.return_value.all.return_value = rows
         return db
 
     def test_empty_album_ids_skips_query(self):
@@ -62,20 +62,30 @@ class TestLabelsMap:
         assert GenreService().labels_map(db, []) == {}
         db.query.assert_not_called()
 
-    def test_groups_labels_by_album_preserving_order(self):
-        # Query returns (album_id, label) ordered by genre position; [0] is primary.
+    def test_groups_high_labels_by_album_preserving_order(self):
+        # Rows are (album_id, label, confidence) ordered by genre position; [0] primary.
         rows = [
-            ("alb1", "Rock"),
-            ("alb1", "Pop"),
-            ("alb2", "Hip-Hop"),
+            ("alb1", "Rock", "high"),
+            ("alb1", "Pop", "high"),
+            ("alb2", "Hip-Hop", "high"),
         ]
         out = GenreService().labels_map(self._db_rows(rows), ["alb1", "alb2"])
         assert out == {"alb1": ["Rock", "Pop"], "alb2": ["Hip-Hop"]}
 
+    def test_low_used_only_as_fallback_when_no_high(self):
+        # alb1 has a high row → low is ignored. alb2 is low-only → low is used.
+        rows = [
+            ("alb1", "Rock", "high"),
+            ("alb1", "Jazz", "low"),
+            ("alb2", "Hip-Hop", "low"),
+        ]
+        out = GenreService().labels_map(self._db_rows(rows), ["alb1", "alb2"])
+        assert out == {"alb1": ["Rock"], "alb2": ["Hip-Hop"]}
+
     def test_uuid_album_ids_normalized_to_str_keys(self):
         import uuid
         aid = uuid.uuid4()
-        out = GenreService().labels_map(self._db_rows([(aid, "Jazz")]), [aid])
+        out = GenreService().labels_map(self._db_rows([(aid, "Jazz", "high")]), [aid])
         assert out == {str(aid): ["Jazz"]}
 
 
