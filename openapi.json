@@ -71,6 +71,13 @@
             ],
             "title": "Cover Url"
           },
+          "genres": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Genres",
+            "type": "array"
+          },
           "id": {
             "title": "Id",
             "type": "string"

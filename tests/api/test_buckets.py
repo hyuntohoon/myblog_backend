@@ -66,13 +66,13 @@ def _bucket(
     return b
 
 
-def _override(app, svc, research_svc=None):
+def _override(app, svc, research_svc=None, genre_svc=None):
     # Import get_db lazily: a module-top import would pull app.core.config at
     # pytest collection time (before the autouse local_env fixture sets env),
     # caching an empty settings singleton that breaks content_sync in other
     # test modules.
     from app.db.session import get_db
-    from app.di import get_research_service
+    from app.di import get_genre_service, get_research_service
 
     app.dependency_overrides[get_bucket_service] = lambda: svc
     app.dependency_overrides[get_db] = lambda: MagicMock()
@@ -83,6 +83,13 @@ def _override(app, svc, research_svc=None):
         research_svc = MagicMock()
         research_svc.status_map.return_value = {}
     app.dependency_overrides[get_research_service] = lambda: research_svc
+    # FEAT-bucket-organize Step 2: bucket responses also batch genre labels. Same
+    # reason — override so the real query doesn't hit the MagicMock db; default
+    # returns an empty map → genres=[] on every album.
+    if genre_svc is None:
+        genre_svc = MagicMock()
+        genre_svc.labels_map.return_value = {}
+    app.dependency_overrides[get_genre_service] = lambda: genre_svc
 
 
 class TestListBuckets:
@@ -102,6 +109,25 @@ class TestListBuckets:
         assert bucket["items"][0]["album"]["title"] == "Album"
         assert bucket["items"][0]["already_reviewed"] is False
         assert bucket["items"][0]["rec_reason"] == "신보"
+        # No genre map override → genres defaults to [] (FEAT-bucket-organize Step 2).
+        assert bucket["items"][0]["album"]["genres"] == []
+        app.dependency_overrides.clear()
+
+    def test_list_surfaces_high_confidence_genres_on_album(self, client, app):
+        # FEAT-bucket-organize Step 2: labels_map result flows onto AlbumBrief.genres,
+        # primary ([0]) first.
+        svc = MagicMock()
+        svc.list_buckets.return_value = [_bucket(items=[_item(album_id="alb-g")])]
+        svc.reviewed_album_ids.return_value = set()
+        genre_svc = MagicMock()
+        genre_svc.labels_map.return_value = {"alb-g": ["Rock", "Pop"]}
+        _override(app, svc, genre_svc=genre_svc)
+
+        resp = client.get("/api/buckets")
+
+        assert resp.status_code == 200
+        album = resp.json()["buckets"][0]["items"][0]["album"]
+        assert album["genres"] == ["Rock", "Pop"]
         app.dependency_overrides.clear()
 
     def test_already_reviewed_badge_set_from_post_albums(self, client, app):

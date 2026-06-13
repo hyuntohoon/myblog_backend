@@ -48,6 +48,37 @@ class TestListTree:
         assert GenreService().list_tree(_db_returning([])) == []
 
 
+class TestLabelsMap:
+    def _db_rows(self, rows):
+        """A MagicMock db whose query(...).join().filter().filter().order_by().all()
+        yields `rows` (the chain labels_map issues)."""
+        db = MagicMock()
+        chain = db.query.return_value.join.return_value.filter.return_value
+        chain.filter.return_value.order_by.return_value.all.return_value = rows
+        return db
+
+    def test_empty_album_ids_skips_query(self):
+        db = MagicMock()
+        assert GenreService().labels_map(db, []) == {}
+        db.query.assert_not_called()
+
+    def test_groups_labels_by_album_preserving_order(self):
+        # Query returns (album_id, label) ordered by genre position; [0] is primary.
+        rows = [
+            ("alb1", "Rock"),
+            ("alb1", "Pop"),
+            ("alb2", "Hip-Hop"),
+        ]
+        out = GenreService().labels_map(self._db_rows(rows), ["alb1", "alb2"])
+        assert out == {"alb1": ["Rock", "Pop"], "alb2": ["Hip-Hop"]}
+
+    def test_uuid_album_ids_normalized_to_str_keys(self):
+        import uuid
+        aid = uuid.uuid4()
+        out = GenreService().labels_map(self._db_rows([(aid, "Jazz")]), [aid])
+        assert out == {str(aid): ["Jazz"]}
+
+
 class TestUpdate:
     def test_missing_genre_raises(self):
         svc = GenreService()

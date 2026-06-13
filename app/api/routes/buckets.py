@@ -25,7 +25,12 @@ from app.clients.sqs_client import get_spotify_connection_status
 from app.core.auth import require_cognito_token
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.di import get_bucket_service, get_research_service, get_sqs_client
+from app.di import (
+    get_bucket_service,
+    get_genre_service,
+    get_research_service,
+    get_sqs_client,
+)
 from app.services.bucket_service import (
     AlbumNotFoundError,
     BucketNotFoundError,
@@ -33,6 +38,7 @@ from app.services.bucket_service import (
     DuplicateItemError,
     ItemNotFoundError,
 )
+from app.services.genre_service import GenreService
 from app.services.research_service import ResearchService
 
 logger = logging.getLogger(__name__)
@@ -69,7 +75,7 @@ def _safe_enqueue_bucket(db, research_svc, bucket) -> None:
         )
 
 
-def _album_brief(album) -> AlbumBrief:
+def _album_brief(album, genres: list[str] | None = None) -> AlbumBrief:
     return AlbumBrief(
         id=str(album.id),
         title=album.title,
@@ -77,11 +83,15 @@ def _album_brief(album) -> AlbumBrief:
         release_date=album.release_date,
         popularity=album.popularity,
         artist_names=[a.name for a in album.artists],
+        genres=genres or [],
     )
 
 
 def _item_response(
-    item, already_reviewed: bool, research_status: str | None = None
+    item,
+    already_reviewed: bool,
+    research_status: str | None = None,
+    genres: list[str] | None = None,
 ) -> BucketItemResponse:
     return BucketItemResponse(
         id=str(item.id),
@@ -94,7 +104,7 @@ def _item_response(
         already_reviewed=already_reviewed,
         research_selected=item.research_selected,
         research_status=research_status,
-        album=_album_brief(item.album),
+        album=_album_brief(item.album, genres),
     )
 
 
@@ -110,7 +120,9 @@ def _iter_tree(roots):
         yield from _iter_tree(getattr(node, "children_nodes", []) or [])
 
 
-def _bucket_response(b, reviewed: set, research: dict[str, str]) -> BucketResponse:
+def _bucket_response(
+    b, reviewed: set, research: dict[str, str], genres: dict[str, list[str]]
+) -> BucketResponse:
     return BucketResponse(
         id=str(b.id),
         name=b.name,
@@ -121,12 +133,15 @@ def _bucket_response(b, reviewed: set, research: dict[str, str]) -> BucketRespon
         research_mode=b.research_mode,
         items=[
             _item_response(
-                it, str(it.album_id) in reviewed, research.get(str(it.album_id))
+                it,
+                str(it.album_id) in reviewed,
+                research.get(str(it.album_id)),
+                genres.get(str(it.album_id)),
             )
             for it in b.items
         ],
         children=[
-            _bucket_response(child, reviewed, research)
+            _bucket_response(child, reviewed, research, genres)
             for child in (getattr(b, "children_nodes", []) or [])
         ],
     )
@@ -139,17 +154,21 @@ def list_buckets(
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
+    genre_svc: GenreService = Depends(get_genre_service),
 ):
     roots = svc.list_buckets(db)
-    # Batch the already_reviewed + research-status lookups across every album in the
-    # whole tree (one query each), then serialize roots recursively into children.
+    # Batch the already_reviewed + research-status + genre-label lookups across every
+    # album in the whole tree (one query each), then serialize roots recursively.
     all_album_ids = [
         str(it.album_id) for b in _iter_tree(roots) for it in b.items
     ]
     reviewed = svc.reviewed_album_ids(db, all_album_ids)
     research = research_svc.status_map(db, all_album_ids)
+    genres = genre_svc.labels_map(db, all_album_ids)
     return BucketsResponse(
-        buckets=[_bucket_response(root, reviewed, research) for root in roots]
+        buckets=[
+            _bucket_response(root, reviewed, research, genres) for root in roots
+        ]
     )
 
 
@@ -245,6 +264,7 @@ def update_bucket(
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
+    genre_svc: GenreService = Depends(get_genre_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
     updates = req.model_dump(exclude_unset=True)
@@ -263,6 +283,7 @@ def update_bucket(
     album_ids = [str(it.album_id) for it in bucket.items]
     reviewed = svc.reviewed_album_ids(db, album_ids)
     research = research_svc.status_map(db, album_ids)
+    genres = genre_svc.labels_map(db, album_ids)
     resp = BucketResponse(
         id=str(bucket.id),
         name=bucket.name,
@@ -273,7 +294,10 @@ def update_bucket(
         research_mode=bucket.research_mode,
         items=[
             _item_response(
-                it, str(it.album_id) in reviewed, research.get(str(it.album_id))
+                it,
+                str(it.album_id) in reviewed,
+                research.get(str(it.album_id)),
+                genres.get(str(it.album_id)),
             )
             for it in bucket.items
         ],
@@ -337,6 +361,7 @@ def move_bucket(
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
+    genre_svc: GenreService = Depends(get_genre_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
     try:
@@ -346,7 +371,9 @@ def move_bucket(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     # Return the full updated nested tree (same shape as GET /api/buckets).
-    return list_buckets(db=db, svc=svc, research_svc=research_svc)
+    return list_buckets(
+        db=db, svc=svc, research_svc=research_svc, genre_svc=genre_svc
+    )
 
 
 # ── item operations (Cognito JWT) ───────────────────────────────────────────────
@@ -363,6 +390,7 @@ def add_item(
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
+    genre_svc: GenreService = Depends(get_genre_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
     try:
@@ -375,8 +403,12 @@ def add_item(
         raise HTTPException(status_code=409, detail="Album already in this bucket")
     reviewed = svc.reviewed_album_ids(db, [str(item.album_id)])
     research = research_svc.status_map(db, [str(item.album_id)])
+    genres = genre_svc.labels_map(db, [str(item.album_id)])
     resp = _item_response(
-        item, str(item.album_id) in reviewed, research.get(str(item.album_id))
+        item,
+        str(item.album_id) in reviewed,
+        research.get(str(item.album_id)),
+        genres.get(str(item.album_id)),
     )
     # Auto-research: an item added to an 'all'-mode bucket is enqueued (dedup-gated).
     bucket = svc.get_bucket(db, bucket_id)
@@ -395,6 +427,7 @@ def update_item(
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
+    genre_svc: GenreService = Depends(get_genre_service),
     _claims: Dict = Depends(require_cognito_token),
 ):
     updates = req.model_dump(exclude_unset=True)
@@ -404,8 +437,12 @@ def update_item(
         raise HTTPException(status_code=404, detail="Item not found")
     reviewed = svc.reviewed_album_ids(db, [str(item.album_id)])
     research = research_svc.status_map(db, [str(item.album_id)])
+    genres = genre_svc.labels_map(db, [str(item.album_id)])
     resp = _item_response(
-        item, str(item.album_id) in reviewed, research.get(str(item.album_id))
+        item,
+        str(item.album_id) in reviewed,
+        research.get(str(item.album_id)),
+        genres.get(str(item.album_id)),
     )
     # Auto-research: checking research_selected while the bucket is 'selected' mode
     # enqueues that album (dedup-gated). Unchecking/other updates trigger nothing.

@@ -69,6 +69,36 @@ class GenreService:
     def get(self, db: Session, genre_id: str) -> Optional[Genre]:
         return db.query(Genre).filter(Genre.id == genre_id).first()
 
+    def labels_map(self, db: Session, album_ids) -> dict[str, List[str]]:
+        """Batch {album_id -> [high-confidence tier-0 genre labels]} for the crate
+        view (FEAT-bucket-organize Step 2). One query for the whole bucket tree,
+        mirroring ResearchService.status_map.
+
+        Labels are ordered by the genre's display `position`, so element [0] is the
+        album's primary genre — the single "home" used by the front's group-by-genre
+        (OQ5) — and the full list drives the genre filter. HIGH-confidence only
+        (OQ4): an album whose only album_genres rows are low-confidence is absent
+        from the map (the front renders it as "no genre"). This deliberately differs
+        from the review-frontmatter path (content_sync._album_genre_labels), which
+        falls back to low — there the goal is "any real label beats the artist-copy
+        fake", here the goal is a clean, high-signal navigation surface.
+        """
+        ids = {str(a) for a in album_ids}
+        if not ids:
+            return {}
+        rows = (
+            db.query(AlbumGenre.album_id, Genre.label)
+            .join(Genre, Genre.id == AlbumGenre.genre_id)
+            .filter(AlbumGenre.album_id.in_(ids))
+            .filter(AlbumGenre.confidence == "high")
+            .order_by(Genre.position)
+            .all()
+        )
+        out: dict[str, List[str]] = {}
+        for album_id, label in rows:
+            out.setdefault(str(album_id), []).append(label)
+        return out
+
     # ── writes ───────────────────────────────────────────────────────────────
 
     def create(
