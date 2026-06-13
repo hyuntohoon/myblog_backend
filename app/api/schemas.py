@@ -176,6 +176,12 @@ class AlbumBrief(BaseModel):
     release_date: Optional[date] = None
     popularity: Optional[int] = None
     artist_names: List[str] = Field(default_factory=list)
+    # FEAT-bucket-organize Step 2: high-confidence tier-0 genre labels (album_genres
+    # join), ordered by the genre's display position so element [0] is the album's
+    # primary genre (the single "home" for the crate's group-by-genre, OQ5); the full
+    # list drives the genre filter. HIGH-confidence only (OQ4) — empty when the album
+    # has no high-confidence rows. Additive + front-graceful.
+    genres: List[str] = Field(default_factory=list)
 
 
 class BucketItemResponse(BaseModel):
