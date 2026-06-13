@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from myblog_shared_db.models import Genre
+from myblog_shared_db.models import AlbumGenre, Genre
 
 # Sentinel for "argument not provided" — lets update() tell an omitted field apart
 # from an explicit clear (mirrors bucket_service._UNSET). The route strips unsent
@@ -48,8 +48,19 @@ class GenreService:
         rows = db.execute(
             select(Genre).order_by(Genre.position, Genre.label)
         ).scalars().all()
+        # Album distribution for the /genres share-bars: one grouped count over
+        # album_genres (all confidences), attached as the transient `album_count`.
+        # Direct attachments per genre — tier-0 nodes are attached directly by the
+        # machine pipeline, so no roll-up is needed at the current 2-tier depth.
+        counts: dict[Any, int] = {
+            gid: int(cnt)
+            for gid, cnt in db.execute(
+                select(AlbumGenre.genre_id, func.count()).group_by(AlbumGenre.genre_id)
+            ).all()
+        }
         by_parent: dict[Optional[Any], List[Genre]] = {}
         for g in rows:
+            g.album_count = int(counts.get(g.id, 0))
             by_parent.setdefault(g.parent_id, []).append(g)
         for g in rows:
             g.children_nodes = by_parent.get(g.id, [])

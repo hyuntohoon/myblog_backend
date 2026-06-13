@@ -484,6 +484,11 @@ class GenreNode(BaseModel):
     parent_id: Optional[str] = None
     definition_md: str = ""
     position: int = 0
+    # Albums tagged with this genre in `album_genres` (all confidences). Drives the
+    # /genres map's share-bar distribution (e.g. Hip-Hop ~49%). Read-only, derived —
+    # NOT the human-editable surface. Direct attachments only (children roll up
+    # their own; tier-0 genres are attached directly by the machine pipeline).
+    album_count: int = 0
     # Nested children (tier-1 under tier-0). Empty for leaf/tier-1 nodes today.
     children: List["GenreNode"] = Field(default_factory=list)
 

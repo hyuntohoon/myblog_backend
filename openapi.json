@@ -606,6 +606,11 @@
       },
       "GenreNode": {
         "properties": {
+          "album_count": {
+            "default": 0,
+            "title": "Album Count",
+            "type": "integer"
+          },
           "children": {
             "items": {
               "$ref": "#/components/schemas/GenreNode"
