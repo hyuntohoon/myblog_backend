@@ -36,6 +36,7 @@ def _node(g) -> GenreNode:
         parent_id=str(g.parent_id) if g.parent_id else None,
         definition_md=g.definition_md,
         position=g.position,
+        album_count=int(getattr(g, "album_count", 0) or 0),
         children=[_node(c) for c in (getattr(g, "children_nodes", []) or [])],
     )
 

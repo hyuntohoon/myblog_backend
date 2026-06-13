@@ -12,7 +12,7 @@ from app.services.genre_service import (
 
 def _genre(
     genre_id="gen-1", slug="pop", label="Pop", parent_id=None,
-    definition_md="", position=0, children=(),
+    definition_md="", position=0, album_count=0, children=(),
 ):
     g = MagicMock()
     g.id = genre_id
@@ -21,6 +21,9 @@ def _genre(
     g.parent_id = parent_id
     g.definition_md = definition_md
     g.position = position
+    # Transient count attached by list_tree(); the route serializes it (a bare
+    # MagicMock would be truthy-but-non-int and break int() in _node).
+    g.album_count = album_count
     # list_tree() attaches descendants on the transient `children_nodes`; the route
     # serializes it recursively. A bare MagicMock would auto-vivify a truthy child.
     g.children_nodes = list(children)
@@ -56,6 +59,22 @@ class TestGenreTree:
         assert len(node["children"]) == 1
         assert node["children"][0]["slug"] == "city-pop"
         assert node["children"][0]["parent_id"] == "gen-1"
+        app.dependency_overrides.clear()
+
+    def test_tree_serializes_album_count(self, client, app):
+        # album_count (transient, set by list_tree) flows into the response and
+        # drives the /genres share-bars. Defaults to 0 when a genre has no albums.
+        root = _genre(album_count=1210, children=[_genre(genre_id="gen-2", slug="drill", label="Drill")])
+        svc = MagicMock()
+        svc.list_tree.return_value = [root]
+        _override(app, svc)
+
+        resp = client.get("/api/genres/tree")
+
+        assert resp.status_code == 200
+        node = resp.json()["genres"][0]
+        assert node["album_count"] == 1210
+        assert node["children"][0]["album_count"] == 0
         app.dependency_overrides.clear()
 
     def test_tree_empty(self, client, app):
