@@ -52,11 +52,12 @@ class GenreService:
         # album_genres (all confidences), attached as the transient `album_count`.
         # Direct attachments per genre — tier-0 nodes are attached directly by the
         # machine pipeline, so no roll-up is needed at the current 2-tier depth.
-        counts = dict(
-            db.execute(
+        counts: dict[Any, int] = {
+            gid: int(cnt)
+            for gid, cnt in db.execute(
                 select(AlbumGenre.genre_id, func.count()).group_by(AlbumGenre.genre_id)
             ).all()
-        )
+        }
         by_parent: dict[Optional[Any], List[Genre]] = {}
         for g in rows:
             g.album_count = int(counts.get(g.id, 0))
