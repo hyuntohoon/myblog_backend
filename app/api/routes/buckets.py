@@ -14,6 +14,10 @@ from app.api.schemas import (
     BucketsResponse,
     CreateBucketRequest,
     MoveBucketRequest,
+    PublicAlbumBrief,
+    PublicBucket,
+    PublicBucketItem,
+    PublicBucketsResponse,
     ReorderRequest,
     SpotifyLibraryAlbumState,
     SpotifyLibraryStateResponse,
@@ -131,6 +135,7 @@ def _bucket_response(
         is_done=b.is_done,
         kind=b.kind,
         research_mode=b.research_mode,
+        is_public=b.is_public,
         items=[
             _item_response(
                 it,
@@ -147,7 +152,11 @@ def _bucket_response(
     )
 
 
-# ── reads (edge_guard only — no JWT; covered by GET /api/{proxy+}) ──────────────
+# ── owner's full board (Cognito JWT) ─────────────────────────────────────────────
+# FEAT-public-bucket-multiuser Scope A / A5: this returns the owner's ENTIRE bucket
+# tree incl. private/workflow crates + the spotify_library bucket, so it is now
+# Cognito-gated (was edge_guard-only — every front caller already sends Bearer via
+# apiFetch). Unauthenticated read of public shelves lives at GET /public below.
 
 @router.get("", response_model=BucketsResponse)
 def list_buckets(
@@ -155,6 +164,7 @@ def list_buckets(
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
     genre_svc: GenreService = Depends(get_genre_service),
+    _claims: Dict = Depends(require_cognito_token),
 ):
     roots = svc.list_buckets(db)
     # Batch the already_reviewed + research-status + genre-label lookups across every
@@ -168,6 +178,53 @@ def list_buckets(
     return BucketsResponse(
         buckets=[
             _bucket_response(root, reviewed, research, genres) for root in roots
+        ]
+    )
+
+
+# ── public read-only viewer (NO auth — FEAT-public-bucket-multiuser Scope A) ─────
+# Whitelisted projection of is_public=true, kind='review' buckets ONLY, served
+# unauthenticated (edge_guard catch-all) so the public /collection viewer renders
+# without login. Private item fields are dropped by the Public* schemas; the
+# spotify_library bucket is excluded in the service; flat (no nesting) so the
+# private tree structure can't leak. Declared before the /{bucket_id}/* patterns;
+# /public is a literal GET with no GET /{bucket_id} sibling, so no ambiguity.
+
+@router.get("/public", response_model=PublicBucketsResponse)
+def list_public_buckets(
+    db: Session = Depends(get_db),
+    svc: BucketService = Depends(get_bucket_service),
+    genre_svc: GenreService = Depends(get_genre_service),
+):
+    buckets = svc.list_public_buckets(db)
+    all_album_ids = [str(it.album_id) for b in buckets for it in b.items]
+    reviewed = svc.reviewed_album_ids(db, all_album_ids)
+    genres = genre_svc.labels_map(db, all_album_ids)
+    return PublicBucketsResponse(
+        buckets=[
+            PublicBucket(
+                id=str(b.id),
+                name=b.name,
+                position=b.position,
+                color=b.color,
+                items=[
+                    PublicBucketItem(
+                        album_id=str(it.album_id),
+                        position=it.position,
+                        already_reviewed=str(it.album_id) in reviewed,
+                        album=PublicAlbumBrief(
+                            id=str(it.album.id),
+                            title=it.album.title,
+                            cover_url=it.album.cover_url,
+                            release_date=it.album.release_date,
+                            artist_names=[a.name for a in it.album.artists],
+                            genres=genres.get(str(it.album_id), []),
+                        ),
+                    )
+                    for it in b.items
+                ],
+            )
+            for b in buckets
         ]
     )
 
@@ -253,6 +310,7 @@ def create_bucket(
         is_done=bucket.is_done,
         kind=bucket.kind,
         research_mode=bucket.research_mode,
+        is_public=bucket.is_public,
         items=[],
     )
 
@@ -292,6 +350,7 @@ def update_bucket(
         is_done=bucket.is_done,
         kind=bucket.kind,
         research_mode=bucket.research_mode,
+        is_public=bucket.is_public,
         items=[
             _item_response(
                 it,
