@@ -372,6 +372,11 @@
             "title": "Is Done",
             "type": "boolean"
           },
+          "is_public": {
+            "default": false,
+            "title": "Is Public",
+            "type": "boolean"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/BucketItemResponse"
@@ -1101,6 +1106,142 @@
         "title": "PostMetrics",
         "type": "object"
       },
+      "PublicAlbumBrief": {
+        "properties": {
+          "artist_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artist Names",
+            "type": "array"
+          },
+          "cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Url"
+          },
+          "genres": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Genres",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "release_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Date"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "title": "PublicAlbumBrief",
+        "type": "object"
+      },
+      "PublicBucket": {
+        "properties": {
+          "color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PublicBucketItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "position"
+        ],
+        "title": "PublicBucket",
+        "type": "object"
+      },
+      "PublicBucketItem": {
+        "properties": {
+          "album": {
+            "$ref": "#/components/schemas/PublicAlbumBrief"
+          },
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "already_reviewed": {
+            "default": false,
+            "title": "Already Reviewed",
+            "type": "boolean"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "album_id",
+          "position",
+          "album"
+        ],
+        "title": "PublicBucketItem",
+        "type": "object"
+      },
+      "PublicBucketsResponse": {
+        "properties": {
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/PublicBucket"
+            },
+            "title": "Buckets",
+            "type": "array"
+          }
+        },
+        "title": "PublicBucketsResponse",
+        "type": "object"
+      },
       "RecentTrackItem": {
         "properties": {
           "album": {
@@ -1709,6 +1850,17 @@
             ],
             "title": "Is Done"
           },
+          "is_public": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Public"
+          },
           "name": {
             "anyOf": [
               {
@@ -2161,6 +2313,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Buckets",
         "tags": [
           "buckets"
@@ -2206,6 +2363,27 @@
           }
         ],
         "summary": "Create Bucket",
+        "tags": [
+          "buckets"
+        ]
+      }
+    },
+    "/api/buckets/public": {
+      "get": {
+        "operationId": "list_public_buckets_api_buckets_public_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicBucketsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Public Buckets",
         "tags": [
           "buckets"
         ]

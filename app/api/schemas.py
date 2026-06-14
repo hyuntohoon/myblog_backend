@@ -142,6 +142,10 @@ class UpdateBucketRequest(BaseModel):
     # FEAT-album-research-notes: opt-in auto-research scope for this bucket. A PATCH
     # to 'all'/'selected' enqueues note-less in-scope items (fire-and-forget).
     research_mode: Optional[Literal["off", "all", "selected"]] = None
+    # FEAT-public-bucket-multiuser Scope A: opt-in public visibility. When true this
+    # bucket appears in the public read-only viewer (GET /api/buckets/public). Default
+    # false (private); the owner toggles it per bucket. spotify_library is never public.
+    is_public: Optional[bool] = None
 
 
 class AddBucketItemRequest(BaseModel):
@@ -217,6 +221,9 @@ class BucketResponse(BaseModel):
     # FEAT-album-research-notes: auto-research scope for this bucket
     # ('off' | 'all' | 'selected'). The front renders the off/전체/선택 control.
     research_mode: str = "off"
+    # FEAT-public-bucket-multiuser Scope A: whether this bucket is published to the
+    # public read-only viewer. Owner-only view (GET /api/buckets is now Cognito-gated).
+    is_public: bool = False
     items: List[BucketItemResponse] = Field(default_factory=list)
     # FEAT-member-dashboard Step 5: nested tree. A bucket's descendants are
     # inlined here (recursive). The top-level BucketsResponse.buckets list holds
@@ -231,6 +238,42 @@ BucketResponse.model_rebuild()
 
 class BucketsResponse(BaseModel):
     buckets: List[BucketResponse] = Field(default_factory=list)
+
+
+# ── Public bucket viewer (FEAT-public-bucket-multiuser Scope A) ──────────────────
+# A deliberately WHITELISTED projection served unauthenticated at
+# GET /api/buckets/public. It exposes ONLY album-shelf information for is_public=true,
+# kind='review' buckets. It intentionally OMITS every private field — bucket items'
+# `note` / `rec_reason` / `status` / `post_id` / `research_*`, and the bucket's
+# `is_done` / `kind` / `research_mode` / nesting. Never widen this without review.
+
+class PublicAlbumBrief(BaseModel):
+    id: str
+    title: str
+    cover_url: Optional[str] = None
+    release_date: Optional[date] = None
+    artist_names: List[str] = Field(default_factory=list)
+    genres: List[str] = Field(default_factory=list)
+
+
+class PublicBucketItem(BaseModel):
+    album_id: str
+    position: int
+    # Public-safe: the album already has a published (public) review on this site.
+    already_reviewed: bool = False
+    album: PublicAlbumBrief
+
+
+class PublicBucket(BaseModel):
+    id: str
+    name: str
+    position: int
+    color: Optional[str] = None
+    items: List[PublicBucketItem] = Field(default_factory=list)
+
+
+class PublicBucketsResponse(BaseModel):
+    buckets: List[PublicBucket] = Field(default_factory=list)
 
 
 # ====== Album research notes (FEAT-album-research-notes) ======

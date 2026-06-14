@@ -44,7 +44,7 @@ def _item(item_id="it-1", album_id="alb-1", position=0, status="candidate"):
 
 def _bucket(
     bucket_id="bk-1", name="꼭", position=0, is_done=False, items=(),
-    children=(), kind="review",
+    children=(), kind="review", is_public=False,
 ):
     b = MagicMock()
     b.id = bucket_id
@@ -52,6 +52,9 @@ def _bucket(
     b.position = position
     b.color = None
     b.is_done = is_done
+    # FEAT-public-bucket-multiuser Scope A: BucketResponse validates is_public as a
+    # bool — set it explicitly so a bare MagicMock doesn't auto-vivify a non-bool.
+    b.is_public = is_public
     # FEAT-spotify-library-sync: BucketResponse now carries `kind` (validated as a
     # str), so set it explicitly — a bare MagicMock auto-vivifies a non-string here.
     b.kind = kind
@@ -172,6 +175,100 @@ class TestListBuckets:
         app.dependency_overrides.clear()
 
 
+    def test_list_includes_is_public(self, client, app):
+        svc = MagicMock()
+        svc.list_buckets.return_value = [_bucket(is_public=True)]
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.get("/api/buckets")
+
+        assert resp.status_code == 200
+        assert resp.json()["buckets"][0]["is_public"] is True
+        app.dependency_overrides.clear()
+
+    def test_list_requires_jwt_in_prod(self, client):
+        # FEAT-public-bucket-multiuser A5: the owner's full board (incl. private +
+        # spotify_library buckets) must NOT be readable without a valid Cognito JWT.
+        import app.core.auth as auth_module
+
+        fake_settings = MagicMock()
+        fake_settings.ENV = "prod"
+        fake_settings.COGNITO_USER_POOL_ID = "ap-northeast-2_TestPool"
+        fake_settings.COGNITO_REGION = "ap-northeast-2"
+
+        with patch.object(auth_module, "settings", fake_settings):
+            resp = client.get("/api/buckets")
+
+        assert resp.status_code == 401
+
+
+class TestPublicBuckets:
+    def test_public_returns_whitelisted_shelves(self, client, app):
+        svc = MagicMock()
+        svc.list_public_buckets.return_value = [
+            _bucket(name="공개 셸프", is_public=True, items=[_item()])
+        ]
+        svc.reviewed_album_ids.return_value = {"alb-1"}
+        _override(app, svc)
+
+        resp = client.get("/api/buckets/public")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["buckets"]) == 1
+        bucket = data["buckets"][0]
+        assert bucket["name"] == "공개 셸프"
+        item = bucket["items"][0]
+        assert item["album"]["title"] == "Album"
+        assert item["already_reviewed"] is True
+        # The service is what filters to is_public + kind='review'; the route calls it.
+        assert svc.list_public_buckets.called
+        app.dependency_overrides.clear()
+
+    def test_public_omits_private_item_and_bucket_fields(self, client, app):
+        # Security: the public projection must NOT echo private fields.
+        svc = MagicMock()
+        svc.list_public_buckets.return_value = [
+            _bucket(name="공개", is_public=True, items=[_item()])
+        ]
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.get("/api/buckets/public")
+
+        assert resp.status_code == 200
+        bucket = resp.json()["buckets"][0]
+        # bucket-level private/internal fields absent
+        for forbidden in ("is_done", "kind", "research_mode", "is_public", "children"):
+            assert forbidden not in bucket
+        # item-level private fields absent (note / rec_reason / status / post_id / research)
+        item = bucket["items"][0]
+        for forbidden in ("note", "rec_reason", "status", "post_id", "research_selected", "research_status"):
+            assert forbidden not in item
+        app.dependency_overrides.clear()
+
+    def test_public_does_not_require_jwt_in_prod(self, client, app):
+        # Unlike GET /api/buckets, the public viewer endpoint must stay readable
+        # without a token (only is_public buckets are exposed).
+        import app.core.auth as auth_module
+
+        svc = MagicMock()
+        svc.list_public_buckets.return_value = []
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        fake_settings = MagicMock()
+        fake_settings.ENV = "prod"
+        fake_settings.COGNITO_USER_POOL_ID = "ap-northeast-2_TestPool"
+        fake_settings.COGNITO_REGION = "ap-northeast-2"
+        with patch.object(auth_module, "settings", fake_settings):
+            resp = client.get("/api/buckets/public")
+
+        assert resp.status_code == 200
+        app.dependency_overrides.clear()
+
+
 class TestCreateBucket:
     def test_create_returns_201(self, client, app):
         svc = MagicMock()
@@ -265,6 +362,33 @@ class TestUpdateBucket:
         assert resp.status_code == 200
         kwargs = svc.update_bucket.call_args.kwargs
         assert kwargs == {"color": None}
+        app.dependency_overrides.clear()
+
+
+    def test_update_is_public_forwarded(self, client, app):
+        svc = MagicMock()
+        svc.update_bucket.return_value = _bucket(is_public=True)
+        _override(app, svc)
+
+        resp = client.patch("/api/buckets/bk-1", json={"is_public": True})
+
+        assert resp.status_code == 200
+        assert resp.json()["is_public"] is True
+        assert svc.update_bucket.call_args.kwargs == {"is_public": True}
+        app.dependency_overrides.clear()
+
+    def test_make_spotify_library_public_returns_400(self, client, app):
+        # The service guards against publishing the spotify_library bucket; the route
+        # maps that ValueError to 400 (same path as a blank name).
+        svc = MagicMock()
+        svc.update_bucket.side_effect = ValueError(
+            "the Spotify library bucket cannot be made public"
+        )
+        _override(app, svc)
+
+        resp = client.patch("/api/buckets/bk-lib", json={"is_public": True})
+
+        assert resp.status_code == 400
         app.dependency_overrides.clear()
 
 

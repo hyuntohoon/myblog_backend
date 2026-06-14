@@ -277,6 +277,7 @@ class BucketService:
         position: Optional[int] = None,
         is_done: Optional[bool] = None,
         research_mode: Optional[str] = None,
+        is_public: Optional[bool] = None,
     ) -> ReviewBucket:
         bucket = self.get_bucket(db, bucket_id)
         if bucket is None:
@@ -302,9 +303,33 @@ class BucketService:
             # at-most-one done bucket; a second true surfaces as IntegrityError →
             # the route maps it to 409.
             bucket.is_done = bool(is_done)
+        if is_public is not None:
+            # FEAT-public-bucket-multiuser Scope A: opt-in public visibility. The
+            # spotify_library bucket must never be published — guard here so a direct
+            # PATCH can't expose the owner's Spotify library through the public viewer.
+            if bool(is_public) and bucket.kind == "spotify_library":
+                raise ValueError("the Spotify library bucket cannot be made public")
+            bucket.is_public = bool(is_public)
         db.commit()
         db.refresh(bucket)
         return bucket
+
+    def list_public_buckets(self, db: Session) -> List[ReviewBucket]:
+        """Flat, position-ordered list of buckets the owner has published
+        (is_public=true) AND that are normal review columns (kind='review').
+
+        Deliberately FLAT (no nesting): exposing the parent/child tree would leak
+        the existence/structure of private buckets via a published child. Each
+        published bucket is a standalone public 'shelf'. The route projects these
+        through the whitelisted Public* schemas (no private item fields).
+        """
+        return (
+            db.query(ReviewBucket)
+            .filter(ReviewBucket.is_public.is_(True))
+            .filter(ReviewBucket.kind == "review")
+            .order_by(ReviewBucket.position, ReviewBucket.created_at)
+            .all()
+        )
 
     def delete_bucket(self, db: Session, bucket_id: str) -> bool:
         bucket = self.get_bucket(db, bucket_id)
