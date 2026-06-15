@@ -616,6 +616,30 @@
         "title": "CreatePostReq",
         "type": "object"
       },
+      "GenreEdge": {
+        "description": "A tier-1 relationship edge (FEAT-genre-subgenres). Drives the /genres\nego-view + the related-review recommendation. `type` \u2208 influenced_by | related\n| parent (the multi-parent fallback, unused in v1).",
+        "properties": {
+          "from_id": {
+            "title": "From Id",
+            "type": "string"
+          },
+          "to_id": {
+            "title": "To Id",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_id",
+          "to_id",
+          "type"
+        ],
+        "title": "GenreEdge",
+        "type": "object"
+      },
       "GenreNode": {
         "properties": {
           "album_count": {
@@ -674,6 +698,13 @@
       },
       "GenreTreeResponse": {
         "properties": {
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/GenreEdge"
+            },
+            "title": "Edges",
+            "type": "array"
+          },
           "genres": {
             "items": {
               "$ref": "#/components/schemas/GenreNode"
@@ -917,6 +948,13 @@
           "description": {
             "title": "Description",
             "type": "string"
+          },
+          "genre_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Genre Ids",
+            "type": "array"
           },
           "id": {
             "title": "Id",
@@ -2005,6 +2043,20 @@
             ],
             "title": "Description"
           },
+          "genre_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Genre Ids"
+          },
           "posted_date": {
             "anyOf": [
               {
@@ -2189,6 +2241,13 @@
             "default": "",
             "title": "Description",
             "type": "string"
+          },
+          "genre_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Genre Ids",
+            "type": "array"
           },
           "posted_date": {
             "format": "date",

@@ -233,6 +233,19 @@ class TestCreatePost:
         assert body["slug"] == "test-post"
         app.dependency_overrides.clear()
 
+    def test_create_forwards_genre_ids(self, client, app):
+        # FEAT-genre-subgenres: editorial sub-genre tags ride the post create
+        # payload (like tags/album_ids), no separate endpoint.
+        mock_svc = MagicMock()
+        mock_svc.create.return_value = _make_post()
+        app.dependency_overrides[get_post_service] = lambda: mock_svc
+
+        resp = client.post("/api/posts", json={**self._payload, "genre_ids": ["g1", "g2"]})
+
+        assert resp.status_code == 200
+        assert mock_svc.create.call_args.kwargs["genre_ids"] == ["g1", "g2"]
+        app.dependency_overrides.clear()
+
     def test_duplicate_slug_returns_409(self, client, app):
         mock_svc = MagicMock()
         mock_svc.create.side_effect = DuplicateSlugError(
@@ -325,6 +338,7 @@ class TestUpdatePost:
                 "category": "jazz",
                 "album_ids": ["a1", "a2"],
                 "artist_ids": ["ar1"],
+                "genre_ids": ["g1", "g2"],
             },
         )
 
@@ -333,6 +347,7 @@ class TestUpdatePost:
         assert kwargs["category"] == "jazz"
         assert kwargs["album_ids"] == ["a1", "a2"]
         assert kwargs["artist_ids"] == ["ar1"]
+        assert kwargs["genre_ids"] == ["g1", "g2"]
         app.dependency_overrides.clear()
 
     def test_update_omits_unset_fields(self, client, app):
@@ -385,6 +400,7 @@ class TestGetPost:
         slug="test-post",
         albums=(),
         artists=(),
+        genres=(),
     ):
         p = MagicMock()
         p.id = post_id
@@ -399,7 +415,22 @@ class TestGetPost:
         p.section.name = "music"
         p.albums = [MagicMock(id=aid) for aid in albums]
         p.artists = [MagicMock(id=aid) for aid in artists]
+        p.genres = [MagicMock(id=gid) for gid in genres]
         return p
+
+    def test_get_returns_genre_ids(self, client, app):
+        # FEAT-genre-subgenres: editorial sub-genre tags seed the writer's genre
+        # picker on edit, so the detail response carries them (like tags).
+        mock_svc = MagicMock()
+        mock_svc.get_by_id.return_value = self._post_with_relations(genres=["g1", "g2"])
+        mock_svc.list_recommended_track_ids.return_value = []
+        app.dependency_overrides[get_post_service] = lambda: mock_svc
+
+        resp = client.get("/api/posts/uuid-1")
+
+        assert resp.status_code == 200
+        assert resp.json()["genre_ids"] == ["g1", "g2"]
+        app.dependency_overrides.clear()
 
     def test_get_returns_recommended_track_ids_in_response(self, client, app):
         mock_svc = MagicMock()

@@ -80,12 +80,29 @@ class TestGenreTree:
     def test_tree_empty(self, client, app):
         svc = MagicMock()
         svc.list_tree.return_value = []
+        svc.list_edges.return_value = []
         _override(app, svc)
 
         resp = client.get("/api/genres/tree")
 
         assert resp.status_code == 200
-        assert resp.json() == {"genres": []}
+        assert resp.json() == {"genres": [], "edges": []}
+        app.dependency_overrides.clear()
+
+    def test_tree_returns_edges(self, client, app):
+        # FEAT-genre-subgenres: the relationship graph (ego-view + recommendation)
+        # rides the public tree read as (from_id, to_id, type) tuples.
+        svc = MagicMock()
+        svc.list_tree.return_value = []
+        svc.list_edges.return_value = [("gen-2", "gen-9", "influenced_by")]
+        _override(app, svc)
+
+        resp = client.get("/api/genres/tree")
+
+        assert resp.status_code == 200
+        assert resp.json()["edges"] == [
+            {"from_id": "gen-2", "to_id": "gen-9", "type": "influenced_by"}
+        ]
         app.dependency_overrides.clear()
 
 

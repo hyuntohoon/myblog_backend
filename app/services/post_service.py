@@ -11,7 +11,7 @@ from app.repositories.post_repository import PostRepository
 from app.repositories.section_repository import SectionRepository
 from app.repositories.tag_repository import TagRepository
 from myblog_shared_db.models import (
-    Album, Post, Artist, Track, ReviewBucketItem,
+    Album, Post, Artist, Genre, Track, ReviewBucketItem,
     post_albums_table as post_albums,
     post_recommended_tracks_table as post_recommended_tracks,
 )
@@ -72,6 +72,24 @@ class PostService:
             )
         return rows
 
+    def _resolve_genres(self, db: Session, ids) -> list:
+        """Resolve editorial sub-genre *ids* → Genre rows; reject unknown ids (no
+        silent drop, mirroring _resolve_tags). Order/dupes don't matter (M:N set).
+        Raises ValueError on any unknown id (route → 400)."""
+        clean = list(dict.fromkeys(
+            str(i).strip() for i in (ids or []) if i and str(i).strip()
+        ))
+        if not clean:
+            return []
+        rows = db.query(Genre).filter(Genre.id.in_(clean)).all()
+        found = {str(g.id) for g in rows}
+        unknown = [i for i in clean if i not in found]
+        if unknown:
+            raise ValueError(
+                "unknown genre id(s): " + ", ".join(repr(u) for u in unknown)
+            )
+        return rows
+
     def create(
         self,
         db: Session,
@@ -83,6 +101,7 @@ class PostService:
         status: str = "published",
         section_name: Optional[str] = None,
         tags: Optional[list[str]] = None,
+        genre_ids: Optional[list[str]] = None,
         album_ids: Optional[list[str]] = None,
         artist_ids: Optional[list[str]] = None,
         album_cover_url: Optional[str] = None,
@@ -110,6 +129,8 @@ class PostService:
         # 1b) 태그 처리 — 시드된 태그만 허용 (섹션과 동일 reject-unknown 정책).
         # 이름→Tag 해석을 INSERT 전에 끝내 unknown이면 글을 만들지 않고 거부.
         tag_objs = self._resolve_tags(db, tags)
+        # 1c) 편집 장르(sub-genre) 처리 — id→Genre 해석, unknown 거부 (태그와 동일).
+        genre_objs = self._resolve_genres(db, genre_ids)
 
         # 2) 슬러그 생성 + 중복 시 hard block
         slug = slugify_title(title)
@@ -158,6 +179,10 @@ class PostService:
         # 6b) 리뷰 태그 연결 (M:N). tag_objs는 1b에서 이미 검증됨 (unknown 거부).
         if tag_objs:
             post.tags = tag_objs
+
+        # 6c) 편집 sub-genre 연결 (M:N, post_genres). genre_objs는 1c에서 검증됨.
+        if genre_objs:
+            post.genres = genre_objs
 
         # 7) 추천 트랙 저장 — set of picked track IDs. album_id is resolved
         #    from tracks.album_id and validated against the post's linked albums.
@@ -224,6 +249,7 @@ class PostService:
         # it resolves to the renamed `section_id` FK.
         section_name = fields.pop("category", _MISSING)
         tags = fields.pop("tags", _MISSING)
+        genre_ids = fields.pop("genre_ids", _MISSING)
         album_ids = fields.pop("album_ids", _MISSING)
         artist_ids = fields.pop("artist_ids", _MISSING)
         recommended_track_ids = fields.pop("recommended_track_ids", _MISSING)
@@ -242,12 +268,18 @@ class PostService:
         # Resolve tag names BEFORE the column update so an unknown tag rejects
         # the whole edit (no partial write). Empty list = explicit clear.
         tag_objs = _MISSING if tags is _MISSING else self._resolve_tags(db, tags)
+        genre_objs = _MISSING if genre_ids is _MISSING else self._resolve_genres(db, genre_ids)
 
         if fields:
             post = self.post_repo.update(db, post, **fields)
 
         if tag_objs is not _MISSING:
             post.tags = tag_objs
+            db.commit()
+            db.refresh(post)
+
+        if genre_objs is not _MISSING:
+            post.genres = genre_objs  # replace-set; [] = explicit clear
             db.commit()
             db.refresh(post)
 
