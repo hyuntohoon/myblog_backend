@@ -98,6 +98,42 @@ class TestPublishHappyPath:
         body = base64.b64decode(sent["content"]).decode("utf-8")
         assert "tags: []" in body
 
+    def test_subgenres_written_to_frontmatter(self, client):
+        # FEAT-genre-subgenres Step 3: editorial sub-genre tags (derived from
+        # post_genres by post_id) land in the MDX frontmatter so the review page
+        # can render the critic's precise genre call.
+        mock_get, mock_put = _mock_github(201)
+        subs = [{"slug": "boom-bap", "label": "Boom Bap"}, {"slug": "jazz-rap", "label": "Jazz Rap"}]
+        with (
+            patch("app.services.publish_service.requests.get", mock_get),
+            patch("app.services.publish_service.requests.put", mock_put),
+            patch("app.api.routes.publish.derive_subgenres", return_value=subs),
+        ):
+            resp = client.post("/api/publish", json=VALID_PAYLOAD)
+
+        assert resp.status_code == 200
+        import base64, json
+        sent = json.loads(mock_put.call_args.kwargs["data"])
+        body = base64.b64decode(sent["content"]).decode("utf-8")
+        line = next(ln for ln in body.splitlines() if ln.startswith("subgenres:"))
+        assert json.loads(line.split("subgenres:", 1)[1].strip()) == subs
+
+    def test_no_subgenres_emits_empty_list(self, client):
+        # No tagged genres ⇒ `subgenres: []` (parses cleanly; review page hides
+        # the block). The autouse stub session yields no post_genres rows.
+        mock_get, mock_put = _mock_github(201)
+        with (
+            patch("app.services.publish_service.requests.get", mock_get),
+            patch("app.services.publish_service.requests.put", mock_put),
+        ):
+            resp = client.post("/api/publish", json=VALID_PAYLOAD)
+
+        assert resp.status_code == 200
+        import base64, json
+        sent = json.loads(mock_put.call_args.kwargs["data"])
+        body = base64.b64decode(sent["content"]).decode("utf-8")
+        assert "subgenres: []" in body
+
     def test_slug_auto_generated_from_title(self, client):
         mock_get, mock_put = _mock_github(201)
         payload = {**VALID_PAYLOAD, "title": "My New Post", "slug": None}

@@ -126,3 +126,32 @@ class TestPostGenres:
         assert _tags(db, p.id) == [gids[1]]          # replace-set, not append
         svc.update(db, str(p.id), genre_ids=[])
         assert _tags(db, p.id) == []                  # [] = explicit clear
+
+    def test_derive_subgenres_returns_ordered_slug_label(self, db, svc, gids):
+        # FEAT-genre-subgenres Step 3: derive_subgenres feeds the review-page
+        # frontmatter. Verify it returns {slug,label} for the tagged genres,
+        # ordered by Genre.position (matches /genres).
+        from app.services import content_sync
+
+        p = svc.create(
+            db, title="Genre RE D", posted_date=date.today(),
+            status="draft", genre_ids=gids[:2],
+        )
+        got = content_sync.derive_subgenres(db, str(p.id))
+        assert all(set(e.keys()) == {"slug", "label"} for e in got)
+        want = db.execute(
+            select(Genre.slug, Genre.position).where(Genre.id.in_(gids[:2]))
+        ).all()
+        assert {e["slug"] for e in got} == {s for s, _ in want}
+        pos_by_slug = {s: pos for s, pos in want}
+        got_positions = [pos_by_slug[e["slug"]] for e in got]
+        assert got_positions == sorted(got_positions)
+
+    def test_derive_subgenres_empty_when_untagged(self, db, svc):
+        from app.services import content_sync
+
+        p = svc.create(
+            db, title="Genre RE E", posted_date=date.today(),
+            status="draft", genre_ids=[],
+        )
+        assert content_sync.derive_subgenres(db, str(p.id)) == []

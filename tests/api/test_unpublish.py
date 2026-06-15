@@ -302,6 +302,9 @@ class TestRestoreRepublishes:
         with (
             patch("app.services.publish_service.requests.get", return_value=get_resp),
             patch("app.services.publish_service.requests.put", return_value=put_resp) as mput,
+            # FEAT-genre-subgenres Step 3: republish now reads post_genres from the
+            # DB; this test's db session is real (unmocked), so stub the lookup.
+            patch("app.services.content_sync.derive_subgenres", return_value=[]),
         ):
             resp = client.patch("/api/posts/post-1/restore")
 
@@ -321,6 +324,7 @@ class TestRestoreRepublishes:
         with (
             patch("app.services.publish_service.requests.get", return_value=get_resp),
             patch("app.services.publish_service.requests.put", return_value=put_resp),
+            patch("app.services.content_sync.derive_subgenres", return_value=[]),
         ):
             resp = client.patch("/api/posts/post-1/restore")
 

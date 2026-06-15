@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import require_cognito_token
 from app.core.config import settings
 from app.db.session import get_db
-from app.services.content_sync import derive_subject_meta
+from app.services.content_sync import derive_subgenres, derive_subject_meta
 from app.services.publish_service import publish_to_github, slugify
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,11 @@ def create_post(
     # album-detail fetch just to render the header. Shared with the restore
     # re-publish path (content_sync) so both emit identical frontmatter.
     best_new, music_review = derive_subject_meta(db, req.album_ids)
+    # FEAT-genre-subgenres Step 3: editorial tier-1 sub-genre tags from the DB
+    # (post_genres, set by the preceding /api/posts create/update via genre_ids).
+    # Derived here — not from the request — so this route and the restore
+    # re-publish (content_sync) emit identical frontmatter.
+    subgenres = derive_subgenres(db, req.post_id or "")
 
     try:
         result = publish_to_github(
@@ -90,6 +95,7 @@ def create_post(
             recommended_track_ids=req.recommended_track_ids,
             music_review=music_review,
             tags=req.tags,
+            subgenres=subgenres,
         )
     except RuntimeError as e:
         raise HTTPException(502, detail=str(e))
