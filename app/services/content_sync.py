@@ -18,9 +18,32 @@ from app.services.publish_service import (
     github_delete_file,
     publish_to_github,
 )
-from myblog_shared_db.models import Album, AlbumGenre, Genre, Post
+from myblog_shared_db.models import Album, AlbumGenre, Genre, Post, post_genres_table
 
 logger = logging.getLogger(__name__)
+
+
+def derive_subgenres(db: Session, post_id: str) -> list[dict]:
+    """Editorial sub-genre tags ({slug, label}) for a post's frontmatter.
+
+    FEAT-genre-subgenres Step 3. The owner-tagged tier-1 sub-genres live in
+    `post_genres` (keyed by post_id), distinct from `music_review.genres` (the
+    machine tier-0 *album* labels). Derived from the DB — not the request — so
+    the publish route and the restore re-publish emit identical frontmatter, the
+    same way `derive_subject_meta` works. Ordered by the genre's display
+    `position` (matches /genres ordering). Empty when the post has no genre tags
+    or `post_id` is blank.
+    """
+    if not post_id:
+        return []
+    rows = (
+        db.query(Genre.slug, Genre.label)
+        .join(post_genres_table, post_genres_table.c.genre_id == Genre.id)
+        .filter(post_genres_table.c.post_id == post_id)
+        .order_by(Genre.position)
+        .all()
+    )
+    return [{"slug": slug, "label": label} for slug, label in rows]
 
 
 def _album_genre_labels(db: Session, album_id: str) -> list[str]:
@@ -132,6 +155,7 @@ def republish_post_content(
     album_ids = [str(a.id) for a in post.albums]
     artist_ids = [str(a.id) for a in post.artists]
     best_new, music_review = derive_subject_meta(db, album_ids)
+    subgenres = derive_subgenres(db, str(post.id))
     return publish_to_github(
         owner=owner,
         repo=repo,
@@ -154,4 +178,5 @@ def republish_post_content(
         recommended_track_ids=recommended_track_ids,
         music_review=music_review,
         tags=[t.name for t in post.tags],
+        subgenres=subgenres,
     )

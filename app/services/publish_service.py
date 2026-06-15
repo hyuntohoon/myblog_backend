@@ -35,6 +35,7 @@ def make_mdx_frontmatter(
     recommended_track_ids: Optional[list[str]] = None,
     music_review: Optional[dict] = None,
     tags: Optional[list[str]] = None,
+    subgenres: Optional[list[dict]] = None,
 ) -> str:
     cat = (category or "default").strip() or "default"
     lines = [
@@ -47,6 +48,11 @@ def make_mdx_frontmatter(
         # STAB-5: review tags surfaced to the static site so /reviews can filter
         # + render them (build-time getCollection reads this). JSON = YAML flow.
         f"tags: {json.dumps(tags or [], ensure_ascii=False)}",
+        # FEAT-genre-subgenres Step 3: editorial tier-1 sub-genre tags
+        # ([{slug,label}]) from post_genres — the critic's precise genre call,
+        # rendered on the review page (distinct from musicReview.genres, the
+        # machine tier-0 album labels). JSON flow = valid YAML.
+        f"subgenres: {json.dumps(subgenres or [], ensure_ascii=False)}",
         "draft: false",
         f"albumIds: {json.dumps(album_ids or [], ensure_ascii=False)}",
         f"artistIds: {json.dumps(artist_ids or [], ensure_ascii=False)}",
@@ -63,7 +69,9 @@ def make_mdx_frontmatter(
     # (e.g. an archived draft); the publish route never hit it because the
     # writer always sends a numeric score.
     if rating is not None:
-        lines.insert(11, f"rating: {rating}")
+        # Insert before `albumCover` (index 12 now that the `subgenres` line sits
+        # above it) so the rating line keeps its place — right after `postId`.
+        lines.insert(12, f"rating: {rating}")
     if music_review:
         # JSON is a YAML subset (single-line flow style), so this parses
         # cleanly as a nested map under the `musicReview:` key. zod sees the
@@ -174,6 +182,7 @@ def publish_to_github(
     recommended_track_ids: Optional[list[str]] = None,
     music_review: Optional[dict] = None,
     tags: Optional[list[str]] = None,
+    subgenres: Optional[list[dict]] = None,
 ) -> dict:
     path = content_path(content_dir, posted_date, slug)
     body_content = body_mdx.strip() if body_mdx else ""
@@ -195,6 +204,7 @@ def publish_to_github(
             recommended_track_ids=recommended_track_ids,
             music_review=music_review,
             tags=tags,
+            subgenres=subgenres,
         )
         + body_content
         + "\n"
