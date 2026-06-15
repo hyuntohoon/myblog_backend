@@ -28,6 +28,11 @@ class WritePostRequest(BaseModel):
     album_ids: List[str] = Field(default_factory=list)
     artist_ids: List[str] = Field(default_factory=list)
 
+    # FEAT-genre-subgenres: editorial tier-1 sub-genre tags — list of genre *ids*
+    # (from the /genres tree palette; unknown ids rejected, 400). The HUMAN layer,
+    # distinct from machine album_genres. Empty list / omitted = no tags.
+    genre_ids: List[str] = Field(default_factory=list)
+
     # 평점
     rating: Optional[float] = Field(default=None, ge=0, le=5)
 
@@ -94,6 +99,9 @@ class UpdatePostRequest(BaseModel):
     # STAB-5 Step 4: review tag names. Empty list = explicit clear; None = "not
     # provided" (no change). exclude_unset on the route preserves the distinction.
     tags: Optional[List[str]] = None
+    # FEAT-genre-subgenres: editorial sub-genre tag ids. Empty list = explicit
+    # clear; None = "not provided" (no change). exclude_unset preserves the distinction.
+    genre_ids: Optional[List[str]] = None
     # Same shape as create — set of track IDs (no position/note).
     # Empty list = explicit clear; None = "not provided" (no change).
     recommended_track_ids: Optional[List[str]] = None
@@ -116,6 +124,8 @@ class PostDetailResponse(BaseModel):
     artist_ids: List[str]
     # STAB-5 Step 4: review tag names (seeds the writer's tag picker on edit).
     tags: List[str] = Field(default_factory=list)
+    # FEAT-genre-subgenres: editorial sub-genre tag ids (seeds the writer's genre picker on edit).
+    genre_ids: List[str] = Field(default_factory=list)
     recommended_track_ids: List[str] = Field(default_factory=list)
     # FEAT-writer-lowfreq-redesign Step 5: joined from the post's subject album
     # so the writer's edit flow can seed the BEST NEW pill on load. Null when
@@ -542,8 +552,20 @@ class GenreNode(BaseModel):
     children: List["GenreNode"] = Field(default_factory=list)
 
 
+class GenreEdge(BaseModel):
+    """A tier-1 relationship edge (FEAT-genre-subgenres). Drives the /genres
+    ego-view + the related-review recommendation. `type` ∈ influenced_by | related
+    | parent (the multi-parent fallback, unused in v1)."""
+    from_id: str
+    to_id: str
+    type: str
+
+
 class GenreTreeResponse(BaseModel):
     genres: List[GenreNode]
+    # FEAT-genre-subgenres: the relationship graph (read-only here; owner authoring
+    # is Step 6). Empty until edges are seeded/added.
+    edges: List[GenreEdge] = Field(default_factory=list)
 
 
 class CreateGenreRequest(BaseModel):

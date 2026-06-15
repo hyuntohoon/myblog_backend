@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from myblog_shared_db.models import AlbumGenre, Genre
+from myblog_shared_db.models import AlbumGenre, Genre, genre_edges_table
 
 # Sentinel for "argument not provided" — lets update() tell an omitted field apart
 # from an explicit clear (mirrors bucket_service._UNSET). The route strips unsent
@@ -65,6 +65,19 @@ class GenreService:
         for g in rows:
             g.children_nodes = by_parent.get(g.id, [])
         return by_parent.get(None, [])
+
+    def list_edges(self, db: Session) -> List[tuple]:
+        """All tier-1 relationship edges as (from_id, to_id, type) string tuples —
+        the ego-view + related-review recommendation graph (FEAT-genre-subgenres).
+        Read-only here; owner authoring is Step 6."""
+        rows = db.execute(
+            select(
+                genre_edges_table.c.from_genre_id,
+                genre_edges_table.c.to_genre_id,
+                genre_edges_table.c.type,
+            )
+        ).all()
+        return [(str(f), str(t), ty) for f, t, ty in rows]
 
     def get(self, db: Session, genre_id: str) -> Optional[Genre]:
         return db.query(Genre).filter(Genre.id == genre_id).first()

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas import (
     CreateGenreRequest,
+    GenreEdge,
     GenreNode,
     GenreTreeResponse,
     UpdateGenreRequest,
@@ -49,7 +50,8 @@ def genre_tree(
     svc: GenreService = Depends(get_genre_service),
 ):
     roots = svc.list_tree(db)
-    return GenreTreeResponse(genres=[_node(r) for r in roots])
+    edges = [GenreEdge(from_id=f, to_id=t, type=ty) for f, t, ty in svc.list_edges(db)]
+    return GenreTreeResponse(genres=[_node(r) for r in roots], edges=edges)
 
 
 # ── mutations (Cognito JWT — copy buckets_post, NOT categories_post) ────────────
