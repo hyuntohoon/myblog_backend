@@ -336,7 +336,7 @@ def update_bucket(
         # Partial unique index: only one is_done bucket allowed.
         db.rollback()
         raise HTTPException(
-            status_code=409, detail='"작성 완료" 버킷은 하나만 지정할 수 있습니다.'
+            status_code=409, detail='"평론 완료" 버킷은 하나만 지정할 수 있습니다.'
         )
     album_ids = [str(it.album_id) for it in bucket.items]
     reviewed = svc.reviewed_album_ids(db, album_ids)
