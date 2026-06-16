@@ -8,10 +8,14 @@
 import logging
 from typing import Dict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.schemas import AlbumResearchResponse, ResearchTriggerRequest
+from app.api.schemas import (
+    AlbumResearchResponse,
+    ResearchStatusMapResponse,
+    ResearchTriggerRequest,
+)
 from app.core.auth import require_cognito_token
 from app.db.session import get_db
 from app.di import get_research_service
@@ -43,6 +47,22 @@ def _research_response(row) -> AlbumResearchResponse:
         started_at=row.started_at,
         finished_at=row.finished_at,
     )
+
+
+@router.get("/status", response_model=ResearchStatusMapResponse)
+def get_research_status_map(
+    album_ids: str = Query(..., description="Comma-separated album ids."),
+    db: Session = Depends(get_db),
+    svc: ResearchService = Depends(get_research_service),
+):
+    """Batched {album_id -> status} for a board's covers in ONE query. Replaces
+    the per-cover GET fan-out (album-count concurrent requests on mount) that hit
+    the Lambda concurrency ceiling and 503'd. Unresearched albums are absent."""
+    ids = [s for s in (album_ids.split(",") if album_ids else []) if s.strip()]
+    # Cap to keep one board's worth; a huge list would be abusive, not a real board.
+    if len(ids) > 500:
+        raise HTTPException(status_code=400, detail="too many album_ids (max 500)")
+    return ResearchStatusMapResponse(statuses=svc.status_map(db, ids))
 
 
 @router.get("/albums/{album_id}", response_model=AlbumResearchResponse)
