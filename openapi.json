@@ -853,6 +853,17 @@
             ],
             "title": "Album"
           },
+          "album_cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Cover Url"
+          },
           "album_id": {
             "anyOf": [
               {
