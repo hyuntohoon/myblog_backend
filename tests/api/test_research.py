@@ -66,6 +66,40 @@ class TestGetResearch:
         app.dependency_overrides.clear()
 
 
+class TestResearchStatusMap:
+    def test_batched_status_returns_map(self, client, app):
+        svc = MagicMock()
+        svc.status_map.return_value = {"alb-1": "done", "alb-2": "queued"}
+        _override(app, svc)
+
+        resp = client.get("/api/research/status?album_ids=alb-1,alb-2,alb-3")
+
+        assert resp.status_code == 200
+        assert resp.json()["statuses"] == {"alb-1": "done", "alb-2": "queued"}
+        # the route forwards a parsed id list (blanks dropped) to the service.
+        assert svc.status_map.call_args.args[1] == ["alb-1", "alb-2", "alb-3"]
+        app.dependency_overrides.clear()
+
+    def test_too_many_ids_returns_400(self, client, app):
+        svc = MagicMock()
+        _override(app, svc)
+
+        resp = client.get("/api/research/status?album_ids=" + ",".join(f"a{i}" for i in range(501)))
+
+        assert resp.status_code == 400
+        svc.status_map.assert_not_called()
+        app.dependency_overrides.clear()
+
+    def test_missing_param_returns_422(self, client, app):
+        svc = MagicMock()
+        _override(app, svc)
+
+        resp = client.get("/api/research/status")
+
+        assert resp.status_code == 422
+        app.dependency_overrides.clear()
+
+
 class TestTriggerResearch:
     def test_first_time_no_body_returns_200(self, client, app):
         svc = MagicMock()

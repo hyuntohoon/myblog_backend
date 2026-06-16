@@ -315,6 +315,13 @@ class AlbumResearchResponse(BaseModel):
     finished_at: Optional[datetime] = None
 
 
+class ResearchStatusMapResponse(BaseModel):
+    """Batched album_id -> research status, for the cover dots. One query for a
+    whole board instead of one GET per cover (the per-cover fan-out throttled the
+    Lambda → 503s). Albums with no note are simply absent from the map."""
+    statuses: Dict[str, str]
+
+
 class MoveBucketRequest(BaseModel):
     # FEAT-member-dashboard Step 5: reparent + reposition a bucket.
     # parent_id null => move to root. position is the target slot among the new

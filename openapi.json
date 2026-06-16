@@ -1466,6 +1466,23 @@
         "title": "ReorderRequest",
         "type": "object"
       },
+      "ResearchStatusMapResponse": {
+        "description": "Batched album_id -> research status, for the cover dots. One query for a\nwhole board instead of one GET per cover (the per-cover fan-out throttled the\nLambda \u2192 503s). Albums with no note are simply absent from the map.",
+        "properties": {
+          "statuses": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Statuses",
+            "type": "object"
+          }
+        },
+        "required": [
+          "statuses"
+        ],
+        "title": "ResearchStatusMapResponse",
+        "type": "object"
+      },
       "ResearchTriggerRequest": {
         "properties": {
           "instruction": {
@@ -3846,6 +3863,51 @@
           }
         ],
         "summary": "Trigger Album Research",
+        "tags": [
+          "research"
+        ]
+      }
+    },
+    "/api/research/status": {
+      "get": {
+        "description": "Batched {album_id -> status} for a board's covers in ONE query. Replaces\nthe per-cover GET fan-out (album-count concurrent requests on mount) that hit\nthe Lambda concurrency ceiling and 503'd. Unresearched albums are absent.",
+        "operationId": "get_research_status_map_api_research_status_get",
+        "parameters": [
+          {
+            "description": "Comma-separated album ids.",
+            "in": "query",
+            "name": "album_ids",
+            "required": true,
+            "schema": {
+              "description": "Comma-separated album ids.",
+              "title": "Album Ids",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchStatusMapResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Research Status Map",
         "tags": [
           "research"
         ]
