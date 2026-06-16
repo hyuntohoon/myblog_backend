@@ -433,6 +433,10 @@ class NowPlayingResponse(BaseModel):
     artist: Optional[str] = None
     album: Optional[str] = None
     album_id: Optional[str] = None
+    # Catalog cover for the playing album (Album.cover_url via the album_id FK),
+    # so the now-playing UI can show real art instead of a letter tile. None when
+    # the album isn't in our catalog or nothing is playing.
+    album_cover_url: Optional[str] = None
     # progress_ms/duration_ms intentionally omitted (D28): now-playing is an
     # intentionally-public single-admin vanity read, so we don't expose
     # fine-grained real-time position; a <=1h-stale snapshot also can't advance

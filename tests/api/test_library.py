@@ -256,6 +256,7 @@ class TestNowPlaying:
         np.artist_name = "Radiohead"
         np.album_name = "OK Computer"
         np.album_id = "alb-1"
+        np.album.cover_url = "https://i.scdn.co/image/ok.jpg"
         np.progress_ms = 42000
         np.duration_ms = 284000
         np.updated_at = datetime(2026, 6, 4, 10, 0, tzinfo=timezone.utc)
@@ -269,6 +270,8 @@ class TestNowPlaying:
         assert body["is_playing"] is True
         assert body["track"] == "Airbag"
         assert body["album_id"] == "alb-1"
+        # item 9: the playing album's catalog cover is surfaced for the UI.
+        assert body["album_cover_url"] == "https://i.scdn.co/image/ok.jpg"
         # D28: the row carries progress/duration, but the response must not leak
         # them (fine-grained activity + frozen progress bar).
         assert "progress_ms" not in body

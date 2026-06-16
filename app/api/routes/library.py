@@ -184,6 +184,8 @@ def now_playing(
         artist=np.artist_name,
         album=np.album_name,
         album_id=str(np.album_id) if np.album_id else None,
+        # np.album lazy-loads the catalog Album (FK); None when not in our catalog.
+        album_cover_url=np.album.cover_url if np.album is not None else None,
         updated_at=np.updated_at,
     )
 

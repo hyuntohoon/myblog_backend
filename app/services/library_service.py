@@ -184,14 +184,25 @@ class LibraryService:
     # Spotify (hard rule #9).
 
     def list_recent_tracks(self, db: Session) -> List[SpotifyRecentTrack]:
-        """The recently-played track window, most-recently-played first. Rows carry
-        denormalized track/artist/album text; `.album` is set only when the track's
-        album is in our catalog (album_id FK). Row 0 is the "최근 재생" latest play."""
-        return (
+        """One row per distinct track (its most-recent play), most-recently-played
+        first. The cache stores one row per play event (UNIQUE(spotify_track_id,
+        played_at)), so a looped/repeated track would otherwise appear N times
+        (item 10). Rows carry denormalized track/artist/album text; `.album` is set
+        only when the track's album is in our catalog (album_id FK). Row 0 is the
+        "최근 재생" latest play."""
+        # DISTINCT ON keeps the latest row per track (orders by track id first);
+        # the window is small (<=50), so re-sort to played_at DESC in Python.
+        rows = (
             db.query(SpotifyRecentTrack)
-            .order_by(SpotifyRecentTrack.played_at.desc())
+            .distinct(SpotifyRecentTrack.spotify_track_id)
+            .order_by(
+                SpotifyRecentTrack.spotify_track_id,
+                SpotifyRecentTrack.played_at.desc(),
+            )
             .all()
         )
+        rows.sort(key=lambda r: r.played_at, reverse=True)
+        return rows
 
     def last_recent_tracks_synced_at(self, db: Session) -> Optional[datetime]:
         """When the worker last wrote the recent-tracks cache (max synced_at)."""
