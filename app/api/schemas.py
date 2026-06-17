@@ -172,6 +172,10 @@ class UpdateBucketItemRequest(BaseModel):
     # FEAT-album-research-notes: per-item checkbox, meaningful only while the parent
     # bucket's research_mode='selected'. Checking it (in 'selected' mode) enqueues.
     research_selected: Optional[bool] = None
+    # FEAT-editor-buckit Stage 1: the "오늘 밤 키우기" gate. When true, the nightly $0
+    # memo→skeleton job is cleared to process this item's `note` memo. Write-only here;
+    # no enqueue/side-effect (the offline job reads it, the API just stores it).
+    prep_tonight: Optional[bool] = None
 
 
 class ReorderBucket(BaseModel):
@@ -215,6 +219,8 @@ class BucketItemResponse(BaseModel):
     # cover badge render the done/in-progress dot on first paint without a per-cover
     # GET (the note GET stays the on-open / live-poll source of truth).
     research_status: Optional[str] = None
+    # FEAT-editor-buckit Stage 1: "오늘 밤 키우기" gate (see UpdateBucketItemRequest).
+    prep_tonight: bool = False
     album: AlbumBrief
 
 

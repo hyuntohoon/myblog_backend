@@ -108,6 +108,7 @@ def _item_response(
         already_reviewed=already_reviewed,
         research_selected=item.research_selected,
         research_status=research_status,
+        prep_tonight=item.prep_tonight,
         album=_album_brief(item.album, genres),
     )
 
