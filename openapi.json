@@ -302,6 +302,11 @@
             ],
             "title": "Post Id"
           },
+          "prep_tonight": {
+            "default": false,
+            "title": "Prep Tonight",
+            "type": "boolean"
+          },
           "rec_reason": {
             "anyOf": [
               {
@@ -1860,6 +1865,17 @@
               }
             ],
             "title": "Post Id"
+          },
+          "prep_tonight": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prep Tonight"
           },
           "research_selected": {
             "anyOf": [

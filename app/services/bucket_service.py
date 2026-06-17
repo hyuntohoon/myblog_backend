@@ -412,6 +412,7 @@ class BucketService:
         status: Optional[str] = None,
         post_id: Optional[str] = None,
         research_selected: Optional[bool] = None,
+        prep_tonight: Optional[bool] = None,
     ) -> ReviewBucketItem:
         item = (
             db.query(ReviewBucketItem)
@@ -432,6 +433,9 @@ class BucketService:
         if research_selected is not None:
             # FEAT-album-research-notes: per-item auto-research checkbox.
             item.research_selected = bool(research_selected)
+        if prep_tonight is not None:
+            # FEAT-editor-buckit Stage 1: "오늘 밤 키우기" gate for the nightly job.
+            item.prep_tonight = bool(prep_tonight)
         db.commit()
         db.refresh(item)
         return item

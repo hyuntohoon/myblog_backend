@@ -38,6 +38,7 @@ def _item(item_id="it-1", album_id="alb-1", position=0, status="candidate"):
     # research_selected is a validated bool on BucketItemResponse — a bare MagicMock
     # would fail validation, so set it explicitly (same reason as bucket.kind below).
     it.research_selected = False
+    it.prep_tonight = False  # FEAT-editor-buckit: same validated-bool reason as above
     it.album = _album(album_id=album_id)
     return it
 
@@ -487,6 +488,25 @@ class TestUpdateItem:
         assert resp.json()["status"] == "published"
         kwargs = svc.update_item.call_args.kwargs
         assert kwargs == {"status": "published"}
+        app.dependency_overrides.clear()
+
+    def test_update_prep_tonight_returns_200(self, client, app):
+        # FEAT-editor-buckit Stage 1: the "오늘 밤 키우기" gate is a plain stored
+        # bool — forwarded to the service and echoed on the response, no side-effect.
+        svc = MagicMock()
+        item = _item()
+        item.prep_tonight = True
+        svc.update_item.return_value = item
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.patch(
+            "/api/buckets/bk-1/items/it-1", json={"prep_tonight": True}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["prep_tonight"] is True
+        assert svc.update_item.call_args.kwargs == {"prep_tonight": True}
         app.dependency_overrides.clear()
 
     def test_update_missing_item_returns_404(self, client, app):
