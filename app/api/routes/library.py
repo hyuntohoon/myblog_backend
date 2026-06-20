@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 from app.api.schemas import (
     AddToListenRequest,
     AlbumBrief,
+    ClassifyResponse,
+    DistItem,
+    DistributionResponse,
     ListenedAlbumItem,
     ListenedAlbumsResponse,
     NowPlayingResponse,
@@ -18,15 +21,19 @@ from app.api.schemas import (
     RefreshRecentResponse,
     ReviewedAlbumResponse,
     ReviewedResponse,
+    SavedTrackItem,
+    SavedTracksResponse,
     SpotifyConnectionResponse,
     ToListenItemResponse,
     ToListenReorderRequest,
     ToListenResponse,
+    UnclassifiedBreakdown,
 )
 from app.clients.sqs_client import get_spotify_connection_status
 from app.core.auth import require_cognito_token
 from app.db.session import get_db
 from app.di import get_library_service, get_sqs_client
+from app.services.enqueue import safe_enqueue_catalog_sync
 from app.services.library_service import (
     AlbumNotFoundError,
     DuplicateItemError,
@@ -199,6 +206,106 @@ def spotify_connection():
         connected=st.connected,
         needs_reauth=st.needs_reauth,
         last_successful_refresh_at=st.last_successful_refresh_at,
+    )
+
+
+# ── 분석 버킷: saved-tracks + genre/artist distribution (FEAT-genre-artist-distribution) ──
+# Reads are edge_guard-only (no JWT), matching the other library reads. Both the 좋아요
+# source and the 재생 (play-events) source return the SAME DistributionResponse so the
+# front chart component is source-agnostic (통일성).
+
+def _distribution_response(d) -> DistributionResponse:
+    breakdown = None
+    if d.get("uncatalogued") is not None or d.get("ungenred") is not None:
+        breakdown = UnclassifiedBreakdown(
+            uncatalogued=d.get("uncatalogued") or 0,
+            ungenred=d.get("ungenred") or 0,
+        )
+    return DistributionResponse(
+        items=[DistItem(label=label, count=count) for label, count in d["items"]],
+        unclassified_count=d["unclassified_count"],
+        total=d["total"],
+        unclassified_breakdown=breakdown,
+        last_synced_at=d.get("last_synced_at"),
+    )
+
+
+@router.get("/saved-tracks", response_model=SavedTracksResponse)
+def list_saved_tracks(
+    limit: int = 200,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    rows, total, last_synced = svc.list_saved_tracks(db, limit=limit, offset=offset)
+    return SavedTracksResponse(
+        items=[
+            SavedTrackItem(
+                spotify_track_id=r.spotify_track_id,
+                track_name=r.track_name,
+                artist_name=r.artist_name,
+                album_name=r.album_name,
+                album_sid=r.album_sid,
+                album_id=str(r.album_id) if r.album_id else None,
+                album=_album_brief(r.album) if r.album is not None else None,
+                added_at=r.added_at,
+            )
+            for r in rows
+        ],
+        total=total,
+        last_synced_at=last_synced,
+    )
+
+
+@router.get("/saved-tracks/genre-distribution", response_model=DistributionResponse)
+def saved_tracks_genre_distribution(
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    return _distribution_response(svc.saved_tracks_genre_distribution(db))
+
+
+@router.get("/saved-tracks/artist-distribution", response_model=DistributionResponse)
+def saved_tracks_artist_distribution(
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    return _distribution_response(svc.saved_tracks_artist_distribution(db))
+
+
+@router.get("/play-events/genre-distribution", response_model=DistributionResponse)
+def play_events_genre_distribution(
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    return _distribution_response(svc.play_events_genre_distribution(db))
+
+
+@router.get("/play-events/artist-distribution", response_model=DistributionResponse)
+def play_events_artist_distribution(
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    return _distribution_response(svc.play_events_artist_distribution(db))
+
+
+@router.post("/saved-tracks/classify", response_model=ClassifyResponse, status_code=202)
+def classify_saved_tracks(
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+    sqs=Depends(get_sqs_client),
+    _claims: Dict = Depends(require_cognito_token),
+):
+    # 분류하기 (owner action, JWT): enqueue the catalog-absent unclassified albums for
+    # catalog sync (→ S1 genres → the track inherits a genre). Best-effort SQS only —
+    # the worker does the Spotify read (rule #9). Catalog-present-but-ungenred tracks
+    # need the iTunes backfill and are reported (skipped_needs_backfill), not enqueued.
+    sids, needs_backfill = svc.unclassified_saved_album_targets(db)
+    enqueued = safe_enqueue_catalog_sync(sqs, sids)
+    return ClassifyResponse(
+        enqueued=enqueued, skipped_needs_backfill=needs_backfill, status="queued"
     )
 
 

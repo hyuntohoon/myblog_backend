@@ -1,9 +1,12 @@
 # app/clients/sqs_client.py
-# Thin SQS producer for the backend. The backend sends two messages, both async
-# job triggers the worker consumes (hard rule #9 — a user-facing endpoint must
-# never call Spotify synchronously):
+# Thin SQS producer for the backend. The backend sends async job triggers the worker
+# consumes (hard rule #9 — a user-facing endpoint must never call Spotify
+# synchronously):
 #   {"job": "spotify_refresh"}        — manual "지금 새로고침" listening-refresh
 #   {"job": "spotify_library_sync"}   — explicit Spotify Library bucket reconcile
+#   {"album_ids": [...]}              — catalog album-sync for the 분석 버킷 분류하기
+#                                       (worker _process_batch → AlbumSyncService +
+#                                       S1 genre mapping)
 from __future__ import annotations
 
 import json
@@ -63,6 +66,32 @@ class SqsClient:
         )
         logger.info("enqueued spotify library sync job")
         return True
+
+    def send_album_sync(self, album_sids) -> int:
+        """Enqueue a catalog album-sync job ({"album_ids": [...]}); the worker
+        consumes it (_process_batch → AlbumSyncService) to catalog the albums and map
+        their S1 genres. Used by the 분석 버킷 분류하기 (hard rule #9 — the worker does
+        the Spotify read). Returns the count enqueued, or 0 (and logs) when no queue
+        is configured — e.g. local dev — so the endpoint degrades to a no-op."""
+        sids = [s for s in (album_sids or []) if s]
+        if not sids:
+            return 0
+        if not self.queue_url:
+            logger.info("SQS_QUEUE_URL unset; album sync not enqueued (local/dev)")
+            return 0
+        import boto3
+
+        sqs = boto3.client(
+            "sqs",
+            region_name=settings.AWS_DEFAULT_REGION,
+            endpoint_url=(settings.LOCALSTACK_ENDPOINT or None),
+        )
+        sqs.send_message(
+            QueueUrl=self.queue_url,
+            MessageBody=json.dumps({"album_ids": sids}),
+        )
+        logger.info("enqueued album sync job for %d album(s)", len(sids))
+        return len(sids)
 
 
 @dataclass

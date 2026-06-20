@@ -5,18 +5,24 @@ from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from myblog_shared_db.models import (
     Album,
     AlbumToListenItem,
+    Genre,
     Post,
     SpotifyNowPlaying,
     SpotifyPlayEvent,
     SpotifyRecentAlbum,
     SpotifyRecentTrack,
+    SpotifySavedTrack,
+    TrackGenre,
     post_albums_table as post_albums,
 )
+
+from app.services.distribution import rank_counts
+from app.services.genre_service import GenreService
 
 
 class AlbumNotFoundError(Exception):
@@ -237,3 +243,208 @@ class LibraryService:
             .offset(offset)
         ).all()
         return [(r[0], r[1], r[2], r[3]) for r in rows], int(total)
+
+    # ── 분석 버킷: saved tracks (좋아요) + genre/artist distribution ──────────────────
+    # FEAT-genre-artist-distribution. The /profile 분석 버킷 lists the owner's Spotify
+    # 좋아요 tracks (worker-fed spotify_saved_tracks cache) and renders genre/artist
+    # distributions. A SECOND co-equal source — play history (spotify_play_events) —
+    # feeds the SAME shared rank_counts via one response shape so the front chart is
+    # source-agnostic. Genre resolves track_genres(override) → album_genres(inherit)
+    # → else 미분류. All DB-only reads (hard rule #9).
+
+    def list_saved_tracks(
+        self, db: Session, *, limit: int = 200, offset: int = 0
+    ) -> Tuple[List[SpotifySavedTrack], int, Optional[datetime]]:
+        """Paginated saved-tracks list (most-recently-liked first) + total +
+        last_synced_at. Each row carries denormalized text columns; `.album` lazily
+        resolves when the track's album is in our catalog (album_id FK)."""
+        total = db.query(func.count()).select_from(SpotifySavedTrack).scalar() or 0
+        last_synced = db.query(func.max(SpotifySavedTrack.synced_at)).scalar()
+        rows = (
+            db.query(SpotifySavedTrack)
+            .order_by(SpotifySavedTrack.added_at.desc())
+            .limit(limit)
+            .offset(offset)
+            .all()
+        )
+        return rows, int(total), last_synced
+
+    def _album_primary_genre_map(self, db: Session, album_ids) -> Dict[str, str]:
+        """{album_id_str -> primary genre label} via the canonical album-genre
+        resolution (prefer-high-else-low, ordered by display position; [0] is the
+        album's primary genre). Reuses GenreService.labels_map for one source of
+        truth on the high/low-confidence rule."""
+        labels = GenreService().labels_map(db, album_ids)
+        return {aid: lbls[0] for aid, lbls in labels.items() if lbls}
+
+    def _track_override_genre_map(self, db: Session, track_ids) -> Dict[str, str]:
+        """{track_id_str -> primary override genre label} from track_genres (an
+        override-only table — a row exists iff the track deviates from its album).
+        Ordered by the genre's display position so the first seen is the primary
+        override."""
+        ids = {str(t) for t in track_ids if t is not None}
+        if not ids:
+            return {}
+        rows = (
+            db.query(TrackGenre.track_id, Genre.label)
+            .join(Genre, Genre.id == TrackGenre.genre_id)
+            .filter(TrackGenre.track_id.in_(ids))
+            .order_by(Genre.position)
+            .all()
+        )
+        out: Dict[str, str] = {}
+        for track_id, label in rows:
+            out.setdefault(str(track_id), label)  # first = lowest position = primary
+        return out
+
+    def _resolve_saved_genre(self, row, override_map, album_genre_map) -> Optional[str]:
+        """Effective genre for a saved track: track_genres override → album_genres
+        inherit → None (미분류)."""
+        if row.track_id is not None:
+            g = override_map.get(str(row.track_id))
+            if g is not None:
+                return g
+        if row.album_id is not None:
+            return album_genre_map.get(str(row.album_id))
+        return None
+
+    def saved_tracks_genre_distribution(self, db: Session) -> Dict:
+        rows = db.query(
+            SpotifySavedTrack.track_id,
+            SpotifySavedTrack.album_id,
+        ).all()
+        album_ids = {r.album_id for r in rows if r.album_id is not None}
+        track_ids = {r.track_id for r in rows if r.track_id is not None}
+        album_genre = self._album_primary_genre_map(db, album_ids)
+        override = self._track_override_genre_map(db, track_ids)
+
+        labels: List[Optional[str]] = []
+        uncatalogued = 0
+        ungenred = 0
+        for r in rows:
+            g = self._resolve_saved_genre(r, override, album_genre)
+            labels.append(g)
+            if g is None:
+                if r.album_id is None:
+                    uncatalogued += 1
+                else:
+                    ungenred += 1
+        items, unclassified = rank_counts(labels)
+        return {
+            "items": items,
+            "unclassified_count": unclassified,
+            "total": len(rows),
+            "uncatalogued": uncatalogued,
+            "ungenred": ungenred,
+            "last_synced_at": db.query(func.max(SpotifySavedTrack.synced_at)).scalar(),
+        }
+
+    def saved_tracks_artist_distribution(self, db: Session) -> Dict:
+        rows = db.query(SpotifySavedTrack.artist_name).all()
+        labels = [r.artist_name if r.artist_name else None for r in rows]
+        items, unclassified = rank_counts(labels)
+        return {
+            "items": items,
+            "unclassified_count": unclassified,
+            "total": len(rows),
+            "uncatalogued": None,  # breakdown is genre-only
+            "ungenred": None,
+            "last_synced_at": db.query(func.max(SpotifySavedTrack.synced_at)).scalar(),
+        }
+
+    # ── 분석 버킷: play-history source (spotify_play_events) — same shared module ─────
+
+    def _play_event_album_counts(self, db: Session):
+        """[(album_id, play_count)] over the append-only play-events log."""
+        return db.execute(
+            select(SpotifyPlayEvent.album_id, func.count().label("c"))
+            .group_by(SpotifyPlayEvent.album_id)
+        ).all()
+
+    def play_events_genre_distribution(self, db: Session) -> Dict:
+        rows = self._play_event_album_counts(db)
+        album_ids = {r.album_id for r in rows}
+        album_genre = self._album_primary_genre_map(db, album_ids)
+
+        labels: List[Optional[str]] = []
+        weights: List[int] = []
+        ungenred = 0
+        for r in rows:
+            g = album_genre.get(str(r.album_id))
+            labels.append(g)
+            weights.append(int(r.c))
+            if g is None:
+                ungenred += int(r.c)
+        items, unclassified = rank_counts(labels, weights)
+        return {
+            "items": items,
+            "unclassified_count": unclassified,
+            "total": sum(int(r.c) for r in rows),
+            "uncatalogued": 0,  # spotify_play_events.album_id is NOT NULL → catalog-present
+            "ungenred": ungenred,
+            "last_synced_at": db.query(func.max(SpotifyPlayEvent.played_at)).scalar(),
+        }
+
+    def play_events_artist_distribution(self, db: Session) -> Dict:
+        rows = self._play_event_album_counts(db)
+        album_ids = {r.album_id for r in rows}
+        artist_map: Dict[str, Optional[str]] = {}
+        if album_ids:
+            albums = (
+                db.query(Album)
+                .filter(Album.id.in_(album_ids))
+                .options(selectinload(Album.artists))  # avoid N+1 over played albums
+                .all()
+            )
+            for a in albums:
+                names = ", ".join(ar.name for ar in a.artists) if a.artists else ""
+                artist_map[str(a.id)] = names or None
+
+        labels = [artist_map.get(str(r.album_id)) for r in rows]
+        weights = [int(r.c) for r in rows]
+        items, unclassified = rank_counts(labels, weights)
+        return {
+            "items": items,
+            "unclassified_count": unclassified,
+            "total": sum(int(r.c) for r in rows),
+            "uncatalogued": None,
+            "ungenred": None,
+            "last_synced_at": db.query(func.max(SpotifyPlayEvent.played_at)).scalar(),
+        }
+
+    # ── 분석 버킷: 분류하기 targets ───────────────────────────────────────────────────
+
+    def unclassified_saved_album_targets(
+        self, db: Session
+    ) -> Tuple[List[str], int]:
+        """For 분류하기: split the UNCLASSIFIED saved tracks into actionable groups.
+
+        Returns (uncatalogued_sids, needs_backfill_count) where:
+          - uncatalogued_sids = distinct spotify album ids NOT in our catalog
+            (album_id NULL) — the genuinely enqueueable set (→ catalog sync → S1
+            genres → the track inherits a genre).
+          - needs_backfill_count = catalog-present-but-ungenred saved tracks; these
+            can't be fixed by re-syncing (their artists carry no Spotify genres) — they
+            need the manual iTunes backfill, so 분류하기 reports rather than enqueues them.
+        """
+        rows = db.query(
+            SpotifySavedTrack.album_sid,
+            SpotifySavedTrack.album_id,
+            SpotifySavedTrack.track_id,
+        ).all()
+        album_ids = {r.album_id for r in rows if r.album_id is not None}
+        track_ids = {r.track_id for r in rows if r.track_id is not None}
+        album_genre = self._album_primary_genre_map(db, album_ids)
+        override = self._track_override_genre_map(db, track_ids)
+
+        uncatalogued_sids: set[str] = set()
+        needs_backfill = 0
+        for r in rows:
+            if self._resolve_saved_genre(r, override, album_genre) is not None:
+                continue  # already classified
+            if r.album_id is None:
+                if r.album_sid:
+                    uncatalogued_sids.add(r.album_sid)
+            else:
+                needs_backfill += 1
+        return sorted(uncatalogued_sids), needs_backfill
