@@ -504,6 +504,63 @@ class ListenedAlbumsResponse(BaseModel):
     total: int = 0
 
 
+# ====== 분석 버킷: saved tracks + genre/artist distribution (FEAT-genre-artist-distribution) ======
+# One shared DistributionResponse shape for BOTH sources (좋아요 / 재생) so the front
+# chart component is source-agnostic. items is a clean partition:
+#   sum(item.count) + unclassified_count == total.
+
+class SavedTrackItem(BaseModel):
+    spotify_track_id: str
+    track_name: str
+    artist_name: Optional[str] = None
+    album_name: Optional[str] = None
+    album_sid: Optional[str] = None
+    # Resolved catalog album id + brief when the track's album is in our catalog;
+    # None for saved tracks whose album we don't have (still shown, denormalized).
+    album_id: Optional[str] = None
+    album: Optional[AlbumBrief] = None
+    added_at: datetime
+
+
+class SavedTracksResponse(BaseModel):
+    items: List[SavedTrackItem] = Field(default_factory=list)
+    total: int = 0
+    last_synced_at: Optional[datetime] = None
+
+
+class DistItem(BaseModel):
+    label: str
+    count: int
+
+
+class UnclassifiedBreakdown(BaseModel):
+    # Genre charts only (artist charts leave it null). uncatalogued = album not in our
+    # catalog (album_id NULL); ungenred = catalog-present but no album_genres (needs
+    # the iTunes backfill). These sum to the genre chart's unclassified_count.
+    uncatalogued: int = 0
+    ungenred: int = 0
+
+
+class DistributionResponse(BaseModel):
+    items: List[DistItem] = Field(default_factory=list)
+    # 미분류: items with no resolved genre / no artist. Shown on the chart as a chip,
+    # with "전체 N곡 중" as the stated denominator (total).
+    unclassified_count: int = 0
+    total: int = 0
+    # Genre charts carry the uncatalogued/ungenred breakdown; artist charts null.
+    unclassified_breakdown: Optional[UnclassifiedBreakdown] = None
+    last_synced_at: Optional[datetime] = None
+
+
+class ClassifyResponse(BaseModel):
+    # 분류하기: catalog-absent unclassified albums enqueued for catalog sync (→ S1
+    # genres). Catalog-present-but-ungenred tracks can't be fixed via SQS (they need
+    # the iTunes backfill), surfaced as skipped_needs_backfill rather than enqueued.
+    enqueued: int = 0
+    skipped_needs_backfill: int = 0
+    status: str = "queued"
+
+
 # ====== Sections (STAB-5) ======
 # Read-only seeded taxonomy. The post request/response bodies keep the JSON
 # field name `category` for now (contract rename deferred to Step 5); only the

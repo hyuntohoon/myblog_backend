@@ -430,6 +430,27 @@
         "title": "BucketsResponse",
         "type": "object"
       },
+      "ClassifyResponse": {
+        "properties": {
+          "enqueued": {
+            "default": 0,
+            "title": "Enqueued",
+            "type": "integer"
+          },
+          "skipped_needs_backfill": {
+            "default": 0,
+            "title": "Skipped Needs Backfill",
+            "type": "integer"
+          },
+          "status": {
+            "default": "queued",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "ClassifyResponse",
+        "type": "object"
+      },
       "CreateBucketRequest": {
         "properties": {
           "color": {
@@ -619,6 +640,69 @@
           "posted_date"
         ],
         "title": "CreatePostReq",
+        "type": "object"
+      },
+      "DistItem": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "count"
+        ],
+        "title": "DistItem",
+        "type": "object"
+      },
+      "DistributionResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DistItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "unclassified_breakdown": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UnclassifiedBreakdown"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unclassified_count": {
+            "default": 0,
+            "title": "Unclassified Count",
+            "type": "integer"
+          }
+        },
+        "title": "DistributionResponse",
         "type": "object"
       },
       "GenreEdge": {
@@ -1568,6 +1652,114 @@
         "title": "ReviewedResponse",
         "type": "object"
       },
+      "SavedTrackItem": {
+        "properties": {
+          "added_at": {
+            "format": "date-time",
+            "title": "Added At",
+            "type": "string"
+          },
+          "album": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlbumBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "album_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
+          },
+          "album_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Name"
+          },
+          "album_sid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Sid"
+          },
+          "artist_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Name"
+          },
+          "spotify_track_id": {
+            "title": "Spotify Track Id",
+            "type": "string"
+          },
+          "track_name": {
+            "title": "Track Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "spotify_track_id",
+          "track_name",
+          "added_at"
+        ],
+        "title": "SavedTrackItem",
+        "type": "object"
+      },
+      "SavedTracksResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SavedTrackItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "title": "SavedTracksResponse",
+        "type": "object"
+      },
       "SectionItem": {
         "properties": {
           "name": {
@@ -1840,6 +2032,22 @@
           }
         },
         "title": "ToListenResponse",
+        "type": "object"
+      },
+      "UnclassifiedBreakdown": {
+        "properties": {
+          "uncatalogued": {
+            "default": 0,
+            "title": "Uncatalogued",
+            "type": "integer"
+          },
+          "ungenred": {
+            "default": 0,
+            "title": "Ungenred",
+            "type": "integer"
+          }
+        },
+        "title": "UnclassifiedBreakdown",
         "type": "object"
       },
       "UpdateBucketItemRequest": {
@@ -3117,6 +3325,48 @@
         ]
       }
     },
+    "/api/library/play-events/artist-distribution": {
+      "get": {
+        "operationId": "play_events_artist_distribution_api_library_play_events_artist_distribution_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DistributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Play Events Artist Distribution",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/play-events/genre-distribution": {
+      "get": {
+        "operationId": "play_events_genre_distribution_api_library_play_events_genre_distribution_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DistributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Play Events Genre Distribution",
+        "tags": [
+          "library"
+        ]
+      }
+    },
     "/api/library/recent-tracks": {
       "get": {
         "operationId": "list_recent_tracks_api_library_recent_tracks_get",
@@ -3223,6 +3473,127 @@
           }
         },
         "summary": "List Reviewed",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/saved-tracks": {
+      "get": {
+        "operationId": "list_saved_tracks_api_library_saved_tracks_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedTracksResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Saved Tracks",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/saved-tracks/artist-distribution": {
+      "get": {
+        "operationId": "saved_tracks_artist_distribution_api_library_saved_tracks_artist_distribution_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DistributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Saved Tracks Artist Distribution",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/saved-tracks/classify": {
+      "post": {
+        "operationId": "classify_saved_tracks_api_library_saved_tracks_classify_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassifyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Classify Saved Tracks",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/saved-tracks/genre-distribution": {
+      "get": {
+        "operationId": "saved_tracks_genre_distribution_api_library_saved_tracks_genre_distribution_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DistributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Saved Tracks Genre Distribution",
         "tags": [
           "library"
         ]

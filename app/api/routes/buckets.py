@@ -42,6 +42,10 @@ from app.services.bucket_service import (
     DuplicateItemError,
     ItemNotFoundError,
 )
+from app.services.enqueue import (
+    safe_enqueue_album as _safe_enqueue_album,
+    safe_enqueue_bucket as _safe_enqueue_bucket,
+)
 from app.services.genre_service import GenreService
 from app.services.research_service import ResearchService
 
@@ -50,33 +54,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ── auto-research enqueue (FEAT-album-research-notes) ────────────────────────────
-# Fire-and-forget: a research hiccup must NEVER fail the bucket op (log + continue).
-# The response is built from already-committed bucket state before these run, so a
-# rollback here can't corrupt it. In $0 mode the enqueue is a plain INSERT (no SQS).
-
-def _safe_enqueue_album(db, research_svc, album_id) -> None:
-    try:
-        research_svc.enqueue_album(db, str(album_id))
-    except Exception:
-        db.rollback()
-        logger.warning(
-            "research auto-enqueue failed for album %s (continuing)", album_id,
-            exc_info=True,
-        )
-
-
-def _safe_enqueue_bucket(db, research_svc, bucket) -> None:
-    try:
-        n = research_svc.enqueue_bucket(db, bucket)
-        if n:
-            logger.info("auto-enqueued %d research row(s) for bucket %s", n, bucket.id)
-    except Exception:
-        db.rollback()
-        logger.warning(
-            "research bucket enqueue failed for bucket %s (continuing)", bucket.id,
-            exc_info=True,
-        )
+# Auto-research enqueue (FEAT-album-research-notes) now lives in
+# app/services/enqueue.py (통일성: the 분석 버킷 분류하기 shares that fire-and-forget
+# module). Imported above as _safe_enqueue_album / _safe_enqueue_bucket — fire-and-
+# forget, $0 INSERT, a research hiccup never fails the bucket op; call sites unchanged.
 
 
 def _album_brief(album, genres: list[str] | None = None) -> AlbumBrief:
