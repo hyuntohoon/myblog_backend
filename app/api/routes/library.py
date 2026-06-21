@@ -261,6 +261,7 @@ def list_saved_tracks(
                 album_id=str(r.album_id) if r.album_id else None,
                 album=_album_brief(r.album, genre_map.get(str(r.album_id), [])) if r.album is not None else None,
                 added_at=r.added_at,
+                duration_ms=r.duration_ms,
             )
             for r in rows
         ],
