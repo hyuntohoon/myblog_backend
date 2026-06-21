@@ -18,6 +18,12 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Catalog album-sync messages are chunked to match the worker's own producer
+# (sqs_producer._MAX_PER_MESSAGE = 20). The worker processes one message per Lambda
+# invocation (120s timeout), so a large 분류하기 set (e.g. 712 uncatalogued albums)
+# must span MANY messages — one 712-album batch would time out → SQS retry → DLQ.
+_ALBUM_SYNC_CHUNK = 20
+
 
 class SqsClient:
     def __init__(self, queue_url: str | None = None) -> None:
@@ -68,10 +74,12 @@ class SqsClient:
         return True
 
     def send_album_sync(self, album_sids) -> int:
-        """Enqueue a catalog album-sync job ({"album_ids": [...]}); the worker
-        consumes it (_process_batch → AlbumSyncService) to catalog the albums and map
-        their S1 genres. Used by the 분석 버킷 분류하기 (hard rule #9 — the worker does
-        the Spotify read). Returns the count enqueued, or 0 (and logs) when no queue
+        """Enqueue catalog album-sync jobs ({"album_ids": [...]}); the worker consumes
+        them (_process_batch → AlbumSyncService) to catalog the albums and map their S1
+        genres. Used by the 분석 버킷 분류하기 (hard rule #9 — the worker does the Spotify
+        read). Chunked at _ALBUM_SYNC_CHUNK ids/message (one worker invocation per
+        message, 120s timeout) so a large set spans many messages instead of one batch
+        that would time out. Returns the count enqueued, or 0 (and logs) when no queue
         is configured — e.g. local dev — so the endpoint degrades to a no-op."""
         sids = [s for s in (album_sids or []) if s]
         if not sids:
@@ -86,11 +94,15 @@ class SqsClient:
             region_name=settings.AWS_DEFAULT_REGION,
             endpoint_url=(settings.LOCALSTACK_ENDPOINT or None),
         )
-        sqs.send_message(
-            QueueUrl=self.queue_url,
-            MessageBody=json.dumps({"album_ids": sids}),
+        for i in range(0, len(sids), _ALBUM_SYNC_CHUNK):
+            sqs.send_message(
+                QueueUrl=self.queue_url,
+                MessageBody=json.dumps({"album_ids": sids[i : i + _ALBUM_SYNC_CHUNK]}),
+            )
+        n_msgs = -(-len(sids) // _ALBUM_SYNC_CHUNK)
+        logger.info(
+            "enqueued album sync for %d album(s) in %d message(s)", len(sids), n_msgs
         )
-        logger.info("enqueued album sync job for %d album(s)", len(sids))
         return len(sids)
 
 
