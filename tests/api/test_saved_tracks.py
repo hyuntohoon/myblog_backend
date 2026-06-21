@@ -145,3 +145,28 @@ class TestClassify:
         assert resp.status_code == 202
         assert resp.json()["enqueued"] == 0
         sqs.send_album_sync.assert_not_called()
+
+
+class TestFillGenres:
+    def _db(self, app, rowcount):
+        from app.db.session import get_db
+        db = MagicMock()
+        db.execute.return_value.rowcount = rowcount
+        app.dependency_overrides[get_db] = lambda: db
+        return db
+
+    def test_fill_genres_queues(self, client, app):
+        self._db(app, 1)  # INSERT ... WHERE NOT EXISTS inserted a row
+
+        resp = client.post("/api/library/saved-tracks/fill-genres")
+
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "queued"
+
+    def test_fill_genres_dedup_already_pending(self, client, app):
+        self._db(app, 0)  # a pending request already existed → no insert
+
+        resp = client.post("/api/library/saved-tracks/fill-genres")
+
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "already_pending"

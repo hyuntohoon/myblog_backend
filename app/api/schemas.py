@@ -561,6 +561,13 @@ class ClassifyResponse(BaseModel):
     status: str = "queued"
 
 
+class FillGenresResponse(BaseModel):
+    # 장르 채우기: enqueue an on-demand genre-backfill run (the local poller runs the
+    # existing S1→S2→S3 pipeline). "already_pending" when a request is already waiting
+    # for the poller (deduped to one pending request).
+    status: str = "queued"  # "queued" | "already_pending"
+
+
 # ====== Sections (STAB-5) ======
 # Read-only seeded taxonomy. The post request/response bodies keep the JSON
 # field name `category` for now (contract rename deferred to Step 5); only the
