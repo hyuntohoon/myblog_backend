@@ -62,6 +62,26 @@ class TestSavedTracksList:
         assert body["items"][0]["spotify_track_id"] == "t1"
         assert body["items"][0]["album"]["id"] == "alb-1"
 
+    def test_list_populates_album_genres(self, client, app, monkeypatch):
+        # The /profile 분석 버킷 facet/chip groups by the album's primary genre, so the
+        # list must fill album.genres via GenreService.labels_map (schema-identical —
+        # no contract change). Patch the resolver so the route's batch call returns labels.
+        svc = MagicMock()
+        svc.list_saved_tracks.return_value = (
+            [_saved_row(album_id="alb-1", album=_album())],
+            1,
+            None,
+        )
+        _override(app, svc)
+        fake_genre_svc = MagicMock()
+        fake_genre_svc.labels_map.return_value = {"alb-1": ["Ambient", "Jazz"]}
+        monkeypatch.setattr("app.api.routes.library.GenreService", lambda: fake_genre_svc)
+
+        resp = client.get("/api/library/saved-tracks")
+
+        assert resp.status_code == 200
+        assert resp.json()["items"][0]["album"]["genres"] == ["Ambient", "Jazz"]
+
     def test_list_album_null_when_not_in_catalog(self, client, app):
         svc = MagicMock()
         svc.list_saved_tracks.return_value = ([_saved_row(album_id=None, album=None)], 1, None)
