@@ -3,6 +3,7 @@ import logging
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
@@ -11,6 +12,7 @@ from app.api.schemas import (
     ClassifyResponse,
     DistItem,
     DistributionResponse,
+    FillGenresResponse,
     ListenedAlbumItem,
     ListenedAlbumsResponse,
     NowPlayingResponse,
@@ -307,6 +309,32 @@ def classify_saved_tracks(
     return ClassifyResponse(
         enqueued=enqueued, skipped_needs_backfill=needs_backfill, status="queued"
     )
+
+
+@router.post("/saved-tracks/fill-genres", response_model=FillGenresResponse, status_code=202)
+def fill_saved_track_genres(
+    db: Session = Depends(get_db),
+    _claims: Dict = Depends(require_cognito_token),
+):
+    # 장르 채우기 (owner action, JWT): enqueue an on-demand genre-backfill request. A
+    # local 5-min poller claims it and runs the EXISTING backfill_genres.py
+    # --incremental --label --execute (S1 mapping → S2 iTunes → S3 LLM) — the same
+    # pipeline as the daily 04:00 launchd, just now. Deduped to one pending request.
+    # Rule #9: only enqueues; the LLM (claude -p) runs on the owner's laptop via the
+    # poller, never in this request.
+    inserted = db.execute(
+        text(
+            """
+            INSERT INTO genre_backfill_requests (source)
+            SELECT '분석 버킷'
+            WHERE NOT EXISTS (
+                SELECT 1 FROM genre_backfill_requests WHERE claimed_at IS NULL
+            )
+            """
+        )
+    )
+    db.commit()
+    return FillGenresResponse(status="queued" if inserted.rowcount else "already_pending")
 
 
 # ── to-listen mutations (Cognito JWT) ───────────────────────────────────────────
