@@ -22,7 +22,7 @@ def _album(album_id="alb-1", title="Album", artists=("Artist A",)):
     return a
 
 
-def _saved_row(tid="t1", album_id=None, album=None):
+def _saved_row(tid="t1", album_id=None, album=None, duration_ms=211000):
     r = MagicMock()
     r.spotify_track_id = tid
     r.track_name = "Song"
@@ -32,6 +32,8 @@ def _saved_row(tid="t1", album_id=None, album=None):
     r.album_id = album_id
     r.album = album
     r.added_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    # Must set explicitly — a bare MagicMock attr fails Pydantic Optional[int].
+    r.duration_ms = duration_ms
     return r
 
 
@@ -61,6 +63,7 @@ class TestSavedTracksList:
         assert body["total"] == 1
         assert body["items"][0]["spotify_track_id"] == "t1"
         assert body["items"][0]["album"]["id"] == "alb-1"
+        assert body["items"][0]["duration_ms"] == 211000
 
     def test_list_populates_album_genres(self, client, app, monkeypatch):
         # The /profile 분석 버킷 facet/chip groups by the album's primary genre, so the
@@ -84,12 +87,13 @@ class TestSavedTracksList:
 
     def test_list_album_null_when_not_in_catalog(self, client, app):
         svc = MagicMock()
-        svc.list_saved_tracks.return_value = ([_saved_row(album_id=None, album=None)], 1, None)
+        svc.list_saved_tracks.return_value = ([_saved_row(album_id=None, album=None, duration_ms=None)], 1, None)
         _override(app, svc)
 
         resp = client.get("/api/library/saved-tracks")
 
         assert resp.json()["items"][0]["album"] is None
+        assert resp.json()["items"][0]["duration_ms"] is None
         assert resp.json()["items"][0]["album_id"] is None
 
 

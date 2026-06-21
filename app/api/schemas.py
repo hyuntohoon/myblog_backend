@@ -520,6 +520,10 @@ class SavedTrackItem(BaseModel):
     album_id: Optional[str] = None
     album: Optional[AlbumBrief] = None
     added_at: datetime
+    # FEAT-liked-tracks-workbench Step 4: track length (ms) from /me/tracks.
+    # None for rows synced before the worker started writing it (backfills on
+    # the next weekly mode=full sync).
+    duration_ms: Optional[int] = None
 
 
 class SavedTracksResponse(BaseModel):
