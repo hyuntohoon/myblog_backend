@@ -256,12 +256,15 @@ class LibraryService:
         self, db: Session, *, limit: int = 200, offset: int = 0
     ) -> Tuple[List[SpotifySavedTrack], int, Optional[datetime]]:
         """Paginated saved-tracks list (most-recently-liked first) + total +
-        last_synced_at. Each row carries denormalized text columns; `.album` lazily
-        resolves when the track's album is in our catalog (album_id FK)."""
+        last_synced_at. Each row carries denormalized text columns; `.album` (and its
+        `.artists`) are eager-loaded so the route can build an AlbumBrief per row
+        without an N+1 — at the workbench's limit=500 the per-row lazy loads timed out
+        the Lambda (the old UI only fetched 60). Mirrors the played-albums eager-load."""
         total = db.query(func.count()).select_from(SpotifySavedTrack).scalar() or 0
         last_synced = db.query(func.max(SpotifySavedTrack.synced_at)).scalar()
         rows = (
             db.query(SpotifySavedTrack)
+            .options(selectinload(SpotifySavedTrack.album).selectinload(Album.artists))
             .order_by(SpotifySavedTrack.added_at.desc())
             .limit(limit)
             .offset(offset)
