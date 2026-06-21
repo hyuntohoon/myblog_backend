@@ -36,6 +36,7 @@ from app.core.auth import require_cognito_token
 from app.db.session import get_db
 from app.di import get_library_service, get_sqs_client
 from app.services.enqueue import safe_enqueue_catalog_sync
+from app.services.genre_service import GenreService
 from app.services.library_service import (
     AlbumNotFoundError,
     DuplicateItemError,
@@ -48,7 +49,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _album_brief(album) -> AlbumBrief:
+def _album_brief(album, genres=None) -> AlbumBrief:
     return AlbumBrief(
         id=str(album.id),
         title=album.title,
@@ -56,6 +57,7 @@ def _album_brief(album) -> AlbumBrief:
         release_date=album.release_date,
         popularity=album.popularity,
         artist_names=[a.name for a in album.artists],
+        genres=genres or [],
     )
 
 
@@ -242,6 +244,12 @@ def list_saved_tracks(
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
     rows, total, last_synced = svc.list_saved_tracks(db, limit=limit, offset=offset)
+    # Populate album.genres (tier-0 labels, [0] = primary) for rows whose album is in
+    # our catalog — the /profile 분석 버킷 facet/chip groups by the primary genre.
+    # Schema-identical (genres already on AlbumBrief): no contract change. Same
+    # GenreService.labels_map the bucket view + the saved-tracks distribution use.
+    album_ids = [str(r.album_id) for r in rows if r.album_id is not None]
+    genre_map = GenreService().labels_map(db, album_ids) if album_ids else {}
     return SavedTracksResponse(
         items=[
             SavedTrackItem(
@@ -251,7 +259,7 @@ def list_saved_tracks(
                 album_name=r.album_name,
                 album_sid=r.album_sid,
                 album_id=str(r.album_id) if r.album_id else None,
-                album=_album_brief(r.album) if r.album is not None else None,
+                album=_album_brief(r.album, genre_map.get(str(r.album_id), [])) if r.album is not None else None,
                 added_at=r.added_at,
             )
             for r in rows
