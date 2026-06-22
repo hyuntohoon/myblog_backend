@@ -25,7 +25,6 @@ from myblog_shared_db.models import (
 
 from app.services.distribution import (
     expand_credits,
-    is_va_compilation,
     rank_counts,
     resolve_saved_artist_names,
 )
@@ -371,9 +370,9 @@ class LibraryService:
 
     def _track_artist_names(self, db: Session, track_ids) -> Dict[str, List[str]]:
         """{track_id_str -> [artist name, …]} via the track_artists join — the per-track
-        performers. Used as the saved-track fallback when the album is a Various-Artists
-        compilation, whose album_artists credit ('Various Artists') would otherwise hide
-        the real performer."""
+        performers. The PRIMARY artist source for the saved (좋아요) distribution: it
+        captures track-level FEATURES (which album_artists misses) and never collapses
+        to the 'Various Artists' album sentinel."""
         out: Dict[str, List[str]] = {}
         ids = {t for t in track_ids if t is not None}
         if not ids:
@@ -392,34 +391,28 @@ class LibraryService:
     def saved_tracks_artist_distribution(self, db: Session) -> Dict:
         # Per-artist credit (FIX-analysis-artist-attribution): a collab is split into
         # one credit per artist instead of a single comma-joined 'A, B' bucket that
-        # fragments solo counts. Attribution is album_artists (exact) by default; a
-        # Various-Artists compilation falls back to the track's own artists (the album
-        # credit would hide the real performer), then to splitting the denormalized
-        # artist_name (also the path for uncatalogued rows — currently empty in prod).
+        # fragments solo counts. TRACK-PRIMARY attribution: the track's own performers
+        # (track_artists) capture features and never collapse to 'Various Artists';
+        # album_artists alone under-counts featured artists (37% of the 좋아요 set are
+        # collabs). Falls back to album_artists (non-VA) → split denormalized
+        # artist_name (uncatalogued rows). Played stays album_artists (no track grain).
         rows = db.query(
             SpotifySavedTrack.album_id,
             SpotifySavedTrack.track_id,
             SpotifySavedTrack.artist_name,
         ).all()
+        track_artist = self._track_artist_names(
+            db, {r.track_id for r in rows if r.track_id is not None}
+        )
         album_artist = self._album_artist_names(
             db, {r.album_id for r in rows if r.album_id is not None}
         )
-        va_albums = {aid for aid, names in album_artist.items() if is_va_compilation(names)}
-        va_track_ids = {
-            r.track_id
-            for r in rows
-            if r.track_id is not None
-            and r.album_id is not None
-            and str(r.album_id) in va_albums
-        }
-        track_artist = self._track_artist_names(db, va_track_ids)
 
         credits = []
         for r in rows:
-            aid = str(r.album_id) if r.album_id is not None else None
             names = resolve_saved_artist_names(
-                album_artist.get(aid) if aid else None,
                 track_artist.get(str(r.track_id)) if r.track_id is not None else None,
+                album_artist.get(str(r.album_id)) if r.album_id is not None else None,
                 r.artist_name,
             )
             credits.append((names, 1))
