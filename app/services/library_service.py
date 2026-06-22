@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 from myblog_shared_db.models import (
     Album,
     AlbumToListenItem,
+    Artist,
     Genre,
     Post,
     SpotifyNowPlaying,
@@ -19,9 +20,15 @@ from myblog_shared_db.models import (
     SpotifySavedTrack,
     TrackGenre,
     post_albums_table as post_albums,
+    track_artists_table,
 )
 
-from app.services.distribution import rank_counts
+from app.services.distribution import (
+    expand_credits,
+    is_va_compilation,
+    rank_counts,
+    resolve_saved_artist_names,
+)
 from app.services.genre_service import GenreService
 
 
@@ -342,13 +349,87 @@ class LibraryService:
             "last_synced_at": db.query(func.max(SpotifySavedTrack.synced_at)).scalar(),
         }
 
+    def _album_artist_names(self, db: Session, album_ids) -> Dict[str, List[str]]:
+        """{album_id_str -> [artist name, …]} via the album_artists join — one row
+        per artist with the name intact. The exact, comma-safe source for artist
+        attribution, preferred over splitting the denormalized artist_name whenever
+        an album_id is present. Empty list when the album has no catalogued artists.
+        Eager-loads Album.artists to avoid an N+1 over the distinct albums."""
+        out: Dict[str, List[str]] = {}
+        ids = {a for a in album_ids if a is not None}
+        if not ids:
+            return out
+        albums = (
+            db.query(Album)
+            .filter(Album.id.in_(ids))
+            .options(selectinload(Album.artists))
+            .all()
+        )
+        for a in albums:
+            out[str(a.id)] = [ar.name for ar in a.artists if ar.name]
+        return out
+
+    def _track_artist_names(self, db: Session, track_ids) -> Dict[str, List[str]]:
+        """{track_id_str -> [artist name, …]} via the track_artists join — the per-track
+        performers. Used as the saved-track fallback when the album is a Various-Artists
+        compilation, whose album_artists credit ('Various Artists') would otherwise hide
+        the real performer."""
+        out: Dict[str, List[str]] = {}
+        ids = {t for t in track_ids if t is not None}
+        if not ids:
+            return out
+        rows = (
+            db.query(track_artists_table.c.track_id, Artist.name)
+            .join(Artist, Artist.id == track_artists_table.c.artist_id)
+            .filter(track_artists_table.c.track_id.in_(ids))
+            .all()
+        )
+        for track_id, name in rows:
+            if name:
+                out.setdefault(str(track_id), []).append(name)
+        return out
+
     def saved_tracks_artist_distribution(self, db: Session) -> Dict:
-        rows = db.query(SpotifySavedTrack.artist_name).all()
-        labels = [r.artist_name if r.artist_name else None for r in rows]
-        items, unclassified = rank_counts(labels)
+        # Per-artist credit (FIX-analysis-artist-attribution): a collab is split into
+        # one credit per artist instead of a single comma-joined 'A, B' bucket that
+        # fragments solo counts. Attribution is album_artists (exact) by default; a
+        # Various-Artists compilation falls back to the track's own artists (the album
+        # credit would hide the real performer), then to splitting the denormalized
+        # artist_name (also the path for uncatalogued rows — currently empty in prod).
+        rows = db.query(
+            SpotifySavedTrack.album_id,
+            SpotifySavedTrack.track_id,
+            SpotifySavedTrack.artist_name,
+        ).all()
+        album_artist = self._album_artist_names(
+            db, {r.album_id for r in rows if r.album_id is not None}
+        )
+        va_albums = {aid for aid, names in album_artist.items() if is_va_compilation(names)}
+        va_track_ids = {
+            r.track_id
+            for r in rows
+            if r.track_id is not None
+            and r.album_id is not None
+            and str(r.album_id) in va_albums
+        }
+        track_artist = self._track_artist_names(db, va_track_ids)
+
+        credits = []
+        for r in rows:
+            aid = str(r.album_id) if r.album_id is not None else None
+            names = resolve_saved_artist_names(
+                album_artist.get(aid) if aid else None,
+                track_artist.get(str(r.track_id)) if r.track_id is not None else None,
+                r.artist_name,
+            )
+            credits.append((names, 1))
+        labels, weights = expand_credits(credits)
+        items, unclassified = rank_counts(labels, weights)
         return {
             "items": items,
             "unclassified_count": unclassified,
+            # total stays the true population (liked track count); per-artist
+            # credits make sum(items) exceed (total - unclassified) for collabs.
             "total": len(rows),
             "uncatalogued": None,  # breakdown is genre-only
             "ungenred": None,
@@ -389,22 +470,17 @@ class LibraryService:
         }
 
     def play_events_artist_distribution(self, db: Session) -> Dict:
+        # Per-artist credit (FIX-analysis-artist-attribution): each artist of a
+        # played album gets the album's full play_count, instead of crediting one
+        # comma-joined 'A, B' label. album_id is NOT NULL here, so the album_artists
+        # join is always the source (no denormalized fallback). An album with no
+        # catalogued artists weights into unclassified by its play_count.
         rows = self._play_event_album_counts(db)
-        album_ids = {r.album_id for r in rows}
-        artist_map: Dict[str, Optional[str]] = {}
-        if album_ids:
-            albums = (
-                db.query(Album)
-                .filter(Album.id.in_(album_ids))
-                .options(selectinload(Album.artists))  # avoid N+1 over played albums
-                .all()
-            )
-            for a in albums:
-                names = ", ".join(ar.name for ar in a.artists) if a.artists else ""
-                artist_map[str(a.id)] = names or None
+        album_artist = self._album_artist_names(db, {r.album_id for r in rows})
 
-        labels = [artist_map.get(str(r.album_id)) for r in rows]
-        weights = [int(r.c) for r in rows]
+        labels, weights = expand_credits(
+            (album_artist.get(str(r.album_id)), int(r.c)) for r in rows
+        )
         items, unclassified = rank_counts(labels, weights)
         return {
             "items": items,
