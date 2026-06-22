@@ -142,7 +142,8 @@ def get_spotify_connection_status() -> SpotifyConnectionStatus:
     import time
 
     arn = settings.SPOTIFY_SECRETS_ARN
-    if not arn:
+    param = settings.SPOTIFY_SECRETS_PARAM
+    if not arn and not param:
         return SpotifyConnectionStatus()
     now = time.time()
     if _conn_cache["val"] is not None and now - _conn_cache["ts"] < _CONN_TTL_SEC:
@@ -150,8 +151,13 @@ def get_spotify_connection_status() -> SpotifyConnectionStatus:
     try:
         import boto3
 
-        sm = boto3.client("secretsmanager", region_name=settings.AWS_DEFAULT_REGION)
-        payload = json.loads(sm.get_secret_value(SecretId=arn)["SecretString"])
+        # SSM (SECRETS_PARAM) preferred → Secrets Manager fallback (CHORE-secrets-ssm-migration)
+        if param:
+            ssm = boto3.client("ssm", region_name=settings.AWS_DEFAULT_REGION)
+            payload = json.loads(ssm.get_parameter(Name=param, WithDecryption=True)["Parameter"]["Value"])
+        else:
+            sm = boto3.client("secretsmanager", region_name=settings.AWS_DEFAULT_REGION)
+            payload = json.loads(sm.get_secret_value(SecretId=arn)["SecretString"])
         status = SpotifyConnectionStatus(
             connected=bool(payload.get("refresh_token") or payload.get("SPOTIFY_REFRESH_TOKEN")),
             needs_reauth=bool(payload.get("needs_reauth")),

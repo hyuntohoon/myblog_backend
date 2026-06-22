@@ -18,8 +18,12 @@ class Settings(BaseSettings):
     APP_NAME: str = "Blog Backend"
     ENV: str = "local"
 
-    # Secrets Manager
+    # Secrets Manager (legacy) + SSM Parameter Store (CHORE-secrets-ssm-migration).
+    # SECRETS_PARAM (an SSM SecureString name like /myblog/backend) takes priority;
+    # SECRETS_ARN is the fallback. Setting SECRETS_PARAM is the per-service cutover
+    # switch (owner Terraform env flip); unsetting it reverts to Secrets Manager.
     SECRETS_ARN: str = ""
+    SECRETS_PARAM: str = ""
 
     # Auth / security
     EDGE_SECRET: str = ""
@@ -39,10 +43,11 @@ class Settings(BaseSettings):
     LOCALSTACK_ENDPOINT: str | None = None
     SQS_QUEUE_URL: str = ""
 
-    # Spotify connection status (refresh-token presence) — Secrets Manager
-    # myblog/spotify. Read on demand by the 연동 tab; the token itself is only ever
-    # used by the worker.
+    # Spotify connection status (refresh-token presence) — myblog/spotify. Read on
+    # demand by the 연동 tab; the token itself is only ever used by the worker.
+    # SPOTIFY_SECRETS_PARAM (SSM) takes priority over SPOTIFY_SECRETS_ARN (SM).
     SPOTIFY_SECRETS_ARN: str = ""
+    SPOTIFY_SECRETS_PARAM: str = ""
 
     # FEAT-spotify-library-sync: read-only MIRROR of the worker's write gate, used
     # only to drive the /profile UI banner ("검토 모드: Spotify에 실제 반영 안 됨").
@@ -77,23 +82,35 @@ def _mask(url: str) -> str:
         return url
 
 
-def _load_secrets(arn: str) -> dict:
-    try:
-        import boto3
-        sm = boto3.client("secretsmanager")
-        val = sm.get_secret_value(SecretId=arn)
-        return json.loads(val["SecretString"])
-    except Exception as e:
-        logger.error("Failed to load secrets from %s: %s", arn, e)
-        return {}
+def _load_secrets(param: str, arn: str) -> dict:
+    """Load the secret JSON dict, preferring SSM Parameter Store (``param``) and
+    falling back to Secrets Manager (``arn``) on unset-or-error. The env-var
+    presence is the migration cutover switch (CHORE-secrets-ssm-migration)."""
+    if param:
+        try:
+            import boto3
+            ssm = boto3.client("ssm")
+            val = ssm.get_parameter(Name=param, WithDecryption=True)
+            return json.loads(val["Parameter"]["Value"])
+        except Exception as e:
+            logger.error("SSM load failed for %s, falling back to Secrets Manager: %s", param, e)
+    if arn:
+        try:
+            import boto3
+            sm = boto3.client("secretsmanager")
+            val = sm.get_secret_value(SecretId=arn)
+            return json.loads(val["SecretString"])
+        except Exception as e:
+            logger.error("Failed to load secrets from %s: %s", arn, e)
+    return {}
 
 
 @lru_cache
 def get_settings() -> Settings:
     s = Settings()
 
-    if s.SECRETS_ARN:
-        secrets = _load_secrets(s.SECRETS_ARN)
+    if s.SECRETS_ARN or s.SECRETS_PARAM:
+        secrets = _load_secrets(s.SECRETS_PARAM, s.SECRETS_ARN)
         if secrets.get("DATABASE_URL"):
             s.DATABASE_URL = secrets["DATABASE_URL"]
         if secrets.get("EDGE_SECRET"):
