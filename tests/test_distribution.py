@@ -179,27 +179,31 @@ class TestIsVaCompilation:
 
 
 class TestResolveSavedArtistNames:
-    """Hybrid saved-track attribution (FIX-analysis-artist-attribution): album_artists
-    by default, VA compilation → track_artists → denorm split, uncatalogued → split."""
+    """Track-primary saved-track attribution (FIX-analysis-artist-attribution): the
+    track's own performers first (capture features, no 'Various Artists'), then
+    album_artists (non-VA), then split the denormalized artist_name.
+    Signature: resolve_saved_artist_names(track_names, album_names, denorm)."""
 
-    def test_normal_album_uses_album_artists(self):
-        # Exact, comma-safe — and ignores the denormalized string entirely.
-        assert resolve_saved_artist_names(["A", "B"], None, "A, B") == ["A", "B"]
+    def test_track_artists_win(self):
+        # Captures features; ignores album_artists + the denormalized string.
+        assert resolve_saved_artist_names(["식케이", "Coogie"], ["창모"], "x") == ["식케이", "Coogie"]
 
-    def test_va_album_falls_back_to_track_artists(self):
-        out = resolve_saved_artist_names(["Various Artists"], ["Coogie", "CHANGMO"], "x")
-        assert out == ["Coogie", "CHANGMO"]  # real performers, not 'Various Artists'
+    def test_falls_back_to_album_when_no_track_artists(self):
+        assert resolve_saved_artist_names(None, ["NewJeans"], "x") == ["NewJeans"]
 
-    def test_va_album_without_track_artists_splits_denorm(self):
-        out = resolve_saved_artist_names(["Various Artists"], None, "BIG Naughty, Coogie")
+    def test_va_album_is_skipped_uses_denorm(self):
+        # No track_artists + a Various-Artists album → split the denorm performer.
+        out = resolve_saved_artist_names(None, ["Various Artists"], "BIG Naughty, Coogie")
         assert out == ["BIG Naughty", "Coogie"]
 
     def test_uncatalogued_splits_denorm(self):
         assert resolve_saved_artist_names(None, None, "Solo") == ["Solo"]
 
-    def test_catalogued_but_empty_album_artists_splits_denorm(self):
-        assert resolve_saved_artist_names([], None, "X, Y") == ["X", "Y"]
+    def test_empty_album_artists_splits_denorm(self):
+        assert resolve_saved_artist_names(None, [], "X, Y") == ["X", "Y"]
 
-    def test_va_album_with_no_fallback_at_all_is_empty(self):
-        # VA album, no track_artists, no denorm → unclassified (empty list).
-        assert resolve_saved_artist_names(["Various Artists"], None, None) == []
+    def test_no_data_at_all_is_empty(self):
+        assert resolve_saved_artist_names(None, None, None) == []
+
+    def test_blank_track_names_fall_through_to_album(self):
+        assert resolve_saved_artist_names(["", None], ["RealAlbumArtist"], "z") == ["RealAlbumArtist"]

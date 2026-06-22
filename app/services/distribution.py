@@ -97,26 +97,28 @@ VARIOUS_ARTISTS = "Various Artists"
 def is_va_compilation(names: Optional[Iterable[str]]) -> bool:
     """True when an album's artist list is the Spotify 'Various Artists' compilation
     sentinel (its only artist is 'Various Artists'). The album-level credit then hides
-    the real per-track performer, so the saved-track distribution falls back to the
-    track's own artists for these (the hybrid attribution choice)."""
+    the real per-track performer, so the saved-track distribution skips it in the
+    album_artists fallback (track_artists is the primary source — see
+    :func:`resolve_saved_artist_names`)."""
     clean = [n for n in (names or []) if n]
     return bool(clean) and all(n == VARIOUS_ARTISTS for n in clean)
 
 
 def resolve_saved_artist_names(
-    album_names: Optional[Iterable[str]],
     track_names: Optional[Iterable[str]],
+    album_names: Optional[Iterable[str]],
     denorm: Optional[str],
 ) -> List[str]:
-    """Hybrid artist attribution for one saved (좋아요) track (FIX-analysis-artist-
-    attribution): album_artists by default (exact, comma-safe), EXCEPT a Various-
-    Artists compilation falls back to the track's own artists (track_artists), then to
-    splitting the denormalized artist_name. An uncatalogued track (no album artists at
-    all) also splits the denormalized string."""
-    if is_va_compilation(album_names):
-        track = [n for n in (track_names or []) if n]
-        return track or split_artist_names(denorm)
-    album = [n for n in (album_names or []) if n]
-    if album:
-        return album
+    """Track-primary artist attribution for one saved (좋아요) track (FIX-analysis-
+    artist-attribution): the track's own performers (track_artists) first — they
+    capture track-level FEATURES and never collapse to the 'Various Artists' album
+    sentinel — then album_artists (skipping a VA compilation), then splitting the
+    denormalized artist_name (uncatalogued rows). Per-track grain is the faithful
+    reading of a liked song; album_artists alone under-counts featured artists, which
+    in a feature-heavy library is most of the set."""
+    track = [n for n in (track_names or []) if n]
+    if track:
+        return track
+    if album_names and not is_va_compilation(album_names):
+        return [n for n in album_names if n]
     return split_artist_names(denorm)
