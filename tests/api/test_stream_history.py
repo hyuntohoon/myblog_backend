@@ -41,9 +41,9 @@ class TestStreamHistoryTopTracks:
         assert body["total_streams"] == 4500
         assert body["items"][0]["value"] == 53
         assert body["items"][0]["spotify_track_uri"] == "spotify:track:aaa"
-        # default metric=count, default limit=15
+        # default metric=count, default limit=15, no range
         _, kwargs = svc.stream_history_top_tracks.call_args
-        assert kwargs == {"metric": "count", "limit": 15}
+        assert kwargs == {"metric": "count", "limit": 15, "frm": None, "to": None}
 
     def test_live_streams_passes_through(self, client, app):
         # FEAT-listening-live-merge: the live-tail count rides through to the contract.
@@ -76,7 +76,7 @@ class TestStreamHistoryTopTracks:
         assert resp.status_code == 200
         assert resp.json()["unit"] == "ms"
         _, kwargs = svc.stream_history_top_tracks.call_args
-        assert kwargs == {"metric": "time", "limit": 5}
+        assert kwargs == {"metric": "time", "limit": 5, "frm": None, "to": None}
 
     def test_bad_metric_is_422(self, client, app):
         svc = MagicMock()
@@ -143,7 +143,7 @@ class TestStreamHistoryGenreEra:
         assert body["unclassified"] == 120
         assert body["items"][0]["label"] == "Hip-Hop"
         _, kwargs = svc.stream_history_genre_distribution.call_args
-        assert kwargs == {"metric": "count"}
+        assert kwargs == {"metric": "count", "frm": None, "to": None}
 
     def test_era_distribution_time_metric(self, client, app):
         svc = MagicMock()
@@ -235,3 +235,168 @@ class TestStreamHistoryRetrospective:
         assert otd["year"] == 2024
         assert otd["album"] is None
         assert otd["track_name"] == "Old Song"
+
+
+# ── FEAT-analysis-explore: time-range params ────────────────────────────────────────
+
+class TestStreamHistoryRange:
+    def test_from_to_parsed_and_forwarded(self, client, app):
+        # The route parses ISO 8601 `from`/`to` → datetime and forwards them as frm/to.
+        svc = MagicMock()
+        svc.stream_history_top_tracks.return_value = {
+            "items": [], "unit": "count", "total_streams": 0, "total_ms": 0, "as_of": None,
+        }
+        _override(app, svc)
+
+        resp = client.get(
+            "/api/library/stream-history/top-tracks"
+            "?from=2025-01-01T00:00:00Z&to=2026-01-01T00:00:00Z"
+        )
+
+        assert resp.status_code == 200
+        _, kwargs = svc.stream_history_top_tracks.call_args
+        assert kwargs["frm"] == datetime(2025, 1, 1, tzinfo=timezone.utc)
+        assert kwargs["to"] == datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def test_range_threads_to_album_and_genre_panels(self, client, app):
+        svc = MagicMock()
+        svc.stream_history_genre_distribution.return_value = {
+            "items": [], "unit": "count", "unclassified": 0,
+            "total_streams": 0, "total_ms": 0, "as_of": None,
+        }
+        svc.stream_history_top_albums.return_value = {
+            "items": [], "unit": "count", "unresolved": 0,
+            "total_streams": 0, "total_ms": 0, "as_of": None,
+        }
+        _override(app, svc)
+
+        client.get("/api/library/stream-history/genre-distribution?from=2024-01-01T00:00:00Z")
+        _, gk = svc.stream_history_genre_distribution.call_args
+        assert gk["frm"] == datetime(2024, 1, 1, tzinfo=timezone.utc) and gk["to"] is None
+
+        client.get("/api/library/stream-history/top-albums?to=2025-06-01T00:00:00Z")
+        _, ak = svc.stream_history_top_albums.call_args
+        assert ak["to"] == datetime(2025, 6, 1, tzinfo=timezone.utc) and ak["frm"] is None
+
+    def test_bad_from_is_422(self, client, app):
+        svc = MagicMock()
+        _override(app, svc)
+        resp = client.get("/api/library/stream-history/top-tracks?from=not-a-date")
+        assert resp.status_code == 422
+        svc.stream_history_top_tracks.assert_not_called()
+
+
+# ── FEAT-analysis-explore: item drill-down ──────────────────────────────────────────
+
+class TestStreamHistoryItem:
+    def test_artist_detail_with_top_lists(self, client, app):
+        svc = MagicMock()
+        svc.stream_history_item_detail.return_value = {
+            "type": "artist", "id": "Kid Milli", "label": "Kid Milli", "artist": None,
+            "unit": "count", "count": 316, "time_ms": 51_000_000,
+            "first_listen": datetime(2021, 1, 2, tzinfo=timezone.utc),
+            "last_listen": datetime(2026, 6, 1, tzinfo=timezone.utc),
+            "per_year": [{"year": 2021, "plays": 100, "ms_played": 16_000_000}],
+            "top_tracks": [{"label": "T1", "artist": "Kid Milli",
+                            "spotify_track_uri": "spotify:track:aaa", "value": 40}],
+            "top_albums": [],
+            "as_of": datetime(2026, 6, 21, tzinfo=timezone.utc), "live_streams": 3,
+        }
+        _override(app, svc)
+
+        resp = client.get(
+            "/api/library/stream-history/item?type=artist&id=Kid+Milli&metric=count"
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["type"] == "artist"
+        assert body["count"] == 316 and body["live_streams"] == 3
+        assert body["per_year"][0]["year"] == 2021
+        assert body["top_tracks"][0]["spotify_track_uri"] == "spotify:track:aaa"
+        _, kwargs = svc.stream_history_item_detail.call_args
+        assert kwargs == {"type_": "artist", "id_": "Kid Milli",
+                          "metric": "count", "frm": None, "to": None}
+
+    def test_album_detail_builds_brief(self, client, app):
+        from datetime import date
+        from types import SimpleNamespace
+
+        album = SimpleNamespace(
+            id="22222222-2222-2222-2222-222222222222", title="Detail Album",
+            cover_url=None, release_date=date(2020, 1, 1), popularity=10,
+            artists=[SimpleNamespace(name="A")],
+        )
+        svc = MagicMock()
+        svc.stream_history_item_detail.return_value = {
+            "type": "album", "id": str(album.id), "label": "Detail Album", "artist": "A",
+            "unit": "count", "count": 12, "time_ms": 1_000_000,
+            "first_listen": None, "last_listen": None, "per_year": [],
+            "top_tracks": [],
+            "top_albums": [{"album_obj": album, "genres": ["Hip-Hop"], "value": 12}],
+            "as_of": None, "live_streams": 0,
+        }
+        _override(app, svc)
+
+        resp = client.get(f"/api/library/stream-history/item?type=album&id={album.id}")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["label"] == "Detail Album" and body["artist"] == "A"
+        assert body["top_albums"][0]["album"]["title"] == "Detail Album"
+        assert body["top_albums"][0]["album"]["genres"] == ["Hip-Hop"]
+
+    def test_album_not_found_is_404(self, client, app):
+        from app.services.library_service import AlbumNotFoundError
+
+        svc = MagicMock()
+        svc.stream_history_item_detail.side_effect = AlbumNotFoundError("missing")
+        _override(app, svc)
+
+        resp = client.get("/api/library/stream-history/item?type=album&id=missing")
+        assert resp.status_code == 404
+
+    def test_bad_type_is_422(self, client, app):
+        svc = MagicMock()
+        _override(app, svc)
+        resp = client.get("/api/library/stream-history/item?type=playlist&id=x")
+        assert resp.status_code == 422
+        svc.stream_history_item_detail.assert_not_called()
+
+    def test_missing_id_is_422(self, client, app):
+        svc = MagicMock()
+        _override(app, svc)
+        resp = client.get("/api/library/stream-history/item?type=track")
+        assert resp.status_code == 422
+
+
+# ── FEAT-analysis-explore: listening clock ──────────────────────────────────────────
+
+class TestStreamHistoryClock:
+    def test_clock_cells_and_metric(self, client, app):
+        svc = MagicMock()
+        svc.stream_history_clock.return_value = {
+            "cells": [
+                {"weekday": 1, "hour": 9, "plays": 40, "ms_played": 8_000_000},
+                {"weekday": 6, "hour": 23, "plays": 12, "ms_played": 2_000_000},
+            ],
+            "unit": "count", "total_streams": 3252, "total_ms": 628_000_000,
+            "as_of": datetime(2026, 6, 21, tzinfo=timezone.utc), "live_streams": 37,
+        }
+        _override(app, svc)
+
+        resp = client.get("/api/library/stream-history/clock?metric=count")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["unit"] == "count" and body["live_streams"] == 37
+        assert body["cells"][0] == {"weekday": 1, "hour": 9, "plays": 40, "ms_played": 8_000_000}
+        _, kwargs = svc.stream_history_clock.call_args
+        assert kwargs == {"metric": "count", "frm": None, "to": None}
+
+    def test_clock_bad_metric_422(self, client, app):
+        svc = MagicMock()
+        _override(app, svc)
+        resp = client.get("/api/library/stream-history/clock?metric=bogus")
+        assert resp.status_code == 422
+        svc.stream_history_clock.assert_not_called()

@@ -1,8 +1,9 @@
 # app/api/routes/library.py
 import logging
-from typing import Dict, Literal
+from datetime import datetime
+from typing import Dict, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -31,6 +32,9 @@ from app.api.schemas import (
     SpotifyConnectionResponse,
     StreamAlbumRankItem,
     StreamAlbumRankResponse,
+    StreamClockCell,
+    StreamClockResponse,
+    StreamItemDetailResponse,
     StreamRankItem,
     StreamRankResponse,
     ToListenItemResponse,
@@ -313,6 +317,13 @@ def play_events_artist_distribution(
 # Ungated count/time rankings over the imported Spotify streaming history. edge_guard-only
 # reads (no JWT), like the other library reads. `metric` flips the front Count↔Time axis;
 # Literal makes FastAPI 422 on a bad value and self-documents in the contract.
+# FEAT-analysis-explore: optional `from`/`to` (raw ISO timestamps; half-open [from, to))
+# scope every panel to a time window. Omitted = lifetime+live (current behavior). `from`
+# is a Python keyword → aliased; FastAPI parses ISO 8601 (tz-aware when an offset/Z is given).
+
+_FROM = Query(None, alias="from", description="range start, inclusive (ISO 8601); omit for lifetime")
+_TO = Query(None, alias="to", description="range end, exclusive (ISO 8601); omit for open-ended")
+
 
 def _stream_rank_response(d) -> StreamRankResponse:
     return StreamRankResponse(
@@ -330,22 +341,26 @@ def _stream_rank_response(d) -> StreamRankResponse:
 def stream_history_top_tracks(
     metric: Literal["count", "time"] = "count",
     limit: int = 15,
+    from_: Optional[datetime] = _FROM,
+    to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
 ):
     limit = max(1, min(limit, 100))
-    return _stream_rank_response(svc.stream_history_top_tracks(db, metric=metric, limit=limit))
+    return _stream_rank_response(svc.stream_history_top_tracks(db, metric=metric, limit=limit, frm=from_, to=to))
 
 
 @router.get("/stream-history/top-artists", response_model=StreamRankResponse)
 def stream_history_top_artists(
     metric: Literal["count", "time"] = "count",
     limit: int = 15,
+    from_: Optional[datetime] = _FROM,
+    to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
 ):
     limit = max(1, min(limit, 100))
-    return _stream_rank_response(svc.stream_history_top_artists(db, metric=metric, limit=limit))
+    return _stream_rank_response(svc.stream_history_top_artists(db, metric=metric, limit=limit, frm=from_, to=to))
 
 
 # ── 분석 버킷: GATED lifetime panels — album / genre / era / retrospective (Step 5) ──
@@ -370,40 +385,48 @@ def _stream_album_rank_response(d) -> StreamAlbumRankResponse:
 @router.get("/stream-history/genre-distribution", response_model=StreamRankResponse)
 def stream_history_genre_distribution(
     metric: Literal["count", "time"] = "count",
+    from_: Optional[datetime] = _FROM,
+    to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
 ):
-    return _stream_rank_response(svc.stream_history_genre_distribution(db, metric=metric))
+    return _stream_rank_response(svc.stream_history_genre_distribution(db, metric=metric, frm=from_, to=to))
 
 
 @router.get("/stream-history/era-distribution", response_model=StreamRankResponse)
 def stream_history_era_distribution(
     metric: Literal["count", "time"] = "count",
+    from_: Optional[datetime] = _FROM,
+    to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
 ):
-    return _stream_rank_response(svc.stream_history_era_distribution(db, metric=metric))
+    return _stream_rank_response(svc.stream_history_era_distribution(db, metric=metric, frm=from_, to=to))
 
 
 @router.get("/stream-history/top-albums", response_model=StreamAlbumRankResponse)
 def stream_history_top_albums(
     metric: Literal["count", "time"] = "count",
     limit: int = 15,
+    from_: Optional[datetime] = _FROM,
+    to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
 ):
     limit = max(1, min(limit, 100))
-    return _stream_album_rank_response(svc.stream_history_top_albums(db, metric=metric, limit=limit))
+    return _stream_album_rank_response(svc.stream_history_top_albums(db, metric=metric, limit=limit, frm=from_, to=to))
 
 
 @router.get("/stream-history/retrospective", response_model=RetrospectiveResponse)
 def stream_history_retrospective(
     limit: int = 20,
+    from_: Optional[datetime] = _FROM,
+    to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
 ):
     limit = max(1, min(limit, 100))
-    d = svc.stream_history_retrospective(db, limit=limit)
+    d = svc.stream_history_retrospective(db, limit=limit, frm=from_, to=to)
     return RetrospectiveResponse(
         per_year=[RetroYearStat(**y) for y in d["per_year"]],
         on_this_day=[
@@ -419,6 +442,65 @@ def stream_history_retrospective(
             for it in d["on_this_day"]
         ],
         today_kst=d["today_kst"],
+        as_of=d["as_of"],
+        live_streams=d.get("live_streams", 0),
+    )
+
+
+# ── 분석 버킷: item drill-down + listening clock (FEAT-analysis-explore) ──────────────
+# edge_guard reads (no JWT), like the rest of the analysis source. Both honour the same
+# optional [from, to) range. The drill-down keys an entity (artist | catalog album | track);
+# `type` is a Literal so FastAPI 422s a bad value. The clock returns a KST hour×weekday matrix.
+
+@router.get("/stream-history/item", response_model=StreamItemDetailResponse)
+def stream_history_item(
+    type: Literal["artist", "album", "track"],
+    id: str,
+    metric: Literal["count", "time"] = "count",
+    from_: Optional[datetime] = _FROM,
+    to: Optional[datetime] = _TO,
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    try:
+        d = svc.stream_history_item_detail(db, type_=type, id_=id, metric=metric, frm=from_, to=to)
+    except AlbumNotFoundError:
+        raise HTTPException(status_code=404, detail="Album not found")
+    return StreamItemDetailResponse(
+        type=d["type"],
+        id=d["id"],
+        label=d["label"],
+        artist=d["artist"],
+        unit=d["unit"],
+        count=d["count"],
+        time_ms=d["time_ms"],
+        first_listen=d["first_listen"],
+        last_listen=d["last_listen"],
+        per_year=[RetroYearStat(**y) for y in d["per_year"]],
+        top_tracks=[StreamRankItem(**t) for t in d["top_tracks"]],
+        top_albums=[
+            StreamAlbumRankItem(album=_album_brief(it["album_obj"], it["genres"]), value=it["value"])
+            for it in d["top_albums"]
+        ],
+        as_of=d["as_of"],
+        live_streams=d["live_streams"],
+    )
+
+
+@router.get("/stream-history/clock", response_model=StreamClockResponse)
+def stream_history_clock(
+    metric: Literal["count", "time"] = "count",
+    from_: Optional[datetime] = _FROM,
+    to: Optional[datetime] = _TO,
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    d = svc.stream_history_clock(db, metric=metric, frm=from_, to=to)
+    return StreamClockResponse(
+        cells=[StreamClockCell(**c) for c in d["cells"]],
+        unit=d["unit"],
+        total_streams=d["total_streams"],
+        total_ms=d["total_ms"],
         as_of=d["as_of"],
         live_streams=d.get("live_streams", 0),
     )

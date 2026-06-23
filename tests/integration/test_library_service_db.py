@@ -228,3 +228,98 @@ class TestRecentTracks:
         assert non.album_id is None and non.album is None      # non-catalog still returned
         assert str(cat.album_id) == aid and cat.album is not None  # catalog resolves
         assert cat.album.id is not None
+
+
+# ── FEAT-analysis-explore: time-range over the lifetime+live union ───────────────────
+# The [frm, to) window threads through _unified_events into BOTH union legs. Mocks can't
+# see the half-open boundary, the KST per-year regroup, or that the clock covers the same
+# population as the totals (cf. feedback-sa-session-lifecycle-mock-blind). Seeds use a
+# UNIQUE artist so entity-scoped drill-down gives EXACT counts regardless of fixture data;
+# all timestamps sit well below the real as_of, so they land in the import leg and never
+# shift as_of (the union boundary stays the real import horizon).
+
+def _seed_stream(db, *, ts, uri, artist, ms=200_000):
+    db.execute(
+        text(
+            "INSERT INTO spotify_stream_history "
+            "(ts, ms_played, spotify_track_uri, track_name, artist_name, skipped) "
+            "VALUES (:ts, :ms, :uri, 'ITEST track', :artist, false)"
+        ),
+        {"ts": ts, "ms": ms, "uri": uri, "artist": artist},
+    )
+
+
+class TestStreamHistoryRange:
+    def test_half_open_range_boundary(self, db, svc):
+        run = uuid.uuid4().hex[:8]
+        artist = f"ITEST_RANGE_{run}"
+        r1 = datetime(2024, 3, 1, tzinfo=timezone.utc)
+        r2 = datetime(2024, 9, 1, tzinfo=timezone.utc)
+        r3 = datetime(2025, 3, 1, tzinfo=timezone.utc)
+        _seed_stream(db, ts=r1, uri=f"spotify:track:itest_{run}_1", artist=artist)
+        _seed_stream(db, ts=r2, uri=f"spotify:track:itest_{run}_2", artist=artist)
+        _seed_stream(db, ts=r3, uri=f"spotify:track:itest_{run}_3", artist=artist)
+
+        # whole history → all 3; KST per-year 2024:2 + 2025:1; first/last = the extremes
+        full = svc.stream_history_item_detail(db, type_="artist", id_=artist)
+        assert full["count"] == 3
+        assert full["time_ms"] == 600_000
+        assert full["first_listen"] == r1 and full["last_listen"] == r3
+        assert {y["year"]: y["plays"] for y in full["per_year"]} == {2024: 2, 2025: 1}
+
+        # [2024-01-01, 2025-01-01) → only the two 2024 rows
+        y2024 = svc.stream_history_item_detail(
+            db, type_="artist", id_=artist,
+            frm=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            to=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        )
+        assert y2024["count"] == 2
+        assert {y["year"] for y in y2024["per_year"]} == {2024}
+
+        # `to` is EXCLUSIVE — a row exactly at `to` drops out
+        excl = svc.stream_history_item_detail(
+            db, type_="artist", id_=artist,
+            frm=datetime(2024, 1, 1, tzinfo=timezone.utc), to=r2,
+        )
+        assert excl["count"] == 1
+
+        # `from` is INCLUSIVE — a row exactly at `from` stays in
+        incl = svc.stream_history_item_detail(db, type_="artist", id_=artist, frm=r2)
+        assert incl["count"] == 2  # r2 (at from) + r3
+
+    def test_clock_covers_same_population_as_totals(self, db, svc):
+        # Every event lands in exactly ONE hour×weekday cell, so the clock's play-sum
+        # equals total_streams over the SAME range — a union double-count would break this.
+        frm = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        to = datetime(2024, 2, 1, tzinfo=timezone.utc)
+        clock = svc.stream_history_clock(db, frm=frm, to=to)
+        assert sum(c["plays"] for c in clock["cells"]) == clock["total_streams"]
+        # cells are valid KST coordinates
+        for c in clock["cells"]:
+            assert 0 <= c["weekday"] <= 6 and 0 <= c["hour"] <= 23
+
+    def test_window_excluding_seed_is_empty(self, db, svc):
+        run = uuid.uuid4().hex[:8]
+        artist = f"ITEST_WIN_{run}"
+        _seed_stream(
+            db, ts=datetime(2013, 7, 1, 12, 0, tzinfo=timezone.utc),
+            uri=f"spotify:track:itest_{run}_a", artist=artist,
+        )
+        # a window entirely before the seed → the entity has zero plays in range
+        before = svc.stream_history_item_detail(
+            db, type_="artist", id_=artist,
+            frm=datetime(2012, 1, 1, tzinfo=timezone.utc),
+            to=datetime(2013, 1, 1, tzinfo=timezone.utc),
+        )
+        assert before["count"] == 0
+        assert before["first_listen"] is None and before["per_year"] == []
+        assert before["top_tracks"] == [] and before["top_albums"] == []
+
+    def test_as_of_invariant_under_range(self, db, svc):
+        # as_of is the GLOBAL import horizon (max ts), never the ranged subset.
+        unranged = svc._stream_totals(db)
+        ranged = svc._stream_totals(
+            db, datetime(2024, 1, 1, tzinfo=timezone.utc),
+            datetime(2024, 6, 1, tzinfo=timezone.utc),
+        )
+        assert ranged["as_of"] == unranged["as_of"]
