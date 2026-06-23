@@ -1,6 +1,7 @@
 # app/services/library_service.py
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -516,16 +517,33 @@ class LibraryService:
     # rowset. The live tail is id-only, so its denormalized shape is reconstructed from
     # the catalog and its ms_played is ESTIMATED as track length (no ms in the poller).
 
-    def _unified_events(self):
+    def _unified_events(
+        self,
+        frm: Optional[datetime] = None,
+        to: Optional[datetime] = None,
+    ):
         """Per-play subquery: import (≤ as_of, real ms) UNION ALL live (> as_of, ms
         estimated from `tracks.duration_sec`). Columns uri / track_name / artist_name /
         album_id / ms_played / event_ts / src ('import'|'live'). The live tail carries no
         skip/ms display filter (the poller has neither) — a row is a recently-played
-        appearance. Aggregate over the returned subquery."""
+        appearance. Aggregate over the returned subquery.
+
+        FEAT-analysis-explore: an optional half-open time window [frm, to) on the per-play
+        `event_ts` (import → SSH.ts, live → TPE.played_at), applied to BOTH legs so every
+        downstream aggregation re-scopes to the range. `frm` inclusive, `to` exclusive
+        (front maps presets → raw timestamps). `as_of` stays the GLOBAL import horizon
+        (max ts over the whole import, NOT the ranged subset) so the import/live union
+        boundary is invariant under the range — a range entirely ≤ as_of is import-only,
+        a range including now still pulls the live tail."""
         SSH = SpotifyStreamHistory
         TPE = SpotifyTrackPlayEvent
         as_of = select(func.max(SSH.ts)).scalar_subquery()
 
+        imp_where = [self._stream_display_filter()]
+        if frm is not None:
+            imp_where.append(SSH.ts >= frm)
+        if to is not None:
+            imp_where.append(SSH.ts < to)
         imp = select(
             SSH.spotify_track_uri.label("uri"),
             SSH.track_name.label("track_name"),
@@ -534,7 +552,7 @@ class LibraryService:
             SSH.ms_played.label("ms_played"),
             SSH.ts.label("event_ts"),
             literal("import").label("src"),
-        ).where(self._stream_display_filter())
+        ).where(and_(*imp_where))
 
         # Live tail: title from the catalog, the album's first artist as album-artist
         # parity, ms ESTIMATED = duration_sec × 1000 (owner decision; overcounts skips /
@@ -547,6 +565,11 @@ class LibraryService:
             .limit(1)
             .scalar_subquery()
         )
+        live_where = [TPE.played_at > as_of]
+        if frm is not None:
+            live_where.append(TPE.played_at >= frm)
+        if to is not None:
+            live_where.append(TPE.played_at < to)
         live = (
             select(
                 (literal("spotify:track:") + TPE.spotify_track_id).label("uri"),
@@ -559,15 +582,21 @@ class LibraryService:
             )
             .select_from(TPE)
             .join(Track, Track.id == TPE.track_id, isouter=True)
-            .where(TPE.played_at > as_of)
+            .where(and_(*live_where))
         )
         return union_all(imp, live).subquery("ev")
 
-    def _stream_totals(self, db: Session) -> Dict:
-        """Population denominator + the import horizon + the live-tail count. `as_of`
-        stays the IMPORT horizon (the boundary); `live_streams` = plays folded in from
-        after it (whose time is estimated)."""
-        ev = self._unified_events()
+    def _stream_totals(
+        self,
+        db: Session,
+        frm: Optional[datetime] = None,
+        to: Optional[datetime] = None,
+    ) -> Dict:
+        """Population denominator + the import horizon + the live-tail count, scoped to
+        the [frm, to) range when given. `total_streams`/`total_ms`/`live_streams` re-scope
+        to the range (so the hero reflects it); `as_of` stays the GLOBAL import horizon
+        (the boundary + staleness marker), independent of the range."""
+        ev = self._unified_events(frm, to)
         row = db.execute(
             select(
                 func.count().label("n"),
@@ -584,11 +613,12 @@ class LibraryService:
         }
 
     def stream_history_top_tracks(
-        self, db: Session, *, metric: str = "count", limit: int = 15
+        self, db: Session, *, metric: str = "count", limit: int = 15,
+        frm: Optional[datetime] = None, to: Optional[datetime] = None,
     ) -> Dict:
         # Identity = the track URI (import: real; live: 'spotify:track:'||id); displayed
         # name = the denormalized/reconstructed track_name/artist_name.
-        ev = self._unified_events()
+        ev = self._unified_events(frm, to)
         plays = func.count().label("plays")
         ms = func.sum(ev.c.ms_played).label("ms")
         primary = ms.desc() if metric == "time" else plays.desc()
@@ -614,14 +644,15 @@ class LibraryService:
             }
             for r in rows
         ]
-        return {"items": items, "unit": "ms" if metric == "time" else "count", **self._stream_totals(db)}
+        return {"items": items, "unit": "ms" if metric == "time" else "count", **self._stream_totals(db, frm, to)}
 
     def stream_history_top_artists(
-        self, db: Session, *, metric: str = "count", limit: int = 15
+        self, db: Session, *, metric: str = "count", limit: int = 15,
+        frm: Optional[datetime] = None, to: Optional[datetime] = None,
     ) -> Dict:
         # Artist ranking over the denormalized/reconstructed album-artist name (no
         # per-artist credit split — that needs the catalog FK). Null-artist rows drop out.
-        ev = self._unified_events()
+        ev = self._unified_events(frm, to)
         plays = func.count().label("plays")
         ms = func.sum(ev.c.ms_played).label("ms")
         primary = ms.desc() if metric == "time" else plays.desc()
@@ -634,7 +665,7 @@ class LibraryService:
         ).all()
         value = (lambda r: int(r.ms)) if metric == "time" else (lambda r: int(r.plays))
         items = [{"label": r.artist_name, "value": value(r)} for r in rows]
-        return {"items": items, "unit": "ms" if metric == "time" else "count", **self._stream_totals(db)}
+        return {"items": items, "unit": "ms" if metric == "time" else "count", **self._stream_totals(db, frm, to)}
 
     # ── 분석 버킷: GATED lifetime panels (FEAT-listening-history-import Step 5) ──────────
     # Album / genre / era / retrospective over the lifetime stream history. GATED on the
@@ -646,10 +677,17 @@ class LibraryService:
     # residual 미분류 (uncatalogued + ungenred / no-release) is surfaced as a weight for
     # the honesty caption, not hidden. DB-only (rule #9).
 
-    def _stream_album_weights(self, db: Session, metric: str) -> Tuple[List[Tuple], int]:
+    def _stream_album_weights(
+        self,
+        db: Session,
+        metric: str,
+        frm: Optional[datetime] = None,
+        to: Optional[datetime] = None,
+    ) -> Tuple[List[Tuple], int]:
         """[(album_id, weight)] over the unified import+live events WITH a catalog album
-        (weight = plays or ms per metric) + the unresolved (no album_id) weight."""
-        ev = self._unified_events()
+        (weight = plays or ms per metric) + the unresolved (no album_id) weight, scoped to
+        the [frm, to) range when given."""
+        ev = self._unified_events(frm, to)
         plays = func.count().label("plays")
         ms = func.sum(ev.c.ms_played).label("ms")
         rows = db.execute(
@@ -667,8 +705,11 @@ class LibraryService:
         ).one()
         return weights, int(unres.m if metric == "time" else unres.c)
 
-    def stream_history_genre_distribution(self, db: Session, *, metric: str = "count") -> Dict:
-        weights, unres = self._stream_album_weights(db, metric)
+    def stream_history_genre_distribution(
+        self, db: Session, *, metric: str = "count",
+        frm: Optional[datetime] = None, to: Optional[datetime] = None,
+    ) -> Dict:
+        weights, unres = self._stream_album_weights(db, metric, frm, to)
         album_genre = self._album_primary_genre_map(db, {aid for aid, _ in weights})
         labels = [album_genre.get(str(aid)) for aid, _ in weights]  # None = ungenred
         items, unclassified = rank_counts(labels, [w for _, w in weights])
@@ -676,11 +717,14 @@ class LibraryService:
             "items": [{"label": label, "value": count} for label, count in items],
             "unit": "ms" if metric == "time" else "count",
             "unclassified": unclassified + unres,  # ungenred + uncatalogued
-            **self._stream_totals(db),
+            **self._stream_totals(db, frm, to),
         }
 
-    def stream_history_era_distribution(self, db: Session, *, metric: str = "count") -> Dict:
-        weights, unres = self._stream_album_weights(db, metric)
+    def stream_history_era_distribution(
+        self, db: Session, *, metric: str = "count",
+        frm: Optional[datetime] = None, to: Optional[datetime] = None,
+    ) -> Dict:
+        weights, unres = self._stream_album_weights(db, metric, frm, to)
         ids = {aid for aid, _ in weights}
         release = (
             {aid: rd for aid, rd in db.execute(
@@ -698,11 +742,14 @@ class LibraryService:
             "items": [{"label": label, "value": count} for label, count in items],
             "unit": "ms" if metric == "time" else "count",
             "unclassified": unclassified + unres,  # no-release + uncatalogued
-            **self._stream_totals(db),
+            **self._stream_totals(db, frm, to),
         }
 
-    def stream_history_top_albums(self, db: Session, *, metric: str = "count", limit: int = 15) -> Dict:
-        ev = self._unified_events()
+    def stream_history_top_albums(
+        self, db: Session, *, metric: str = "count", limit: int = 15,
+        frm: Optional[datetime] = None, to: Optional[datetime] = None,
+    ) -> Dict:
+        ev = self._unified_events(frm, to)
         plays = func.count().label("plays")
         ms = func.sum(ev.c.ms_played).label("ms")
         primary = ms.desc() if metric == "time" else plays.desc()
@@ -735,11 +782,14 @@ class LibraryService:
             "items": items,
             "unit": "ms" if metric == "time" else "count",
             "unresolved": int(unres.m if metric == "time" else unres.c),
-            **self._stream_totals(db),
+            **self._stream_totals(db, frm, to),
         }
 
-    def stream_history_retrospective(self, db: Session, *, limit: int = 20) -> Dict:
-        ev = self._unified_events()
+    def stream_history_retrospective(
+        self, db: Session, *, limit: int = 20,
+        frm: Optional[datetime] = None, to: Optional[datetime] = None,
+    ) -> Dict:
+        ev = self._unified_events(frm, to)
         kst = func.timezone("Asia/Seoul", ev.c.event_ts)
         now_kst = func.timezone("Asia/Seoul", func.now())
         yr = func.extract("year", kst)
@@ -793,13 +843,165 @@ class LibraryService:
             for r in otd_rows
         ]
         today_kst = db.execute(select(func.to_char(now_kst, "MM-DD"))).scalar()
-        totals = self._stream_totals(db)
+        totals = self._stream_totals(db, frm, to)
         return {
             "per_year": per_year,
             "on_this_day": on_this_day,
             "today_kst": today_kst,
             "as_of": totals["as_of"],
             "live_streams": totals["live_streams"],
+        }
+
+    # ── 분석 버킷: item drill-down + listening clock (FEAT-analysis-explore) ────────────
+    # Both re-aggregate the SAME _unified_events union (per-stream event_ts, import+live)
+    # with the optional [frm, to) range. Drill-down keys an entity (artist_name | catalog
+    # album_id | track uri — the same grouping keys the top-N panels use); the clock is a
+    # KST hour×weekday matrix (the retrospective's func.timezone('Asia/Seoul', …) path).
+    # DB-only reads (rule #9); count is exact, live-tail time is the same ESTIMATE the rest
+    # of the source carries.
+
+    def stream_history_item_detail(
+        self, db: Session, *, type_: str, id_: str, metric: str = "count",
+        frm: Optional[datetime] = None, to: Optional[datetime] = None, top_limit: int = 10,
+    ) -> Dict:
+        """One entity's stats over the (optionally ranged) union: count, listening time,
+        first/last listen, per-year series, and — for an artist — its top tracks/albums.
+        `id_` is the URI (track), the artist_name (artist), or the catalog album_id (album).
+        An album id absent from the catalog raises AlbumNotFoundError (→ 404); an entity
+        with no plays in range returns a zero detail (not an error)."""
+        ev = self._unified_events(frm, to)
+        album_uuid = None
+        if type_ == "track":
+            ent = ev.c.uri == id_
+        elif type_ == "artist":
+            ent = ev.c.artist_name == id_
+        elif type_ == "album":
+            try:
+                album_uuid = uuid.UUID(str(id_))
+            except (ValueError, AttributeError, TypeError):
+                raise AlbumNotFoundError(id_)
+            ent = ev.c.album_id == album_uuid
+        else:
+            raise ValueError(f"unknown drill-down type: {type_}")
+
+        plays = func.count().label("plays")
+        ms = func.coalesce(func.sum(ev.c.ms_played), 0).label("ms")
+        core = db.execute(
+            select(
+                plays,
+                ms,
+                func.min(ev.c.event_ts).label("first_listen"),
+                func.max(ev.c.event_ts).label("last_listen"),
+                func.count().filter(ev.c.src == "live").label("live"),
+                func.max(ev.c.track_name).label("track_name"),
+                func.max(ev.c.artist_name).label("artist_name"),
+            ).select_from(ev).where(ent)
+        ).one()
+
+        if type_ == "artist":
+            label, artist = id_, None
+        elif type_ == "track":
+            label, artist = (core.track_name or "(알 수 없음)"), core.artist_name
+        else:  # album — resolve the catalog title/artists (id came from the album panel)
+            album = (
+                db.query(Album).filter(Album.id == album_uuid)
+                .options(selectinload(Album.artists)).first()
+            )
+            if album is None:
+                raise AlbumNotFoundError(id_)
+            label = album.title
+            artist = ", ".join(a.name for a in album.artists if a.name) or None
+
+        kst = func.timezone("Asia/Seoul", ev.c.event_ts)
+        yr = func.extract("year", kst)
+        per_year = [
+            {"year": int(r.yr), "plays": int(r.plays), "ms_played": int(r.ms)}
+            for r in db.execute(
+                select(yr.label("yr"), plays, ms)
+                .select_from(ev).where(ent).group_by(yr).order_by(yr)
+            ).all()
+        ]
+
+        top_tracks: List[Dict] = []
+        top_albums: List[Dict] = []
+        if type_ == "artist":
+            primary = ms.desc() if metric == "time" else plays.desc()
+            pick = (lambda r: int(r.ms)) if metric == "time" else (lambda r: int(r.plays))
+            tr = db.execute(
+                select(
+                    ev.c.uri,
+                    func.max(ev.c.track_name).label("track_name"),
+                    func.max(ev.c.artist_name).label("artist_name"),
+                    plays, ms,
+                )
+                .select_from(ev).where(ent)
+                .group_by(ev.c.uri).order_by(primary, plays.desc(), ev.c.uri).limit(top_limit)
+            ).all()
+            top_tracks = [
+                {"label": r.track_name or "(알 수 없음)", "artist": r.artist_name,
+                 "spotify_track_uri": r.uri, "value": pick(r)}
+                for r in tr
+            ]
+            al = db.execute(
+                select(ev.c.album_id, plays, ms)
+                .select_from(ev).where(and_(ent, ev.c.album_id.isnot(None)))
+                .group_by(ev.c.album_id).order_by(primary, plays.desc()).limit(top_limit)
+            ).all()
+            al_ids = [r.album_id for r in al]
+            al_albums = (
+                {a.id: a for a in db.query(Album).filter(Album.id.in_(al_ids))
+                 .options(selectinload(Album.artists)).all()}
+                if al_ids else {}
+            )
+            al_genres = GenreService().labels_map(db, [str(i) for i in al_ids]) if al_ids else {}
+            top_albums = [
+                {"album_obj": al_albums[r.album_id], "genres": al_genres.get(str(r.album_id), []), "value": pick(r)}
+                for r in al if r.album_id in al_albums
+            ]
+
+        as_of = db.execute(select(func.max(SpotifyStreamHistory.ts))).scalar()
+        return {
+            "type": type_,
+            "id": id_,
+            "label": label,
+            "artist": artist,
+            "unit": "ms" if metric == "time" else "count",
+            "count": int(core.plays),
+            "time_ms": int(core.ms),
+            "first_listen": core.first_listen,
+            "last_listen": core.last_listen,
+            "per_year": per_year,
+            "top_tracks": top_tracks,
+            "top_albums": top_albums,
+            "as_of": as_of,
+            "live_streams": int(core.live or 0),
+        }
+
+    def stream_history_clock(
+        self, db: Session, *, metric: str = "count",
+        frm: Optional[datetime] = None, to: Optional[datetime] = None,
+    ) -> Dict:
+        """Hour-of-day × weekday matrix over the (optionally ranged) union, in Asia/Seoul.
+        Returns only the non-empty cells (≤168). `weekday` = Postgres extract(dow): 0=Sun
+        … 6=Sat. `metric` selects whether the front colours by plays or ms (both shipped)."""
+        ev = self._unified_events(frm, to)
+        kst = func.timezone("Asia/Seoul", ev.c.event_ts)
+        dow = func.extract("dow", kst)
+        hour = func.extract("hour", kst)
+        plays = func.count().label("plays")
+        ms = func.coalesce(func.sum(ev.c.ms_played), 0).label("ms")
+        rows = db.execute(
+            select(dow.label("dow"), hour.label("hour"), plays, ms)
+            .select_from(ev).group_by(dow, hour)
+        ).all()
+        cells = [
+            {"weekday": int(r.dow), "hour": int(r.hour), "plays": int(r.plays), "ms_played": int(r.ms)}
+            for r in rows
+        ]
+        return {
+            "cells": cells,
+            "unit": "ms" if metric == "time" else "count",
+            **self._stream_totals(db, frm, to),
         }
 
     # ── 분석 버킷: 분류하기 targets ───────────────────────────────────────────────────

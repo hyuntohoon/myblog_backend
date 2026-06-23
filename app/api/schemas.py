@@ -632,6 +632,48 @@ class RetrospectiveResponse(BaseModel):
     live_streams: int = 0                        # plays from the live tail (estimated time) — FEAT-listening-live-merge
 
 
+# ── FEAT-analysis-explore: item drill-down + listening clock ────────────────────────
+# Re-aggregations of the same lifetime+live union under an optional [from, to) range
+# (raw timestamps; the front maps presets → from/to). The drill-down keys one entity
+# (artist | catalog album | track); the clock is a KST hour×weekday matrix. Honesty
+# fields (as_of, live_streams) carry through — count exact, live-tail time estimated.
+
+class StreamItemDetailResponse(BaseModel):
+    type: str                                   # "artist" | "album" | "track" (echo)
+    id: str                                     # the entity key (artist_name | album_id | track uri) — echo
+    label: str                                  # display name (artist name / album title / track name)
+    artist: Optional[str] = None                # the entity's artist line (album/track); null for an artist entity
+    unit: str = "count"                         # "count" | "ms" — names the top_tracks/top_albums `value` axis
+    count: int = 0                              # plays in range
+    time_ms: int = 0                            # listening time (ms) in range
+    first_listen: Optional[datetime] = None     # earliest event_ts in range (null when no plays)
+    last_listen: Optional[datetime] = None      # latest event_ts in range
+    per_year: List[RetroYearStat] = Field(default_factory=list)   # KST per-year mini-history
+    # An artist entity also carries its own top tracks/albums (same shape as the panels);
+    # album/track entities leave these empty.
+    top_tracks: List[StreamRankItem] = Field(default_factory=list)
+    top_albums: List[StreamAlbumRankItem] = Field(default_factory=list)
+    as_of: Optional[datetime] = None            # global import horizon (staleness marker)
+    live_streams: int = 0                        # this entity's live-tail plays (>0 ⇒ time is an estimate)
+
+
+class StreamClockCell(BaseModel):
+    weekday: int                                # Postgres extract(dow): 0=Sun … 6=Sat (Asia/Seoul)
+    hour: int                                   # 0..23 (Asia/Seoul)
+    plays: int
+    ms_played: int
+
+
+class StreamClockResponse(BaseModel):
+    # Only the non-empty cells (≤168); the front fills the 7×24 grid with zeros.
+    cells: List[StreamClockCell] = Field(default_factory=list)
+    unit: str = "count"                         # "count" | "ms" — which weight the front colours by
+    total_streams: int = 0
+    total_ms: int = 0
+    as_of: Optional[datetime] = None
+    live_streams: int = 0
+
+
 class ClassifyResponse(BaseModel):
     # 분류하기: catalog-absent unclassified albums enqueued for catalog sync (→ S1
     # genres). Catalog-present-but-ungenred tracks can't be fixed via SQS (they need
