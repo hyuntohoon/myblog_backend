@@ -45,6 +45,20 @@ class TestStreamHistoryTopTracks:
         _, kwargs = svc.stream_history_top_tracks.call_args
         assert kwargs == {"metric": "count", "limit": 15}
 
+    def test_live_streams_passes_through(self, client, app):
+        # FEAT-listening-live-merge: the live-tail count rides through to the contract.
+        svc = MagicMock()
+        svc.stream_history_top_tracks.return_value = {
+            "items": [], "unit": "count", "total_streams": 3252, "total_ms": 628_000_000,
+            "as_of": datetime(2026, 6, 21, tzinfo=timezone.utc), "live_streams": 37,
+        }
+        _override(app, svc)
+
+        resp = client.get("/api/library/stream-history/top-tracks")
+
+        assert resp.status_code == 200
+        assert resp.json()["live_streams"] == 37
+
     def test_time_metric_passes_through(self, client, app):
         svc = MagicMock()
         svc.stream_history_top_tracks.return_value = {

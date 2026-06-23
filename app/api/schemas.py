@@ -581,7 +581,10 @@ class StreamRankResponse(BaseModel):
     # Honesty captions (mirrors #194): the population denominator + the import horizon.
     total_streams: int = 0                      # music streams in scope (≥30s, not skipped, not podcast)
     total_ms: int = 0                           # total listening time (ms) in the same scope
-    as_of: Optional[datetime] = None            # max(ts) — the import staleness horizon caption
+    as_of: Optional[datetime] = None            # max import ts — the lifetime/live boundary + staleness horizon
+    # FEAT-listening-live-merge: plays folded in from the live recently-played tail
+    # (event after as_of). >0 ⇒ the time figure includes an ESTIMATE (poller has no ms).
+    live_streams: int = 0
 
 
 # ── Step 5 (GATED on the Step-3 coverage rate): album / era / genre / retrospective ──
@@ -601,6 +604,7 @@ class StreamAlbumRankResponse(BaseModel):
     total_streams: int = 0
     total_ms: int = 0
     as_of: Optional[datetime] = None
+    live_streams: int = 0                        # plays from the live tail (estimated time) — FEAT-listening-live-merge
 
 
 class RetroYearStat(BaseModel):
@@ -625,6 +629,7 @@ class RetrospectiveResponse(BaseModel):
     on_this_day: List[OnThisDayItem] = Field(default_factory=list)
     today_kst: str                              # "MM-DD" the server bucketed on (front caption)
     as_of: Optional[datetime] = None
+    live_streams: int = 0                        # plays from the live tail (estimated time) — FEAT-listening-live-merge
 
 
 class ClassifyResponse(BaseModel):

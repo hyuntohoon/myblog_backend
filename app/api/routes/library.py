@@ -322,6 +322,7 @@ def _stream_rank_response(d) -> StreamRankResponse:
         total_streams=d["total_streams"],
         total_ms=d["total_ms"],
         as_of=d["as_of"],
+        live_streams=d.get("live_streams", 0),
     )
 
 
@@ -362,6 +363,7 @@ def _stream_album_rank_response(d) -> StreamAlbumRankResponse:
         total_streams=d["total_streams"],
         total_ms=d["total_ms"],
         as_of=d["as_of"],
+        live_streams=d.get("live_streams", 0),
     )
 
 
@@ -418,6 +420,7 @@ def stream_history_retrospective(
         ],
         today_kst=d["today_kst"],
         as_of=d["as_of"],
+        live_streams=d.get("live_streams", 0),
     )
 
 

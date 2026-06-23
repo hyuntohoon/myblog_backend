@@ -1729,6 +1729,11 @@
             ],
             "title": "As Of"
           },
+          "live_streams": {
+            "default": 0,
+            "title": "Live Streams",
+            "type": "integer"
+          },
           "on_this_day": {
             "items": {
               "$ref": "#/components/schemas/OnThisDayItem"
@@ -2118,6 +2123,11 @@
             "title": "Items",
             "type": "array"
           },
+          "live_streams": {
+            "default": 0,
+            "title": "Live Streams",
+            "type": "integer"
+          },
           "total_ms": {
             "default": 0,
             "title": "Total Ms",
@@ -2202,6 +2212,11 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "live_streams": {
+            "default": 0,
+            "title": "Live Streams",
+            "type": "integer"
           },
           "total_ms": {
             "default": 0,
