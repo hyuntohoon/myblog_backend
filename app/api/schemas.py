@@ -556,6 +556,30 @@ class DistributionResponse(BaseModel):
     last_synced_at: Optional[datetime] = None
 
 
+# ====== 분석 버킷: lifetime stream history (FEAT-listening-history-import) ======
+# Ungated count/time top-N over spotify_stream_history (the GDPR Extended Streaming
+# History import). Coverage-INDEPENDENT: aggregates the denormalized track/artist text
+# + the stable spotify_track_uri, no catalog FK — so it ships regardless of the album
+# resolution rate (the album/era/genre panels are the gated ones). `value` carries
+# plays when unit="count" and ms_played when unit="ms" (the front Count↔Time toggle);
+# `unit` names the axis so one chart component renders both.
+
+class StreamRankItem(BaseModel):
+    label: str                                  # track name (top-tracks) | artist name (top-artists)
+    artist: Optional[str] = None                # the track's (album) artist — top-tracks only
+    spotify_track_uri: Optional[str] = None     # drill-down handle — top-tracks only
+    value: int                                  # plays (unit="count") or ms_played (unit="ms")
+
+
+class StreamRankResponse(BaseModel):
+    items: List[StreamRankItem] = Field(default_factory=list)
+    unit: str = "count"                         # "count" | "ms" — the Count↔Time axis
+    # Honesty captions (mirrors #194): the population denominator + the import horizon.
+    total_streams: int = 0                      # music streams in scope (≥30s, not skipped, not podcast)
+    total_ms: int = 0                           # total listening time (ms) in the same scope
+    as_of: Optional[datetime] = None            # max(ts) — the import staleness horizon caption
+
+
 class ClassifyResponse(BaseModel):
     # 분류하기: catalog-absent unclassified albums enqueued for catalog sync (→ S1
     # genres). Catalog-present-but-ungenred tracks can't be fixed via SQS (they need

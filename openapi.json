@@ -1952,6 +1952,86 @@
         "title": "SpotifyLibrarySyncResponse",
         "type": "object"
       },
+      "StreamRankItem": {
+        "properties": {
+          "artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "spotify_track_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spotify Track Uri"
+          },
+          "value": {
+            "title": "Value",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "StreamRankItem",
+        "type": "object"
+      },
+      "StreamRankResponse": {
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StreamRankItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "total_ms": {
+            "default": 0,
+            "title": "Total Ms",
+            "type": "integer"
+          },
+          "total_streams": {
+            "default": 0,
+            "title": "Total Streams",
+            "type": "integer"
+          },
+          "unit": {
+            "default": "count",
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "title": "StreamRankResponse",
+        "type": "object"
+      },
       "TagItem": {
         "properties": {
           "name": {
@@ -3663,6 +3743,120 @@
           }
         },
         "summary": "Spotify Connection",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/stream-history/top-artists": {
+      "get": {
+        "operationId": "stream_history_top_artists_api_library_stream_history_top_artists_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "metric",
+            "required": false,
+            "schema": {
+              "default": "count",
+              "enum": [
+                "count",
+                "time"
+              ],
+              "title": "Metric",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 15,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamRankResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream History Top Artists",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/stream-history/top-tracks": {
+      "get": {
+        "operationId": "stream_history_top_tracks_api_library_stream_history_top_tracks_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "metric",
+            "required": false,
+            "schema": {
+              "default": "count",
+              "enum": [
+                "count",
+                "time"
+              ],
+              "title": "Metric",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 15,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamRankResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream History Top Tracks",
         "tags": [
           "library"
         ]

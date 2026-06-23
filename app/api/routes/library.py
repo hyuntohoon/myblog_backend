@@ -1,6 +1,6 @@
 # app/api/routes/library.py
 import logging
-from typing import Dict
+from typing import Dict, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import text
@@ -26,6 +26,8 @@ from app.api.schemas import (
     SavedTrackItem,
     SavedTracksResponse,
     SpotifyConnectionResponse,
+    StreamRankItem,
+    StreamRankResponse,
     ToListenItemResponse,
     ToListenReorderRequest,
     ToListenResponse,
@@ -300,6 +302,43 @@ def play_events_artist_distribution(
     svc: LibraryService = Depends(get_library_service),
 ):
     return _distribution_response(svc.play_events_artist_distribution(db))
+
+
+# ── 분석 버킷: lifetime stream-history top tracks/artists (FEAT-listening-history-import) ──
+# Ungated count/time rankings over the imported Spotify streaming history. edge_guard-only
+# reads (no JWT), like the other library reads. `metric` flips the front Count↔Time axis;
+# Literal makes FastAPI 422 on a bad value and self-documents in the contract.
+
+def _stream_rank_response(d) -> StreamRankResponse:
+    return StreamRankResponse(
+        items=[StreamRankItem(**it) for it in d["items"]],
+        unit=d["unit"],
+        total_streams=d["total_streams"],
+        total_ms=d["total_ms"],
+        as_of=d["as_of"],
+    )
+
+
+@router.get("/stream-history/top-tracks", response_model=StreamRankResponse)
+def stream_history_top_tracks(
+    metric: Literal["count", "time"] = "count",
+    limit: int = 15,
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    limit = max(1, min(limit, 100))
+    return _stream_rank_response(svc.stream_history_top_tracks(db, metric=metric, limit=limit))
+
+
+@router.get("/stream-history/top-artists", response_model=StreamRankResponse)
+def stream_history_top_artists(
+    metric: Literal["count", "time"] = "count",
+    limit: int = 15,
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    limit = max(1, min(limit, 100))
+    return _stream_rank_response(svc.stream_history_top_artists(db, metric=metric, limit=limit))
 
 
 @router.post("/saved-tracks/classify", response_model=ClassifyResponse, status_code=202)
