@@ -25,7 +25,12 @@ from app.api.schemas import (
     ReviewedResponse,
     SavedTrackItem,
     SavedTracksResponse,
+    OnThisDayItem,
+    RetroYearStat,
+    RetrospectiveResponse,
     SpotifyConnectionResponse,
+    StreamAlbumRankItem,
+    StreamAlbumRankResponse,
     StreamRankItem,
     StreamRankResponse,
     ToListenItemResponse,
@@ -313,6 +318,7 @@ def _stream_rank_response(d) -> StreamRankResponse:
     return StreamRankResponse(
         items=[StreamRankItem(**it) for it in d["items"]],
         unit=d["unit"],
+        unclassified=d.get("unclassified", 0),  # set by the gated genre/era panels; 0 for track/artist
         total_streams=d["total_streams"],
         total_ms=d["total_ms"],
         as_of=d["as_of"],
@@ -339,6 +345,80 @@ def stream_history_top_artists(
 ):
     limit = max(1, min(limit, 100))
     return _stream_rank_response(svc.stream_history_top_artists(db, metric=metric, limit=limit))
+
+
+# ── 분석 버킷: GATED lifetime panels — album / genre / era / retrospective (Step 5) ──
+# edge_guard reads. All need the catalog FK; the gate PASSED at 99.7% (Step 3), so they
+# ship with the residual 미분류 carried as the `unclassified`/`unresolved` honesty caption.
+
+def _stream_album_rank_response(d) -> StreamAlbumRankResponse:
+    return StreamAlbumRankResponse(
+        items=[
+            StreamAlbumRankItem(album=_album_brief(it["album_obj"], it["genres"]), value=it["value"])
+            for it in d["items"]
+        ],
+        unit=d["unit"],
+        unresolved=d["unresolved"],
+        total_streams=d["total_streams"],
+        total_ms=d["total_ms"],
+        as_of=d["as_of"],
+    )
+
+
+@router.get("/stream-history/genre-distribution", response_model=StreamRankResponse)
+def stream_history_genre_distribution(
+    metric: Literal["count", "time"] = "count",
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    return _stream_rank_response(svc.stream_history_genre_distribution(db, metric=metric))
+
+
+@router.get("/stream-history/era-distribution", response_model=StreamRankResponse)
+def stream_history_era_distribution(
+    metric: Literal["count", "time"] = "count",
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    return _stream_rank_response(svc.stream_history_era_distribution(db, metric=metric))
+
+
+@router.get("/stream-history/top-albums", response_model=StreamAlbumRankResponse)
+def stream_history_top_albums(
+    metric: Literal["count", "time"] = "count",
+    limit: int = 15,
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    limit = max(1, min(limit, 100))
+    return _stream_album_rank_response(svc.stream_history_top_albums(db, metric=metric, limit=limit))
+
+
+@router.get("/stream-history/retrospective", response_model=RetrospectiveResponse)
+def stream_history_retrospective(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    svc: LibraryService = Depends(get_library_service),
+):
+    limit = max(1, min(limit, 100))
+    d = svc.stream_history_retrospective(db, limit=limit)
+    return RetrospectiveResponse(
+        per_year=[RetroYearStat(**y) for y in d["per_year"]],
+        on_this_day=[
+            OnThisDayItem(
+                year=it["year"],
+                track_name=it["track_name"],
+                artist_name=it["artist_name"],
+                album_id=it["album_id"],
+                album=_album_brief(it["album_obj"], it["genres"]) if it["album_obj"] is not None else None,
+                plays=it["plays"],
+                ms_played=it["ms_played"],
+            )
+            for it in d["on_this_day"]
+        ],
+        today_kst=d["today_kst"],
+        as_of=d["as_of"],
+    )
 
 
 @router.post("/saved-tracks/classify", response_model=ClassifyResponse, status_code=202)
