@@ -574,10 +574,57 @@ class StreamRankItem(BaseModel):
 class StreamRankResponse(BaseModel):
     items: List[StreamRankItem] = Field(default_factory=list)
     unit: str = "count"                         # "count" | "ms" — the Count↔Time axis
+    # 미분류 weight (plays or ms) for the coverage-GATED genre/era panels: streams whose
+    # album is uncatalogued OR has no genre / no release_date. 0 for the ungated
+    # track/artist rankings (Step 4). Shown as the chart's 미분류 bar.
+    unclassified: int = 0
     # Honesty captions (mirrors #194): the population denominator + the import horizon.
     total_streams: int = 0                      # music streams in scope (≥30s, not skipped, not podcast)
     total_ms: int = 0                           # total listening time (ms) in the same scope
     as_of: Optional[datetime] = None            # max(ts) — the import staleness horizon caption
+
+
+# ── Step 5 (GATED on the Step-3 coverage rate): album / era / genre / retrospective ──
+# All need the catalog FK (+ Album.release_date for era). Gate PASSED at 99.7% album /
+# 99.96% release_date (Step 3), so these ship; the `unresolved`/`unclassified` weights
+# carry the residual 미분류 for the honesty caption.
+
+class StreamAlbumRankItem(BaseModel):
+    album: AlbumBrief
+    value: int                                  # plays (unit="count") or ms_played (unit="ms")
+
+
+class StreamAlbumRankResponse(BaseModel):
+    items: List[StreamAlbumRankItem] = Field(default_factory=list)
+    unit: str = "count"                         # "count" | "ms"
+    unresolved: int = 0                         # in-scope streams (weight) with no catalog album — the gate caption
+    total_streams: int = 0
+    total_ms: int = 0
+    as_of: Optional[datetime] = None
+
+
+class RetroYearStat(BaseModel):
+    year: int                                   # KST calendar year (ts AT TIME ZONE 'Asia/Seoul')
+    plays: int
+    ms_played: int
+
+
+class OnThisDayItem(BaseModel):
+    year: int                                   # the KST year this stream fell on today's month/day
+    track_name: Optional[str] = None
+    artist_name: Optional[str] = None
+    album_id: Optional[str] = None
+    album: Optional[AlbumBrief] = None          # populated when the track's album is catalogued
+    plays: int
+    ms_played: int
+
+
+class RetrospectiveResponse(BaseModel):
+    per_year: List[RetroYearStat] = Field(default_factory=list)
+    # "on this day" across past years (today's month+day in KST, server now()).
+    on_this_day: List[OnThisDayItem] = Field(default_factory=list)
+    today_kst: str                              # "MM-DD" the server bucketed on (front caption)
+    as_of: Optional[datetime] = None
 
 
 class ClassifyResponse(BaseModel):

@@ -569,6 +569,169 @@ class LibraryService:
         items = [{"label": r.artist_name, "value": value(r)} for r in rows]
         return {"items": items, "unit": "ms" if metric == "time" else "count", **self._stream_totals(db)}
 
+    # ── 분석 버킷: GATED lifetime panels (FEAT-listening-history-import Step 5) ──────────
+    # Album / genre / era / retrospective over the lifetime stream history. GATED on the
+    # Step-3 coverage rate (PASSED at 99.7% album / 99.96% release_date). Aggregate by
+    # album_id IN SQL first (collapses the 100k-row ledger to ~900 album rows), then
+    # resolve genre/era in Python — the same shape as play_events_genre_distribution,
+    # NOT a load-all-rows scan. Era buckets Album.release_date (a date, tz-agnostic);
+    # retrospective buckets ts AT TIME ZONE 'Asia/Seoul' (export ts is UTC). The
+    # residual 미분류 (uncatalogued + ungenred / no-release) is surfaced as a weight for
+    # the honesty caption, not hidden. DB-only (rule #9).
+
+    def _stream_album_weights(self, db: Session, metric: str) -> Tuple[List[Tuple], int]:
+        """[(album_id, weight)] over in-scope streams WITH a catalog album (weight =
+        plays or ms per metric) + the unresolved (no album_id) in-scope weight."""
+        plays = func.count().label("plays")
+        ms = func.sum(SpotifyStreamHistory.ms_played).label("ms")
+        rows = db.execute(
+            select(SpotifyStreamHistory.album_id, plays, ms)
+            .where(and_(self._stream_display_filter(), SpotifyStreamHistory.album_id.isnot(None)))
+            .group_by(SpotifyStreamHistory.album_id)
+        ).all()
+        pick = (lambda r: int(r.ms)) if metric == "time" else (lambda r: int(r.plays))
+        weights = [(r.album_id, pick(r)) for r in rows]
+        unres = db.execute(
+            select(
+                func.count().label("c"),
+                func.coalesce(func.sum(SpotifyStreamHistory.ms_played), 0).label("m"),
+            ).where(and_(self._stream_display_filter(), SpotifyStreamHistory.album_id.is_(None)))
+        ).one()
+        return weights, int(unres.m if metric == "time" else unres.c)
+
+    def stream_history_genre_distribution(self, db: Session, *, metric: str = "count") -> Dict:
+        weights, unres = self._stream_album_weights(db, metric)
+        album_genre = self._album_primary_genre_map(db, {aid for aid, _ in weights})
+        labels = [album_genre.get(str(aid)) for aid, _ in weights]  # None = ungenred
+        items, unclassified = rank_counts(labels, [w for _, w in weights])
+        return {
+            "items": [{"label": label, "value": count} for label, count in items],
+            "unit": "ms" if metric == "time" else "count",
+            "unclassified": unclassified + unres,  # ungenred + uncatalogued
+            **self._stream_totals(db),
+        }
+
+    def stream_history_era_distribution(self, db: Session, *, metric: str = "count") -> Dict:
+        weights, unres = self._stream_album_weights(db, metric)
+        ids = {aid for aid, _ in weights}
+        release = (
+            {aid: rd for aid, rd in db.execute(
+                select(Album.id, Album.release_date).where(Album.id.in_(ids))
+            ).all()}
+            if ids else {}
+        )
+        labels: List[Optional[str]] = []
+        for aid, _ in weights:
+            d = release.get(aid)
+            labels.append(f"{(d.year // 10) * 10}s" if d else None)  # None = unknown era
+        items, unclassified = rank_counts(labels, [w for _, w in weights])
+        items.sort(key=lambda kv: int(kv[0][:-1]))  # chronological by numeric decade ("2020s"→2020), not lexical
+        return {
+            "items": [{"label": label, "value": count} for label, count in items],
+            "unit": "ms" if metric == "time" else "count",
+            "unclassified": unclassified + unres,  # no-release + uncatalogued
+            **self._stream_totals(db),
+        }
+
+    def stream_history_top_albums(self, db: Session, *, metric: str = "count", limit: int = 15) -> Dict:
+        plays = func.count().label("plays")
+        ms = func.sum(SpotifyStreamHistory.ms_played).label("ms")
+        primary = ms.desc() if metric == "time" else plays.desc()
+        rows = db.execute(
+            select(SpotifyStreamHistory.album_id, plays, ms)
+            .where(and_(self._stream_display_filter(), SpotifyStreamHistory.album_id.isnot(None)))
+            .group_by(SpotifyStreamHistory.album_id)
+            .order_by(primary, plays.desc())
+            .limit(limit)
+        ).all()
+        ids = [r.album_id for r in rows]
+        albums = (
+            {a.id: a for a in db.query(Album).filter(Album.id.in_(ids))
+             .options(selectinload(Album.artists)).all()}
+            if ids else {}
+        )
+        genre_map = GenreService().labels_map(db, [str(i) for i in ids]) if ids else {}
+        unres = db.execute(
+            select(
+                func.count().label("c"),
+                func.coalesce(func.sum(SpotifyStreamHistory.ms_played), 0).label("m"),
+            ).where(and_(self._stream_display_filter(), SpotifyStreamHistory.album_id.is_(None)))
+        ).one()
+        pick = (lambda r: int(r.ms)) if metric == "time" else (lambda r: int(r.plays))
+        items = [
+            {"album_obj": albums[r.album_id], "genres": genre_map.get(str(r.album_id), []), "value": pick(r)}
+            for r in rows if r.album_id in albums
+        ]
+        return {
+            "items": items,
+            "unit": "ms" if metric == "time" else "count",
+            "unresolved": int(unres.m if metric == "time" else unres.c),
+            **self._stream_totals(db),
+        }
+
+    def stream_history_retrospective(self, db: Session, *, limit: int = 20) -> Dict:
+        kst = func.timezone("Asia/Seoul", SpotifyStreamHistory.ts)
+        now_kst = func.timezone("Asia/Seoul", func.now())
+        yr = func.extract("year", kst)
+        plays = func.count().label("plays")
+        ms = func.sum(SpotifyStreamHistory.ms_played).label("ms")
+
+        per_year = [
+            {"year": int(r.yr), "plays": int(r.plays), "ms_played": int(r.ms)}
+            for r in db.execute(
+                select(yr.label("yr"), plays, ms)
+                .where(self._stream_display_filter())
+                .group_by(yr).order_by(yr)
+            ).all()
+        ]
+
+        otd_rows = db.execute(
+            select(
+                yr.label("yr"),
+                SpotifyStreamHistory.track_name,
+                SpotifyStreamHistory.artist_name,
+                SpotifyStreamHistory.album_id,
+                plays,
+                ms,
+            )
+            .where(and_(
+                self._stream_display_filter(),
+                func.extract("month", kst) == func.extract("month", now_kst),
+                func.extract("day", kst) == func.extract("day", now_kst),
+            ))
+            .group_by(yr, SpotifyStreamHistory.track_name,
+                      SpotifyStreamHistory.artist_name, SpotifyStreamHistory.album_id)
+            .order_by(yr.desc(), plays.desc())
+            .limit(limit)
+        ).all()
+        otd_ids = [r.album_id for r in otd_rows if r.album_id is not None]
+        otd_albums = (
+            {a.id: a for a in db.query(Album).filter(Album.id.in_(otd_ids))
+             .options(selectinload(Album.artists)).all()}
+            if otd_ids else {}
+        )
+        otd_genres = GenreService().labels_map(db, [str(i) for i in otd_ids]) if otd_ids else {}
+        on_this_day = [
+            {
+                "year": int(r.yr),
+                "track_name": r.track_name,
+                "artist_name": r.artist_name,
+                "album_id": str(r.album_id) if r.album_id else None,
+                "album_obj": otd_albums.get(r.album_id),
+                "genres": otd_genres.get(str(r.album_id), []),
+                "plays": int(r.plays),
+                "ms_played": int(r.ms),
+            }
+            for r in otd_rows
+        ]
+        today_kst = db.execute(select(func.to_char(now_kst, "MM-DD"))).scalar()
+        return {
+            "per_year": per_year,
+            "on_this_day": on_this_day,
+            "today_kst": today_kst,
+            "as_of": self._stream_totals(db)["as_of"],
+        }
+
     # ── 분석 버킷: 분류하기 targets ───────────────────────────────────────────────────
 
     def unclassified_saved_album_targets(

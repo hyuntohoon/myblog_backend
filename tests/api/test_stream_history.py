@@ -105,3 +105,119 @@ class TestStreamHistoryTopArtists:
         assert item["value"] == 316
         assert item["artist"] is None
         assert item["spotify_track_uri"] is None
+
+
+# ── Step 5: GATED panels (album / genre / era / retrospective) ──────────────────────
+
+class TestStreamHistoryGenreEra:
+    def test_genre_distribution_carries_unclassified(self, client, app):
+        svc = MagicMock()
+        svc.stream_history_genre_distribution.return_value = {
+            "items": [{"label": "Hip-Hop", "value": 800}, {"label": "Rock", "value": 500}],
+            "unit": "count",
+            "unclassified": 120,  # ungenred + uncatalogued
+            "total_streams": 3215,
+            "total_ms": 620_000_000,
+            "as_of": datetime(2026, 6, 21, tzinfo=timezone.utc),
+        }
+        _override(app, svc)
+
+        resp = client.get("/api/library/stream-history/genre-distribution?metric=count")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["unclassified"] == 120
+        assert body["items"][0]["label"] == "Hip-Hop"
+        _, kwargs = svc.stream_history_genre_distribution.call_args
+        assert kwargs == {"metric": "count"}
+
+    def test_era_distribution_time_metric(self, client, app):
+        svc = MagicMock()
+        svc.stream_history_era_distribution.return_value = {
+            "items": [{"label": "2010s", "value": 90_000_000}, {"label": "2020s", "value": 120_000_000}],
+            "unit": "ms",
+            "unclassified": 0,
+            "total_streams": 3215,
+            "total_ms": 620_000_000,
+            "as_of": None,
+        }
+        _override(app, svc)
+
+        resp = client.get("/api/library/stream-history/era-distribution?metric=time")
+
+        assert resp.status_code == 200
+        assert resp.json()["unit"] == "ms"
+        assert [i["label"] for i in resp.json()["items"]] == ["2010s", "2020s"]
+
+
+class TestStreamHistoryTopAlbums:
+    def test_albums_build_briefs(self, client, app):
+        from datetime import date
+        from types import SimpleNamespace
+
+        album = SimpleNamespace(
+            id="11111111-1111-1111-1111-111111111111",
+            title="Some Album",
+            cover_url="http://x/c.jpg",
+            release_date=date(2021, 3, 1),
+            popularity=55,
+            artists=[SimpleNamespace(name="Artist A")],
+        )
+        svc = MagicMock()
+        svc.stream_history_top_albums.return_value = {
+            "items": [{"album_obj": album, "genres": ["Hip-Hop"], "value": 41}],
+            "unit": "count",
+            "unresolved": 14,
+            "total_streams": 3215,
+            "total_ms": 620_000_000,
+            "as_of": datetime(2026, 6, 21, tzinfo=timezone.utc),
+        }
+        _override(app, svc)
+
+        resp = client.get("/api/library/stream-history/top-albums")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["unresolved"] == 14
+        item = body["items"][0]
+        assert item["value"] == 41
+        assert item["album"]["title"] == "Some Album"
+        assert item["album"]["genres"] == ["Hip-Hop"]
+        assert item["album"]["artist_names"] == ["Artist A"]
+
+    def test_bad_metric_422(self, client, app):
+        svc = MagicMock()
+        _override(app, svc)
+        resp = client.get("/api/library/stream-history/top-albums?metric=nope")
+        assert resp.status_code == 422
+        svc.stream_history_top_albums.assert_not_called()
+
+
+class TestStreamHistoryRetrospective:
+    def test_retrospective_shape(self, client, app):
+        svc = MagicMock()
+        svc.stream_history_retrospective.return_value = {
+            "per_year": [
+                {"year": 2024, "plays": 100, "ms_played": 20_000_000},
+                {"year": 2026, "plays": 3000, "ms_played": 600_000_000},
+            ],
+            "on_this_day": [
+                {"year": 2024, "track_name": "Old Song", "artist_name": "X",
+                 "album_id": None, "album_obj": None, "genres": [],
+                 "plays": 3, "ms_played": 600_000},
+            ],
+            "today_kst": "06-23",
+            "as_of": datetime(2026, 6, 21, tzinfo=timezone.utc),
+        }
+        _override(app, svc)
+
+        resp = client.get("/api/library/stream-history/retrospective")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["today_kst"] == "06-23"
+        assert body["per_year"][1]["year"] == 2026
+        otd = body["on_this_day"][0]
+        assert otd["year"] == 2024
+        assert otd["album"] is None
+        assert otd["track_name"] == "Old Song"

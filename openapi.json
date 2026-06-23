@@ -1018,6 +1018,72 @@
         "title": "NowPlayingResponse",
         "type": "object"
       },
+      "OnThisDayItem": {
+        "properties": {
+          "album": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlbumBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "album_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
+          },
+          "artist_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Name"
+          },
+          "ms_played": {
+            "title": "Ms Played",
+            "type": "integer"
+          },
+          "plays": {
+            "title": "Plays",
+            "type": "integer"
+          },
+          "track_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Name"
+          },
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "year",
+          "plays",
+          "ms_played"
+        ],
+        "title": "OnThisDayItem",
+        "type": "object"
+      },
       "PostDetailResponse": {
         "properties": {
           "album_ids": {
@@ -1626,6 +1692,68 @@
         "title": "ResearchTriggerRequest",
         "type": "object"
       },
+      "RetroYearStat": {
+        "properties": {
+          "ms_played": {
+            "title": "Ms Played",
+            "type": "integer"
+          },
+          "plays": {
+            "title": "Plays",
+            "type": "integer"
+          },
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "year",
+          "plays",
+          "ms_played"
+        ],
+        "title": "RetroYearStat",
+        "type": "object"
+      },
+      "RetrospectiveResponse": {
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "on_this_day": {
+            "items": {
+              "$ref": "#/components/schemas/OnThisDayItem"
+            },
+            "title": "On This Day",
+            "type": "array"
+          },
+          "per_year": {
+            "items": {
+              "$ref": "#/components/schemas/RetroYearStat"
+            },
+            "title": "Per Year",
+            "type": "array"
+          },
+          "today_kst": {
+            "title": "Today Kst",
+            "type": "string"
+          }
+        },
+        "required": [
+          "today_kst"
+        ],
+        "title": "RetrospectiveResponse",
+        "type": "object"
+      },
       "ReviewedAlbumResponse": {
         "properties": {
           "album": {
@@ -1952,6 +2080,68 @@
         "title": "SpotifyLibrarySyncResponse",
         "type": "object"
       },
+      "StreamAlbumRankItem": {
+        "properties": {
+          "album": {
+            "$ref": "#/components/schemas/AlbumBrief"
+          },
+          "value": {
+            "title": "Value",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "album",
+          "value"
+        ],
+        "title": "StreamAlbumRankItem",
+        "type": "object"
+      },
+      "StreamAlbumRankResponse": {
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StreamAlbumRankItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "total_ms": {
+            "default": 0,
+            "title": "Total Ms",
+            "type": "integer"
+          },
+          "total_streams": {
+            "default": 0,
+            "title": "Total Streams",
+            "type": "integer"
+          },
+          "unit": {
+            "default": "count",
+            "title": "Unit",
+            "type": "string"
+          },
+          "unresolved": {
+            "default": 0,
+            "title": "Unresolved",
+            "type": "integer"
+          }
+        },
+        "title": "StreamAlbumRankResponse",
+        "type": "object"
+      },
       "StreamRankItem": {
         "properties": {
           "artist": {
@@ -2021,6 +2211,11 @@
           "total_streams": {
             "default": 0,
             "title": "Total Streams",
+            "type": "integer"
+          },
+          "unclassified": {
+            "default": 0,
+            "title": "Unclassified",
             "type": "integer"
           },
           "unit": {
@@ -3743,6 +3938,200 @@
           }
         },
         "summary": "Spotify Connection",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/stream-history/era-distribution": {
+      "get": {
+        "operationId": "stream_history_era_distribution_api_library_stream_history_era_distribution_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "metric",
+            "required": false,
+            "schema": {
+              "default": "count",
+              "enum": [
+                "count",
+                "time"
+              ],
+              "title": "Metric",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamRankResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream History Era Distribution",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/stream-history/genre-distribution": {
+      "get": {
+        "operationId": "stream_history_genre_distribution_api_library_stream_history_genre_distribution_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "metric",
+            "required": false,
+            "schema": {
+              "default": "count",
+              "enum": [
+                "count",
+                "time"
+              ],
+              "title": "Metric",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamRankResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream History Genre Distribution",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/stream-history/retrospective": {
+      "get": {
+        "operationId": "stream_history_retrospective_api_library_stream_history_retrospective_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrospectiveResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream History Retrospective",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/stream-history/top-albums": {
+      "get": {
+        "operationId": "stream_history_top_albums_api_library_stream_history_top_albums_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "metric",
+            "required": false,
+            "schema": {
+              "default": "count",
+              "enum": [
+                "count",
+                "time"
+              ],
+              "title": "Metric",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 15,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamAlbumRankResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream History Top Albums",
         "tags": [
           "library"
         ]
