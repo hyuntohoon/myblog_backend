@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from myblog_shared_db.models import (
@@ -18,6 +18,7 @@ from myblog_shared_db.models import (
     SpotifyRecentAlbum,
     SpotifyRecentTrack,
     SpotifySavedTrack,
+    SpotifyStreamHistory,
     TrackGenre,
     post_albums_table as post_albums,
     track_artists_table,
@@ -483,6 +484,90 @@ class LibraryService:
             "ungenred": None,
             "last_synced_at": db.query(func.max(SpotifyPlayEvent.played_at)).scalar(),
         }
+
+    # ── 분석 버킷: lifetime stream history (FEAT-listening-history-import Step 4) ──────
+    # Ungated count/time top-N over spotify_stream_history (the lifetime GDPR import).
+    # SQL GROUP BY count(*) / sum(ms_played) returning top-N — NOT the load-all-rows
+    # rank_counts path (the ledger is 100k–500k rows; aggregate in Postgres). These read
+    # the DENORMALIZED uri / track_name / artist_name, so they are independent of catalog
+    # coverage (the album/era/genre panels are the gated ones — Step 5). The display
+    # predicate matches the import defaults: music only (URI prefix, excludes podcasts +
+    # local files), ≥30s listened, not skip-throughs. Raw rows are retained; this is a
+    # read-time filter. DB-only (hard rule #9).
+
+    _STREAM_MIN_MS = 30_000  # 30s listened — the import display floor
+
+    def _stream_display_filter(self):
+        return and_(
+            SpotifyStreamHistory.spotify_track_uri.like("spotify:track:%"),
+            SpotifyStreamHistory.ms_played >= self._STREAM_MIN_MS,
+            SpotifyStreamHistory.skipped.isnot(True),  # NULL + false pass; only true excluded
+        )
+
+    def _stream_totals(self, db: Session) -> Dict:
+        """In-scope population denominator + the import horizon, for the honesty caption."""
+        row = db.execute(
+            select(
+                func.count().label("n"),
+                func.coalesce(func.sum(SpotifyStreamHistory.ms_played), 0).label("ms"),
+                func.max(SpotifyStreamHistory.ts).label("as_of"),
+            ).where(self._stream_display_filter())
+        ).one()
+        return {"total_streams": int(row.n), "total_ms": int(row.ms), "as_of": row.as_of}
+
+    def stream_history_top_tracks(
+        self, db: Session, *, metric: str = "count", limit: int = 15
+    ) -> Dict:
+        # Identity = spotify_track_uri (always present for music rows, exact, a stable
+        # drill-down handle); the displayed name is the denormalized track_name/artist_name
+        # (max() picks a deterministic representative for the rare multi-name URI).
+        plays = func.count().label("plays")
+        ms = func.sum(SpotifyStreamHistory.ms_played).label("ms")
+        primary = ms.desc() if metric == "time" else plays.desc()
+        rows = db.execute(
+            select(
+                SpotifyStreamHistory.spotify_track_uri,
+                func.max(SpotifyStreamHistory.track_name).label("track_name"),
+                func.max(SpotifyStreamHistory.artist_name).label("artist_name"),
+                plays,
+                ms,
+            )
+            .where(self._stream_display_filter())
+            .group_by(SpotifyStreamHistory.spotify_track_uri)
+            .order_by(primary, plays.desc(), SpotifyStreamHistory.spotify_track_uri)
+            .limit(limit)
+        ).all()
+        value = (lambda r: int(r.ms)) if metric == "time" else (lambda r: int(r.plays))
+        items = [
+            {
+                "label": r.track_name or "(알 수 없음)",
+                "artist": r.artist_name,
+                "spotify_track_uri": r.spotify_track_uri,
+                "value": value(r),
+            }
+            for r in rows
+        ]
+        return {"items": items, "unit": "ms" if metric == "time" else "count", **self._stream_totals(db)}
+
+    def stream_history_top_artists(
+        self, db: Session, *, metric: str = "count", limit: int = 15
+    ) -> Dict:
+        # Ungated artist ranking groups the DENORMALIZED artist_name (the export's
+        # album-artist string) — no per-artist credit split (that needs the catalog FK
+        # → the gated Step 5 path). Rows with no artist_name drop out of the ranking.
+        plays = func.count().label("plays")
+        ms = func.sum(SpotifyStreamHistory.ms_played).label("ms")
+        primary = ms.desc() if metric == "time" else plays.desc()
+        rows = db.execute(
+            select(SpotifyStreamHistory.artist_name, plays, ms)
+            .where(and_(self._stream_display_filter(), SpotifyStreamHistory.artist_name.isnot(None)))
+            .group_by(SpotifyStreamHistory.artist_name)
+            .order_by(primary, plays.desc(), SpotifyStreamHistory.artist_name)
+            .limit(limit)
+        ).all()
+        value = (lambda r: int(r.ms)) if metric == "time" else (lambda r: int(r.plays))
+        items = [{"label": r.artist_name, "value": value(r)} for r in rows]
+        return {"items": items, "unit": "ms" if metric == "time" else "count", **self._stream_totals(db)}
 
     # ── 분석 버킷: 분류하기 targets ───────────────────────────────────────────────────
 
