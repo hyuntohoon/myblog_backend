@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, literal, select, union_all
 from sqlalchemy.orm import Session, selectinload
 
 from myblog_shared_db.models import (
@@ -19,7 +19,10 @@ from myblog_shared_db.models import (
     SpotifyRecentTrack,
     SpotifySavedTrack,
     SpotifyStreamHistory,
+    SpotifyTrackPlayEvent,
+    Track,
     TrackGenre,
+    album_artists_table,
     post_albums_table as post_albums,
     track_artists_table,
 )
@@ -504,37 +507,101 @@ class LibraryService:
             SpotifyStreamHistory.skipped.isnot(True),  # NULL + false pass; only true excluded
         )
 
+    # ── 분석 버킷: lifetime + LIVE merge (FEAT-listening-live-merge) ──────────────────
+    # The import is authoritative ≤ as_of (max import ts); the live recently-played
+    # poller (spotify_track_play_events, worker-written) fills as_of → now. The union is
+    # exact by the as_of TIME BOUNDARY — the poller's window is almost all ≤ as_of and
+    # drops out, so there is nothing to per-row dedup (the RFC's "never union grains"
+    # concern, done safely). Every stream-history aggregation runs over this unified
+    # rowset. The live tail is id-only, so its denormalized shape is reconstructed from
+    # the catalog and its ms_played is ESTIMATED as track length (no ms in the poller).
+
+    def _unified_events(self):
+        """Per-play subquery: import (≤ as_of, real ms) UNION ALL live (> as_of, ms
+        estimated from `tracks.duration_sec`). Columns uri / track_name / artist_name /
+        album_id / ms_played / event_ts / src ('import'|'live'). The live tail carries no
+        skip/ms display filter (the poller has neither) — a row is a recently-played
+        appearance. Aggregate over the returned subquery."""
+        SSH = SpotifyStreamHistory
+        TPE = SpotifyTrackPlayEvent
+        as_of = select(func.max(SSH.ts)).scalar_subquery()
+
+        imp = select(
+            SSH.spotify_track_uri.label("uri"),
+            SSH.track_name.label("track_name"),
+            SSH.artist_name.label("artist_name"),
+            SSH.album_id.label("album_id"),
+            SSH.ms_played.label("ms_played"),
+            SSH.ts.label("event_ts"),
+            literal("import").label("src"),
+        ).where(self._stream_display_filter())
+
+        # Live tail: title from the catalog, the album's first artist as album-artist
+        # parity, ms ESTIMATED = duration_sec × 1000 (owner decision; overcounts skips /
+        # partial plays — surfaced as the `live_streams` honesty caption).
+        album_artist = (
+            select(Artist.name)
+            .select_from(album_artists_table.join(Artist, Artist.id == album_artists_table.c.artist_id))
+            .where(album_artists_table.c.album_id == TPE.album_id)
+            .order_by(Artist.name)
+            .limit(1)
+            .scalar_subquery()
+        )
+        live = (
+            select(
+                (literal("spotify:track:") + TPE.spotify_track_id).label("uri"),
+                Track.title.label("track_name"),
+                album_artist.label("artist_name"),
+                TPE.album_id.label("album_id"),
+                (func.coalesce(Track.duration_sec, 0) * 1000).label("ms_played"),
+                TPE.played_at.label("event_ts"),
+                literal("live").label("src"),
+            )
+            .select_from(TPE)
+            .join(Track, Track.id == TPE.track_id, isouter=True)
+            .where(TPE.played_at > as_of)
+        )
+        return union_all(imp, live).subquery("ev")
+
     def _stream_totals(self, db: Session) -> Dict:
-        """In-scope population denominator + the import horizon, for the honesty caption."""
+        """Population denominator + the import horizon + the live-tail count. `as_of`
+        stays the IMPORT horizon (the boundary); `live_streams` = plays folded in from
+        after it (whose time is estimated)."""
+        ev = self._unified_events()
         row = db.execute(
             select(
                 func.count().label("n"),
-                func.coalesce(func.sum(SpotifyStreamHistory.ms_played), 0).label("ms"),
-                func.max(SpotifyStreamHistory.ts).label("as_of"),
-            ).where(self._stream_display_filter())
+                func.coalesce(func.sum(ev.c.ms_played), 0).label("ms"),
+                func.count().filter(ev.c.src == "live").label("live_n"),
+            ).select_from(ev)
         ).one()
-        return {"total_streams": int(row.n), "total_ms": int(row.ms), "as_of": row.as_of}
+        as_of = db.execute(select(func.max(SpotifyStreamHistory.ts))).scalar()
+        return {
+            "total_streams": int(row.n),
+            "total_ms": int(row.ms),
+            "as_of": as_of,
+            "live_streams": int(row.live_n or 0),
+        }
 
     def stream_history_top_tracks(
         self, db: Session, *, metric: str = "count", limit: int = 15
     ) -> Dict:
-        # Identity = spotify_track_uri (always present for music rows, exact, a stable
-        # drill-down handle); the displayed name is the denormalized track_name/artist_name
-        # (max() picks a deterministic representative for the rare multi-name URI).
+        # Identity = the track URI (import: real; live: 'spotify:track:'||id); displayed
+        # name = the denormalized/reconstructed track_name/artist_name.
+        ev = self._unified_events()
         plays = func.count().label("plays")
-        ms = func.sum(SpotifyStreamHistory.ms_played).label("ms")
+        ms = func.sum(ev.c.ms_played).label("ms")
         primary = ms.desc() if metric == "time" else plays.desc()
         rows = db.execute(
             select(
-                SpotifyStreamHistory.spotify_track_uri,
-                func.max(SpotifyStreamHistory.track_name).label("track_name"),
-                func.max(SpotifyStreamHistory.artist_name).label("artist_name"),
+                ev.c.uri,
+                func.max(ev.c.track_name).label("track_name"),
+                func.max(ev.c.artist_name).label("artist_name"),
                 plays,
                 ms,
             )
-            .where(self._stream_display_filter())
-            .group_by(SpotifyStreamHistory.spotify_track_uri)
-            .order_by(primary, plays.desc(), SpotifyStreamHistory.spotify_track_uri)
+            .group_by(ev.c.uri)
+            .order_by(primary, plays.desc(), ev.c.uri)
             .limit(limit)
         ).all()
         value = (lambda r: int(r.ms)) if metric == "time" else (lambda r: int(r.plays))
@@ -542,7 +609,7 @@ class LibraryService:
             {
                 "label": r.track_name or "(알 수 없음)",
                 "artist": r.artist_name,
-                "spotify_track_uri": r.spotify_track_uri,
+                "spotify_track_uri": r.uri,
                 "value": value(r),
             }
             for r in rows
@@ -552,17 +619,17 @@ class LibraryService:
     def stream_history_top_artists(
         self, db: Session, *, metric: str = "count", limit: int = 15
     ) -> Dict:
-        # Ungated artist ranking groups the DENORMALIZED artist_name (the export's
-        # album-artist string) — no per-artist credit split (that needs the catalog FK
-        # → the gated Step 5 path). Rows with no artist_name drop out of the ranking.
+        # Artist ranking over the denormalized/reconstructed album-artist name (no
+        # per-artist credit split — that needs the catalog FK). Null-artist rows drop out.
+        ev = self._unified_events()
         plays = func.count().label("plays")
-        ms = func.sum(SpotifyStreamHistory.ms_played).label("ms")
+        ms = func.sum(ev.c.ms_played).label("ms")
         primary = ms.desc() if metric == "time" else plays.desc()
         rows = db.execute(
-            select(SpotifyStreamHistory.artist_name, plays, ms)
-            .where(and_(self._stream_display_filter(), SpotifyStreamHistory.artist_name.isnot(None)))
-            .group_by(SpotifyStreamHistory.artist_name)
-            .order_by(primary, plays.desc(), SpotifyStreamHistory.artist_name)
+            select(ev.c.artist_name, plays, ms)
+            .where(ev.c.artist_name.isnot(None))
+            .group_by(ev.c.artist_name)
+            .order_by(primary, plays.desc(), ev.c.artist_name)
             .limit(limit)
         ).all()
         value = (lambda r: int(r.ms)) if metric == "time" else (lambda r: int(r.plays))
@@ -580,22 +647,23 @@ class LibraryService:
     # the honesty caption, not hidden. DB-only (rule #9).
 
     def _stream_album_weights(self, db: Session, metric: str) -> Tuple[List[Tuple], int]:
-        """[(album_id, weight)] over in-scope streams WITH a catalog album (weight =
-        plays or ms per metric) + the unresolved (no album_id) in-scope weight."""
+        """[(album_id, weight)] over the unified import+live events WITH a catalog album
+        (weight = plays or ms per metric) + the unresolved (no album_id) weight."""
+        ev = self._unified_events()
         plays = func.count().label("plays")
-        ms = func.sum(SpotifyStreamHistory.ms_played).label("ms")
+        ms = func.sum(ev.c.ms_played).label("ms")
         rows = db.execute(
-            select(SpotifyStreamHistory.album_id, plays, ms)
-            .where(and_(self._stream_display_filter(), SpotifyStreamHistory.album_id.isnot(None)))
-            .group_by(SpotifyStreamHistory.album_id)
+            select(ev.c.album_id, plays, ms)
+            .where(ev.c.album_id.isnot(None))
+            .group_by(ev.c.album_id)
         ).all()
         pick = (lambda r: int(r.ms)) if metric == "time" else (lambda r: int(r.plays))
         weights = [(r.album_id, pick(r)) for r in rows]
         unres = db.execute(
             select(
                 func.count().label("c"),
-                func.coalesce(func.sum(SpotifyStreamHistory.ms_played), 0).label("m"),
-            ).where(and_(self._stream_display_filter(), SpotifyStreamHistory.album_id.is_(None)))
+                func.coalesce(func.sum(ev.c.ms_played), 0).label("m"),
+            ).select_from(ev).where(ev.c.album_id.is_(None))
         ).one()
         return weights, int(unres.m if metric == "time" else unres.c)
 
@@ -634,13 +702,14 @@ class LibraryService:
         }
 
     def stream_history_top_albums(self, db: Session, *, metric: str = "count", limit: int = 15) -> Dict:
+        ev = self._unified_events()
         plays = func.count().label("plays")
-        ms = func.sum(SpotifyStreamHistory.ms_played).label("ms")
+        ms = func.sum(ev.c.ms_played).label("ms")
         primary = ms.desc() if metric == "time" else plays.desc()
         rows = db.execute(
-            select(SpotifyStreamHistory.album_id, plays, ms)
-            .where(and_(self._stream_display_filter(), SpotifyStreamHistory.album_id.isnot(None)))
-            .group_by(SpotifyStreamHistory.album_id)
+            select(ev.c.album_id, plays, ms)
+            .where(ev.c.album_id.isnot(None))
+            .group_by(ev.c.album_id)
             .order_by(primary, plays.desc())
             .limit(limit)
         ).all()
@@ -654,8 +723,8 @@ class LibraryService:
         unres = db.execute(
             select(
                 func.count().label("c"),
-                func.coalesce(func.sum(SpotifyStreamHistory.ms_played), 0).label("m"),
-            ).where(and_(self._stream_display_filter(), SpotifyStreamHistory.album_id.is_(None)))
+                func.coalesce(func.sum(ev.c.ms_played), 0).label("m"),
+            ).select_from(ev).where(ev.c.album_id.is_(None))
         ).one()
         pick = (lambda r: int(r.ms)) if metric == "time" else (lambda r: int(r.plays))
         items = [
@@ -670,17 +739,18 @@ class LibraryService:
         }
 
     def stream_history_retrospective(self, db: Session, *, limit: int = 20) -> Dict:
-        kst = func.timezone("Asia/Seoul", SpotifyStreamHistory.ts)
+        ev = self._unified_events()
+        kst = func.timezone("Asia/Seoul", ev.c.event_ts)
         now_kst = func.timezone("Asia/Seoul", func.now())
         yr = func.extract("year", kst)
         plays = func.count().label("plays")
-        ms = func.sum(SpotifyStreamHistory.ms_played).label("ms")
+        ms = func.sum(ev.c.ms_played).label("ms")
 
         per_year = [
             {"year": int(r.yr), "plays": int(r.plays), "ms_played": int(r.ms)}
             for r in db.execute(
                 select(yr.label("yr"), plays, ms)
-                .where(self._stream_display_filter())
+                .select_from(ev)
                 .group_by(yr).order_by(yr)
             ).all()
         ]
@@ -688,19 +758,17 @@ class LibraryService:
         otd_rows = db.execute(
             select(
                 yr.label("yr"),
-                SpotifyStreamHistory.track_name,
-                SpotifyStreamHistory.artist_name,
-                SpotifyStreamHistory.album_id,
+                ev.c.track_name,
+                ev.c.artist_name,
+                ev.c.album_id,
                 plays,
                 ms,
             )
             .where(and_(
-                self._stream_display_filter(),
                 func.extract("month", kst) == func.extract("month", now_kst),
                 func.extract("day", kst) == func.extract("day", now_kst),
             ))
-            .group_by(yr, SpotifyStreamHistory.track_name,
-                      SpotifyStreamHistory.artist_name, SpotifyStreamHistory.album_id)
+            .group_by(yr, ev.c.track_name, ev.c.artist_name, ev.c.album_id)
             .order_by(yr.desc(), plays.desc())
             .limit(limit)
         ).all()
@@ -725,11 +793,13 @@ class LibraryService:
             for r in otd_rows
         ]
         today_kst = db.execute(select(func.to_char(now_kst, "MM-DD"))).scalar()
+        totals = self._stream_totals(db)
         return {
             "per_year": per_year,
             "on_this_day": on_this_day,
             "today_kst": today_kst,
-            "as_of": self._stream_totals(db)["as_of"],
+            "as_of": totals["as_of"],
+            "live_streams": totals["live_streams"],
         }
 
     # ── 분석 버킷: 분류하기 targets ───────────────────────────────────────────────────
