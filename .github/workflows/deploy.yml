@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch: {}  # manual deploy of main HEAD (recovery if a push event fails to fire a run)
 
 jobs:
   check:
@@ -53,7 +54,7 @@ jobs:
 
   deploy:
     needs: [check, contract]
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
