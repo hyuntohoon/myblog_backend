@@ -82,6 +82,7 @@ from app.api.routes import buckets
 from app.api.routes import library
 from app.api.routes import research
 from app.api.routes import genres
+from app.api.routes import playback
 from app.db.session import get_db
 
 app.include_router(sections.router,   prefix="/api/sections",      tags=["sections"])
@@ -93,6 +94,7 @@ app.include_router(buckets.router,    prefix="/api/buckets",       tags=["bucket
 app.include_router(library.router,    prefix="/api/library",       tags=["library"])
 app.include_router(research.router,   prefix="/api/research",      tags=["research"])
 app.include_router(genres.router,     prefix="/api/genres",        tags=["genres"])
+app.include_router(playback.router,   prefix="/api/playback",      tags=["playback"])
 
 
 # -----------------------------

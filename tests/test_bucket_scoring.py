@@ -2,14 +2,44 @@ from __future__ import annotations
 
 from datetime import date
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
 
 from app.services.bucket_service import (
     W_POPULARITY,
     W_RECENCY,
     BucketService,
+    TypedMembershipNotEnabledError,
 )
 
 TODAY = date(2026, 6, 3)
+
+
+class TestAddItemTypeGate:
+    def test_nonalbum_item_type_raises_before_insert(self):
+        # FEAT-pocket-buckit Step 3: the service gate rejects a non-album write up front
+        # (a non-album INSERT would violate album_id NOT NULL until the Step-6 relax). The
+        # MagicMock db lets get_bucket return a truthy bucket so we reach the item_type
+        # branch — proving the gate, not a missing-bucket 404, is what raises.
+        svc = BucketService()
+        db = MagicMock()  # db.query(...).filter(...).first() → a truthy mock bucket
+        with pytest.raises(TypedMembershipNotEnabledError):
+            svc.add_item(db, "bk-1", album_id="alb-1", item_type="track")
+
+    def test_album_item_type_passes_the_gate(self):
+        # An album write goes past the gate and proceeds to the Album lookup (which returns
+        # None on the mock → AlbumNotFoundError), i.e. it did NOT raise the typed-gate error.
+        from app.services.bucket_service import AlbumNotFoundError
+
+        svc = BucketService()
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.side_effect = [
+            SimpleNamespace(id="bk-1"),  # get_bucket → a bucket
+            None,                          # Album lookup → missing
+        ]
+        with pytest.raises(AlbumNotFoundError):
+            svc.add_item(db, "bk-1", album_id="alb-x", item_type="album")
 
 
 def _album(release_date=None, popularity=None):

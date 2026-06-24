@@ -49,6 +49,18 @@ class Settings(BaseSettings):
     SPOTIFY_SECRETS_ARN: str = ""
     SPOTIFY_SECRETS_PARAM: str = ""
 
+    # FEAT-pocket-buckit Step 3 (D3 / OQ8): the async Spotify Web Playback SDK token mint
+    # (GET /api/playback/spotify-token) exchanges a per-listener `streaming`-scope refresh
+    # token for a short-lived access token. These are read from the myblog/spotify secret
+    # at mint time (PlaybackService); the env vars are local/test overrides only. The
+    # streaming refresh token is DISTINCT from the worker's read-only refresh_token (which
+    # carries no `streaming` scope) and is EMPTY until the owner completes the Step-5
+    # `streaming` OAuth consent — until then the endpoint returns 503 not-configured, so no
+    # Spotify call ever fires (rule #9-safe by construction). Never logged.
+    SPOTIFY_CLIENT_ID: str = ""
+    SPOTIFY_CLIENT_SECRET: str = ""
+    SPOTIFY_STREAMING_REFRESH_TOKEN: str = ""
+
     # FEAT-spotify-library-sync: read-only MIRROR of the worker's write gate, used
     # only to drive the /profile UI banner ("검토 모드: Spotify에 실제 반영 안 됨").
     # The backend NEVER writes to Spotify (rule #9) — the worker reads its OWN copy
