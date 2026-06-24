@@ -4,9 +4,15 @@
       "AddBucketItemRequest": {
         "properties": {
           "album_id": {
-            "minLength": 1,
-            "title": "Album Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
           },
           "item_type": {
             "default": "album",
@@ -30,11 +36,40 @@
               }
             ],
             "title": "Note"
+          },
+          "review_target_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Target Id"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotCaptureRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "track_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Id"
           }
         },
-        "required": [
-          "album_id"
-        ],
         "title": "AddBucketItemRequest",
         "type": "object"
       },
@@ -379,6 +414,16 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "track": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "track_id": {
             "anyOf": [
@@ -2000,6 +2045,108 @@
         "title": "SectionListResponse",
         "type": "object"
       },
+      "SnapshotCaptureRequest": {
+        "description": "FEAT-pocket-buckit Step 6 (OQ7) \u2014 the frozen capture for a snapshot-kind membership.\nThe caller (an analysis/period drop) sends the contemporaneous values it is displaying;\nthe server APPEND-ONLY INSERTs them into bucket_item_snapshots (never an UPDATE \u2014 a\nrefresh is a new row). `frozen` is the verbatim payload; the typed header columns drive\nlater querying. captured_at + schema_version are server-stamped.",
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "frozen": {
+            "additionalProperties": true,
+            "title": "Frozen",
+            "type": "object"
+          },
+          "kind": {
+            "minLength": 1,
+            "title": "Kind",
+            "type": "string"
+          },
+          "metric": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metric"
+          },
+          "range_from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Range From"
+          },
+          "range_to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Range To"
+          },
+          "source_album_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Source Album Ids",
+            "type": "array"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          },
+          "unclassified": {
+            "default": 0,
+            "title": "Unclassified",
+            "type": "integer"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "unresolved": {
+            "default": 0,
+            "title": "Unresolved",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "as_of",
+          "frozen"
+        ],
+        "title": "SnapshotCaptureRequest",
+        "type": "object"
+      },
       "SpotifyConnectionResponse": {
         "properties": {
           "connected": {
@@ -2602,6 +2749,54 @@
           }
         },
         "title": "ToListenResponse",
+        "type": "object"
+      },
+      "TrackBrief": {
+        "description": "FEAT-pocket-buckit Step 6: minimal track display for a track/playback membership row,\nso the front can render the track without a second resolve. The cover lives on the album\n(album_id is provided \u2192 the front reuses its album-cover path).",
+        "properties": {
+          "album_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
+          },
+          "artist_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artist Names",
+            "type": "array"
+          },
+          "duration_sec": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Sec"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "title": "TrackBrief",
         "type": "object"
       },
       "UnclassifiedBreakdown": {
@@ -3487,7 +3682,7 @@
             "description": "Successful Response"
           },
           "409": {
-            "description": "Album already in this bucket"
+            "description": "Item already in this bucket"
           },
           "422": {
             "content": {

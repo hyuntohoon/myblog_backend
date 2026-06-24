@@ -1,6 +1,7 @@
 # app/services/bucket_service.py
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, List, Optional, Sequence, Tuple
 
@@ -10,9 +11,12 @@ from sqlalchemy.orm import Session
 
 from myblog_shared_db.models import (
     Album,
+    BucketItemSnapshot,
+    Post,
     ReviewBucket,
     ReviewBucketItem,
     SpotifyLibraryAlbum,
+    Track,
     post_albums_table as post_albums,
 )
 
@@ -36,24 +40,22 @@ class AlbumNotFoundError(Exception):
 
 
 class DuplicateItemError(Exception):
-    """Raised when an album is already in the target bucket. Route maps to 409.
+    """Raised when a de-duplicated kind (album/track/review) is already in the target bucket.
+    Route maps to 409.
 
-    Distinct from `already_reviewed` (which is a non-blocking advisory badge for
-    albums that have a published review): this guards the UNIQUE(bucket_id,
-    album_id) constraint so the same album can't sit twice in one column.
-    """
+    Distinct from `already_reviewed` (a non-blocking advisory badge): this guards the per-kind
+    partial-uniques (V30) — uq_review_bucket_items_{album,track,review} — so the same
+    album / track / reviewed-post can't sit twice in one bucket. playback/snapshot allow
+    duplicates (D8)."""
 
 
-class TypedMembershipNotEnabledError(Exception):
-    """FEAT-pocket-buckit Step 3: a non-album (track/review/playback/snapshot) membership
-    write was requested before the schema STEP-2 relax. Route maps to 422.
+class TrackNotFoundError(Exception):
+    """Raised when a track_id does not exist (track / playback membership). Route maps to 404."""
 
-    V28 (STEP-1) added the `item_type` discriminator + typed FKs but kept `album_id NOT
-    NULL` + the named UNIQUE; STEP-2 (Step 6, a separate rule-#4 schema session) drops the
-    NOT NULL and adds per-kind partial-uniques. Until then a non-album INSERT would violate
-    `album_id NOT NULL` — reject it cleanly here rather than leak an IntegrityError. The
-    read-side serializer is already non-album-tolerant (it ships + is prod-verified first,
-    so when STEP-2 enables these rows the board never 500s)."""
+
+class ReviewTargetNotFoundError(Exception):
+    """Raised when a review_target_id (a posts.id) does not exist for a review membership.
+    Route maps to 404. DISTINCT from post_id (= the review an album produced)."""
 
 
 # Auto-recommendation: initial position is seeded from a weighted blend of two
@@ -358,48 +360,87 @@ class BucketService:
         db: Session,
         bucket_id: str,
         *,
-        album_id: str,
-        note: Optional[str] = None,
         item_type: str = "album",
+        album_id: Optional[str] = None,
+        track_id: Optional[str] = None,
+        review_target_id: Optional[str] = None,
+        note: Optional[str] = None,
+        snapshot: Optional[Any] = None,
         today: Optional[date] = None,
     ) -> ReviewBucketItem:
-        """Queue an album into a bucket, seeding its position from the recency+
-        popularity score. The new item is inserted above existing items whose
-        live score is lower, shifting them down (idempotent positions 0..n).
+        """Add a typed membership to a bucket. FEAT-pocket-buckit: the STEP-2 relax (V30/V31)
+        is live, so every kind is writable:
 
-        FEAT-pocket-buckit Step 3: only ``item_type='album'`` is writable today. A
-        non-album kind raises ``TypedMembershipNotEnabledError`` (422) — its INSERT
-        needs the STEP-2 relax of ``album_id NOT NULL`` (Step 6). The album path below
-        is unchanged (Album lookup + score seeding + the UNIQUE dedup)."""
+        - ``album``  — Album lookup + recency/popularity score seeding + per-kind dedup
+          (uq_review_bucket_items_album). The original path, behaviour unchanged.
+        - ``track`` / ``playback`` — Track lookup; appended at the end. 'track' de-dupes
+          (uq_..._track); 'playback' (queue) allows duplicates (D8).
+        - ``review`` — Post lookup (the reviewed post = review_target_id, DISTINCT from the
+          album-produced post_id); de-dupes (uq_..._review).
+        - ``snapshot`` — append-only capture: a 'snapshot' membership row + one
+          bucket_item_snapshots side-row frozen from ``snapshot`` (never an UPDATE; a refresh
+          is a new row). Allows duplicates (D8).
+
+        Raises BucketNotFoundError / AlbumNotFoundError / TrackNotFoundError /
+        ReviewTargetNotFoundError / DuplicateItemError, mapped to HTTP by the route."""
         bucket = self.get_bucket(db, bucket_id)
         if bucket is None:
             raise BucketNotFoundError(bucket_id)
 
-        if item_type != "album":
-            raise TypedMembershipNotEnabledError(item_type)
+        if item_type == "album":
+            return self._add_album_item(db, bucket, album_id=album_id, note=note, today=today)
+        return self._add_typed_item(
+            db,
+            bucket,
+            item_type=item_type,
+            track_id=track_id,
+            review_target_id=review_target_id,
+            note=note,
+            snapshot=snapshot,
+        )
 
+    def _add_album_item(
+        self,
+        db: Session,
+        bucket: ReviewBucket,
+        *,
+        album_id: Optional[str],
+        note: Optional[str],
+        today: Optional[date],
+    ) -> ReviewBucketItem:
+        """The original album path: Album lookup + score seeding + per-kind dedup. Inserts the
+        newcomer above existing items whose live score is lower, renumbering 0..n."""
+        if not album_id:
+            raise AlbumNotFoundError(album_id)
         album = db.query(Album).filter(Album.id == album_id).first()
         if album is None:
             raise AlbumNotFoundError(album_id)
 
         existing = (
             db.query(ReviewBucketItem)
-            .filter(ReviewBucketItem.bucket_id == bucket_id)
+            .filter(ReviewBucketItem.bucket_id == bucket.id)
             .order_by(ReviewBucketItem.position)
             .all()
         )
-        if any(str(it.album_id) == str(album_id) for it in existing):
+        if any(
+            it.item_type == "album" and str(it.album_id) == str(album_id) for it in existing
+        ):
             raise DuplicateItemError(album_id)
 
         today = today or date.today()
         new_score, rec_reason = self._score(album, today=today)
 
-        # Insertion index = count of existing items whose live score ranks at or
-        # above the newcomer. Existing items keep their relative order; only the
-        # newcomer is placed by score (manual reorder later overrides everything).
+        # Insertion index = count of existing items whose live score ranks at or above the
+        # newcomer. Existing items keep their relative order; only the newcomer is placed by
+        # score (manual reorder later overrides everything). A non-album row in a mixed bucket
+        # has no album to score → treated as 0.0 so scored albums float above it.
         insert_idx = 0
         for it in existing:
-            it_score, _ = self._score(it.album, today=today)
+            it_score = (
+                self._score(it.album, today=today)[0]
+                if (getattr(it, "item_type", "album") == "album" and it.album is not None)
+                else 0.0
+            )
             if it_score >= new_score:
                 insert_idx += 1
             else:
@@ -408,20 +449,120 @@ class BucketService:
         item = ReviewBucketItem(
             bucket_id=bucket.id,
             album_id=album_id,
+            item_type="album",
             note=note,
             rec_reason=rec_reason,
             position=insert_idx,
         )
-        # Renumber the whole column 0..n from the final ordering so positions
-        # stay dense and idempotent (the newcomer shifts later items down by one).
+        # Renumber the whole column 0..n from the final ordering so positions stay dense and
+        # idempotent (the newcomer shifts later items down by one).
         final_order = existing[:insert_idx] + [item] + existing[insert_idx:]
         for pos, it in enumerate(final_order):
             it.position = pos
 
         db.add(item)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise DuplicateItemError(album_id)
         db.refresh(item)
         return item
+
+    def _add_typed_item(
+        self,
+        db: Session,
+        bucket: ReviewBucket,
+        *,
+        item_type: str,
+        track_id: Optional[str],
+        review_target_id: Optional[str],
+        note: Optional[str],
+        snapshot: Optional[Any],
+    ) -> ReviewBucketItem:
+        """Non-album kinds (track/review/playback/snapshot). Appended at the end (no album
+        score); per-kind dedup matches the V30 partial-uniques; snapshot additionally writes
+        one append-only bucket_item_snapshots side-row."""
+        existing = (
+            db.query(ReviewBucketItem)
+            .filter(ReviewBucketItem.bucket_id == bucket.id)
+            .order_by(ReviewBucketItem.position)
+            .all()
+        )
+        next_pos = max((it.position for it in existing), default=-1) + 1
+        kwargs: dict = dict(
+            bucket_id=bucket.id, item_type=item_type, note=note, position=next_pos
+        )
+
+        if item_type in ("track", "playback"):
+            if not track_id:
+                raise ValueError("track_id required")
+            if db.query(Track).filter(Track.id == track_id).first() is None:
+                raise TrackNotFoundError(track_id)
+            kwargs["track_id"] = track_id
+            # 'track' collections de-dupe (uq_..._track); 'playback' (queue) allows dups (D8).
+            if item_type == "track" and any(
+                it.item_type == "track" and str(it.track_id) == str(track_id)
+                for it in existing
+            ):
+                raise DuplicateItemError(track_id)
+        elif item_type == "review":
+            if not review_target_id:
+                raise ValueError("review_target_id required")
+            if db.query(Post).filter(Post.id == review_target_id).first() is None:
+                raise ReviewTargetNotFoundError(review_target_id)
+            kwargs["review_target_id"] = review_target_id
+            if any(
+                it.item_type == "review"
+                and str(it.review_target_id) == str(review_target_id)
+                for it in existing
+            ):
+                raise DuplicateItemError(review_target_id)
+        elif item_type == "snapshot":
+            if snapshot is None:
+                raise ValueError("snapshot capture required")
+            # snapshot allows dups; no typed FK on the membership row — the frozen data lives
+            # in the bucket_item_snapshots side-row added after the flush below.
+        else:
+            raise ValueError(f"unsupported item_type: {item_type}")
+
+        item = ReviewBucketItem(**kwargs)
+        db.add(item)
+        try:
+            db.flush()  # assign item.id (needed for the snapshot FK) before commit
+            if item_type == "snapshot":
+                db.add(self._build_snapshot(item.id, snapshot))
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            # Only track/review have a unique index (D8: playback/snapshot allow dups), so an
+            # IntegrityError there is a concurrent-insert dup → 409. For playback/snapshot it is
+            # some OTHER constraint error — don't mislabel it as a duplicate; let it surface.
+            if item_type in ("track", "review"):
+                raise DuplicateItemError(track_id or review_target_id)
+            raise
+        db.refresh(item)
+        return item
+
+    @staticmethod
+    def _build_snapshot(item_id, snap: Any) -> BucketItemSnapshot:
+        """Build an append-only bucket_item_snapshots row from a SnapshotCaptureRequest-shaped
+        object. captured_at + schema_version are server defaults; a refresh is a NEW row (never
+        an UPDATE), so capture is structurally never-silently-overwriting."""
+        return BucketItemSnapshot(
+            item_id=item_id,
+            kind=snap.kind,
+            as_of=snap.as_of,
+            metric=snap.metric,
+            range_from=snap.range_from,
+            range_to=snap.range_to,
+            unit=snap.unit,
+            total=snap.total,
+            unresolved=snap.unresolved,
+            unclassified=snap.unclassified,
+            frozen=snap.frozen,
+            source_album_ids=[uuid.UUID(str(x)) for x in (snap.source_album_ids or [])],
+        )
 
     def update_item(
         self,

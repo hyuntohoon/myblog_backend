@@ -1,7 +1,8 @@
 # app/api/schemas.py
-from pydantic import BaseModel, Field
-from typing import Optional, List, Literal, Dict
+from pydantic import BaseModel, Field, model_validator
+from typing import Optional, List, Literal, Dict, Any
 from datetime import date, datetime
+from uuid import UUID
 
 
 # ====== Posts ======
@@ -158,16 +159,53 @@ class UpdateBucketRequest(BaseModel):
     is_public: Optional[bool] = None
 
 
+class SnapshotCaptureRequest(BaseModel):
+    """FEAT-pocket-buckit Step 6 (OQ7) — the frozen capture for a snapshot-kind membership.
+    The caller (an analysis/period drop) sends the contemporaneous values it is displaying;
+    the server APPEND-ONLY INSERTs them into bucket_item_snapshots (never an UPDATE — a
+    refresh is a new row). `frozen` is the verbatim payload; the typed header columns drive
+    later querying. captured_at + schema_version are server-stamped."""
+    kind: str = Field(min_length=1)            # e.g. 'period' | 'signal' | 'trend'
+    as_of: datetime                            # the data horizon the snapshot reflects
+    frozen: Dict[str, Any]                     # verbatim captured payload (never reinterpreted)
+    metric: Optional[str] = None
+    range_from: Optional[datetime] = None
+    range_to: Optional[datetime] = None
+    unit: Optional[str] = None
+    total: Optional[float] = None
+    unresolved: int = 0
+    unclassified: int = 0
+    # Typed as UUID so a malformed id is a clean 422 at request validation rather than an
+    # uncaught ValueError -> 500 in the snapshot capture.
+    source_album_ids: List[UUID] = Field(default_factory=list)
+
+
 class AddBucketItemRequest(BaseModel):
-    album_id: str = Field(min_length=1)
-    note: Optional[str] = None
-    # FEAT-pocket-buckit Step 3: typed membership discriminator. Defaults 'album' so every
-    # existing caller is unchanged. Non-album writes are intentionally REJECTED with 422
-    # until the schema STEP-2 relax (Step 6 drops album_id NOT NULL + adds per-kind
-    # partial-uniques) — the read-side serializer ships non-album-tolerant first (the
-    # rule-#4 serializer-before-relax gate). The typed target fields (track_id, etc.) are
-    # added to this request alongside that relax, when the front actually sends them.
+    # FEAT-pocket-buckit: generalized typed membership — the STEP-2 relax (V30/V31) is live, so
+    # non-album writes are now enabled. item_type defaults 'album' so every existing caller is
+    # unchanged; each kind carries its own typed target, validated below. album_id is now
+    # optional (only album rows carry it).
     item_type: Literal["album", "track", "review", "playback", "snapshot"] = "album"
+    album_id: Optional[str] = None             # required for item_type='album'
+    track_id: Optional[str] = None             # required for item_type in {'track','playback'}
+    review_target_id: Optional[str] = None     # required for item_type='review'
+    note: Optional[str] = None
+    snapshot: Optional[SnapshotCaptureRequest] = None  # required for item_type='snapshot'
+
+    @model_validator(mode="after")
+    def _require_typed_target(self) -> "AddBucketItemRequest":
+        # Reject a write that names a kind but omits its typed target up front (422) rather
+        # than leaking a downstream IntegrityError / NOT-NULL violation.
+        required = {
+            "album": self.album_id,
+            "track": self.track_id,
+            "playback": self.track_id,
+            "review": self.review_target_id,
+            "snapshot": self.snapshot,
+        }[self.item_type]
+        if not required:
+            raise ValueError(f"{self.item_type} item requires its typed target")
+        return self
 
 
 class UpdateBucketItemRequest(BaseModel):
@@ -209,6 +247,17 @@ class AlbumBrief(BaseModel):
     genres: List[str] = Field(default_factory=list)
 
 
+class TrackBrief(BaseModel):
+    """FEAT-pocket-buckit Step 6: minimal track display for a track/playback membership row,
+    so the front can render the track without a second resolve. The cover lives on the album
+    (album_id is provided → the front reuses its album-cover path)."""
+    id: str
+    title: str
+    album_id: Optional[str] = None
+    artist_names: List[str] = Field(default_factory=list)
+    duration_sec: Optional[int] = None
+
+
 class BucketItemResponse(BaseModel):
     id: str
     # FEAT-pocket-buckit Step 3: typed membership discriminator (defaults 'album'). The
@@ -239,6 +288,8 @@ class BucketItemResponse(BaseModel):
     prep_tonight: bool = False
     # Optional (FEAT-pocket-buckit Step 3): present on album rows, null on non-album rows.
     album: Optional[AlbumBrief] = None
+    # Optional (FEAT-pocket-buckit Step 6): present on track/playback rows, null otherwise.
+    track: Optional[TrackBrief] = None
 
 
 class BucketResponse(BaseModel):
