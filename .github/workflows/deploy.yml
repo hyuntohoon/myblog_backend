@@ -54,7 +54,12 @@ jobs:
 
   deploy:
     needs: [check, contract]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Production deploy is main-only. push already filters to main (on.push.branches), but
+    # workflow_dispatch can be invoked against ANY ref, so guard the ref explicitly — otherwise
+    # a dispatch from a feature branch would ship that branch's code to prod.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
