@@ -22,6 +22,7 @@ from app.api.schemas import (
     SpotifyLibraryAlbumState,
     SpotifyLibraryStateResponse,
     SpotifyLibrarySyncResponse,
+    TrackBrief,
     UpdateBucketItemRequest,
     UpdateBucketRequest,
 )
@@ -41,7 +42,8 @@ from app.services.bucket_service import (
     BucketService,
     DuplicateItemError,
     ItemNotFoundError,
-    TypedMembershipNotEnabledError,
+    ReviewTargetNotFoundError,
+    TrackNotFoundError,
 )
 from app.services.enqueue import (
     safe_enqueue_album as _safe_enqueue_album,
@@ -73,6 +75,16 @@ def _album_brief(album, genres: list[str] | None = None) -> AlbumBrief:
     )
 
 
+def _track_brief(track) -> TrackBrief:
+    return TrackBrief(
+        id=str(track.id),
+        title=track.title,
+        album_id=str(track.album_id) if getattr(track, "album_id", None) is not None else None,
+        artist_names=[a.name for a in track.artists],
+        duration_sec=getattr(track, "duration_sec", None),
+    )
+
+
 def _item_response(
     item,
     already_reviewed: bool,
@@ -91,6 +103,9 @@ def _item_response(
     album = getattr(item, "album", None)
     track_id = getattr(item, "track_id", None)
     review_target_id = getattr(item, "review_target_id", None)
+    # Track display for track/playback rows (gated on item_type so an album row's
+    # auto-vivified ORM `.track` is never touched).
+    track = getattr(item, "track", None) if item_type in ("track", "playback") else None
     return BucketItemResponse(
         id=str(item.id),
         item_type=item_type,
@@ -107,6 +122,7 @@ def _item_response(
         research_status=research_status,
         prep_tonight=item.prep_tonight,
         album=_album_brief(album, genres) if album is not None else None,
+        track=_track_brief(track) if track is not None else None,
     )
 
 
@@ -449,7 +465,7 @@ def move_bucket(
     "/{bucket_id}/items",
     response_model=BucketItemResponse,
     status_code=201,
-    responses={409: {"description": "Album already in this bucket"}},
+    responses={409: {"description": "Item already in this bucket"}},
 )
 def add_item(
     bucket_id: str,
@@ -467,34 +483,43 @@ def add_item(
     _owner = resolve_owner(claims)
     try:
         item = svc.add_item(
-            db, bucket_id, album_id=req.album_id, note=req.note, item_type=req.item_type
+            db,
+            bucket_id,
+            item_type=req.item_type,
+            album_id=req.album_id,
+            track_id=req.track_id,
+            review_target_id=req.review_target_id,
+            note=req.note,
+            snapshot=req.snapshot,
         )
     except BucketNotFoundError:
         raise HTTPException(status_code=404, detail="Bucket not found")
     except AlbumNotFoundError:
         raise HTTPException(status_code=404, detail="Album not found")
-    except TypedMembershipNotEnabledError:
-        # Non-album membership writes land with the STEP-2 relax (Step 6). Clean 422 instead
-        # of a leaked IntegrityError on album_id NOT NULL.
-        raise HTTPException(
-            status_code=422,
-            detail="Only album items can be added yet (typed membership pending schema STEP-2)",
-        )
+    except TrackNotFoundError:
+        raise HTTPException(status_code=404, detail="Track not found")
+    except ReviewTargetNotFoundError:
+        raise HTTPException(status_code=404, detail="Review target not found")
     except DuplicateItemError:
-        raise HTTPException(status_code=409, detail="Album already in this bucket")
-    reviewed = svc.reviewed_album_ids(db, [str(item.album_id)])
-    research = research_svc.status_map(db, [str(item.album_id)])
-    genres = genre_svc.labels_map(db, [str(item.album_id)])
+        raise HTTPException(status_code=409, detail="Item already in this bucket")
+    # Album-only enrichments — skip for non-album rows (album_id NULL) so the UUID-typed
+    # .in_() lookups never receive a "None" string (the same guard as list_buckets/update_item).
+    album_ids = [str(item.album_id)] if item.album_id is not None else []
+    reviewed = svc.reviewed_album_ids(db, album_ids)
+    research = research_svc.status_map(db, album_ids)
+    genres = genre_svc.labels_map(db, album_ids)
     resp = _item_response(
         item,
-        str(item.album_id) in reviewed,
-        research.get(str(item.album_id)),
-        genres.get(str(item.album_id)),
+        str(item.album_id) in reviewed if item.album_id is not None else False,
+        research.get(str(item.album_id)) if item.album_id is not None else None,
+        genres.get(str(item.album_id)) if item.album_id is not None else None,
     )
-    # Auto-research: an item added to an 'all'-mode bucket is enqueued (dedup-gated).
-    bucket = svc.get_bucket(db, bucket_id)
-    if bucket is not None and bucket.research_mode == "all":
-        _safe_enqueue_album(db, research_svc, item.album_id)
+    # Auto-research: an album added to an 'all'-mode bucket is enqueued (dedup-gated). Album
+    # rows only — a non-album row has no album to research.
+    if item.album_id is not None:
+        bucket = svc.get_bucket(db, bucket_id)
+        if bucket is not None and bucket.research_mode == "all":
+            _safe_enqueue_album(db, research_svc, item.album_id)
     return resp
 
 

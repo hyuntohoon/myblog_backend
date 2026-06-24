@@ -93,6 +93,13 @@ class ResearchService:
             return 0
         enqueued = 0
         for it in items:
+            # FEAT-pocket-buckit Step 6: post-V30 relax a bucket can hold non-album rows
+            # (track/review/playback/snapshot, album_id=None). Skip them — else str(None)="None"
+            # reaches the NOT-NULL album_research.album_id (a silent partial-enqueue regression:
+            # albums after the first non-album row would never be enqueued). add_item guards its
+            # own enqueue (buckets.py); this is the bucket-wide path (research_mode flip / reorder).
+            if getattr(it, "item_type", "album") != "album" or it.album_id is None:
+                continue
             if self.enqueue_album(db, str(it.album_id)):
                 enqueued += 1
         return enqueued

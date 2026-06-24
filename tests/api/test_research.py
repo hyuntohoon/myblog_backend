@@ -265,3 +265,44 @@ class TestEnqueueAlbum:
         db = MagicMock()
         db.execute.return_value = SimpleNamespace(rowcount=0)
         assert svc.enqueue_album(db, "alb-1") is False
+
+
+class TestEnqueueBucketMixed:
+    """FEAT-pocket-buckit Step 6 regression: after the V30/V31 relax a bucket can hold non-album
+    rows (album_id=None). enqueue_bucket must skip them — else str(None)='None' hits the NOT-NULL
+    album_research.album_id and silently aborts the rest of the enqueue loop. Exercises the REAL
+    enqueue_bucket (the route tests mock it, so the loop itself was never covered on a mixed bucket)."""
+
+    @staticmethod
+    def _item(item_type, album_id, selected=False):
+        return SimpleNamespace(
+            item_type=item_type, album_id=album_id, research_selected=selected
+        )
+
+    def test_all_mode_enqueues_only_album_rows(self):
+        svc = ResearchService()
+        svc.enqueue_album = MagicMock(return_value=True)
+        bucket = SimpleNamespace(research_mode="all", items=[
+            self._item("album", "alb-1"),
+            self._item("track", None),
+            self._item("album", "alb-2"),
+            self._item("snapshot", None),
+            self._item("playback", None),
+        ])
+        n = svc.enqueue_bucket(MagicMock(), bucket)
+        called = [c.args[1] for c in svc.enqueue_album.call_args_list]
+        assert called == ["alb-1", "alb-2"]   # "None" never passed; both albums reached
+        assert n == 2
+
+    def test_selected_mode_enqueues_only_selected_album_rows(self):
+        svc = ResearchService()
+        svc.enqueue_album = MagicMock(return_value=True)
+        bucket = SimpleNamespace(research_mode="selected", items=[
+            self._item("album", "alb-1", selected=True),
+            self._item("track", None, selected=True),     # selected but non-album → skipped
+            self._item("album", "alb-2", selected=False),  # album but not selected → skipped
+        ])
+        n = svc.enqueue_bucket(MagicMock(), bucket)
+        called = [c.args[1] for c in svc.enqueue_album.call_args_list]
+        assert called == ["alb-1"]
+        assert n == 1

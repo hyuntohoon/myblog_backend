@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -10,36 +10,94 @@ from app.services.bucket_service import (
     W_POPULARITY,
     W_RECENCY,
     BucketService,
-    TypedMembershipNotEnabledError,
 )
 
 TODAY = date(2026, 6, 3)
 
 
-class TestAddItemTypeGate:
-    def test_nonalbum_item_type_raises_before_insert(self):
-        # FEAT-pocket-buckit Step 3: the service gate rejects a non-album write up front
-        # (a non-album INSERT would violate album_id NOT NULL until the Step-6 relax). The
-        # MagicMock db lets get_bucket return a truthy bucket so we reach the item_type
-        # branch — proving the gate, not a missing-bucket 404, is what raises.
-        svc = BucketService()
-        db = MagicMock()  # db.query(...).filter(...).first() → a truthy mock bucket
-        with pytest.raises(TypedMembershipNotEnabledError):
-            svc.add_item(db, "bk-1", album_id="alb-1", item_type="track")
+class TestAddItemBranching:
+    """FEAT-pocket-buckit Step 6: the STEP-2 relax (V30/V31) is live, so add_item branches by
+    item_type. These exercise the branch + per-kind dedup + typed-target lookups with a
+    MagicMock db (no real session): chain.first() returns get_bucket then any typed lookup,
+    chain.order_by().all() returns the existing items."""
 
-    def test_album_item_type_passes_the_gate(self):
-        # An album write goes past the gate and proceeds to the Album lookup (which returns
-        # None on the mock → AlbumNotFoundError), i.e. it did NOT raise the typed-gate error.
+    @staticmethod
+    def _db(first_results, existing=()):
+        db = MagicMock()
+        chain = db.query.return_value.filter.return_value
+        chain.first.side_effect = list(first_results)
+        chain.order_by.return_value.all.return_value = list(existing)
+        return db
+
+    def test_album_path_still_taken_for_album(self):
+        # An album write proceeds to the Album lookup (None on the mock → AlbumNotFoundError),
+        # i.e. it routes through the unchanged album path.
         from app.services.bucket_service import AlbumNotFoundError
 
         svc = BucketService()
-        db = MagicMock()
-        db.query.return_value.filter.return_value.first.side_effect = [
-            SimpleNamespace(id="bk-1"),  # get_bucket → a bucket
-            None,                          # Album lookup → missing
-        ]
+        db = self._db([SimpleNamespace(id="bk-1"), None])
         with pytest.raises(AlbumNotFoundError):
-            svc.add_item(db, "bk-1", album_id="alb-x", item_type="album")
+            svc.add_item(db, "bk-1", item_type="album", album_id="alb-x")
+
+    def test_track_missing_raises_track_not_found(self):
+        from app.services.bucket_service import TrackNotFoundError
+
+        svc = BucketService()
+        db = self._db([SimpleNamespace(id="bk-1"), None], existing=[])
+        with pytest.raises(TrackNotFoundError):
+            svc.add_item(db, "bk-1", item_type="track", track_id="trk-x")
+
+    def test_track_inserts_typed_fields(self):
+        svc = BucketService()
+        db = self._db([SimpleNamespace(id="bk-1"), SimpleNamespace(id="trk-1")], existing=[])
+        item = svc.add_item(db, "bk-1", item_type="track", track_id="trk-1")
+        assert item.item_type == "track"
+        assert str(item.track_id) == "trk-1"
+        assert item.album_id is None
+        assert db.add.called and db.commit.called
+
+    def test_track_duplicate_raises(self):
+        from app.services.bucket_service import DuplicateItemError
+
+        svc = BucketService()
+        existing = [SimpleNamespace(item_type="track", track_id="trk-1", album_id=None, position=0)]
+        db = self._db([SimpleNamespace(id="bk-1"), SimpleNamespace(id="trk-1")], existing=existing)
+        with pytest.raises(DuplicateItemError):
+            svc.add_item(db, "bk-1", item_type="track", track_id="trk-1")
+
+    def test_playback_allows_duplicate(self):
+        # playback (queue) allows duplicate tracks (D8) — a dup does NOT raise.
+        svc = BucketService()
+        existing = [SimpleNamespace(item_type="playback", track_id="trk-1", album_id=None, position=0)]
+        db = self._db([SimpleNamespace(id="bk-1"), SimpleNamespace(id="trk-1")], existing=existing)
+        item = svc.add_item(db, "bk-1", item_type="playback", track_id="trk-1")
+        assert item.item_type == "playback"
+        assert str(item.track_id) == "trk-1"
+
+    def test_review_missing_raises(self):
+        from app.services.bucket_service import ReviewTargetNotFoundError
+
+        svc = BucketService()
+        db = self._db([SimpleNamespace(id="bk-1"), None], existing=[])
+        with pytest.raises(ReviewTargetNotFoundError):
+            svc.add_item(db, "bk-1", item_type="review", review_target_id="p-x")
+
+    def test_snapshot_writes_membership_and_append_only_side_row(self):
+        from myblog_shared_db.models import BucketItemSnapshot, ReviewBucketItem
+
+        svc = BucketService()
+        db = self._db([SimpleNamespace(id="bk-1")], existing=[])  # snapshot needs no typed lookup
+        snap = SimpleNamespace(
+            kind="period", as_of=datetime(2026, 6, 24, tzinfo=timezone.utc),
+            frozen={"top": 1}, metric="plays", range_from=None, range_to=None,
+            unit="count", total=10.0, unresolved=0, unclassified=0, source_album_ids=[],
+        )
+        item = svc.add_item(db, "bk-1", item_type="snapshot", snapshot=snap)
+        assert item.item_type == "snapshot"
+        assert item.album_id is None and item.track_id is None
+        added = [type(c.args[0]) for c in db.add.call_args_list]
+        assert ReviewBucketItem in added and BucketItemSnapshot in added
+        assert db.flush.called and db.commit.called
 
 
 def _album(release_date=None, popularity=None):

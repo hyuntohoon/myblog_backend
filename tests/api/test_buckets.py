@@ -48,6 +48,18 @@ def _item(item_id="it-1", album_id="alb-1", position=0, status="candidate"):
     return it
 
 
+def _track(track_id="trk-1", title="어떤 트랙", album_id="alb-1"):
+    """A Track ORM-shaped mock for the TrackBrief serializer. artists=[] so artist_names
+    resolves to [] (a bare MagicMock .artists isn't iterable)."""
+    t = MagicMock()
+    t.id = track_id
+    t.title = title
+    t.album_id = album_id
+    t.duration_sec = 215
+    t.artists = []
+    return t
+
+
 def _nonalbum_item(item_id="it-trk", item_type="track", track_id="trk-1", position=0):
     """A non-album membership row as it will exist AFTER the STEP-2 relax (Step 6):
     album_id is NULL, no `.album`, a typed FK set. Step 3 only ships the read-side
@@ -66,6 +78,8 @@ def _nonalbum_item(item_id="it-trk", item_type="track", track_id="trk-1", positi
     it.research_selected = False
     it.prep_tonight = False
     it.album = None
+    # FEAT-pocket-buckit Step 6: a track/playback row carries a Track for the TrackBrief.
+    it.track = _track(track_id=track_id)
     return it
 
 
@@ -549,35 +563,67 @@ class TestAddItem:
         app.dependency_overrides.clear()
 
     def test_nonalbum_item_type_passed_through_to_service(self, client, app):
-        # The route threads item_type to the service unchanged; default stays 'album'.
+        # The route threads item_type + the typed target to the service. A track write needs a
+        # track_id (the request validator rejects a track item without one).
         svc = MagicMock()
-        svc.add_item.return_value = _item()
+        svc.add_item.return_value = _nonalbum_item()
         svc.reviewed_album_ids.return_value = set()
         _override(app, svc)
 
         client.post(
             "/api/buckets/bk-1/items",
-            json={"album_id": "alb-1", "item_type": "track"},
+            json={"track_id": "trk-1", "item_type": "track"},
         )
 
         assert svc.add_item.call_args.kwargs["item_type"] == "track"
+        assert svc.add_item.call_args.kwargs["track_id"] == "trk-1"
         app.dependency_overrides.clear()
 
-    def test_nonalbum_write_returns_422_until_step2(self, client, app):
-        # FEAT-pocket-buckit Step 3: a non-album write is rejected with a clean 422 (the
-        # INSERT needs the STEP-2 album_id-NOT-NULL relax) — never a leaked IntegrityError.
-        from app.services.bucket_service import TypedMembershipNotEnabledError
-
+    def test_track_write_returns_201_with_track_brief(self, client, app):
+        # FEAT-pocket-buckit Step 6: non-album writes are enabled. A track add returns 201 with
+        # a null album and a populated track brief (the rule-#4 serializer-before-relax gate is
+        # satisfied — the serializer was prod-deployed first).
         svc = MagicMock()
-        svc.add_item.side_effect = TypedMembershipNotEnabledError("track")
+        svc.add_item.return_value = _nonalbum_item()
+        svc.reviewed_album_ids.return_value = set()
         _override(app, svc)
 
         resp = client.post(
             "/api/buckets/bk-1/items",
-            json={"album_id": "alb-1", "item_type": "track"},
+            json={"track_id": "trk-1", "item_type": "track"},
         )
 
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["item_type"] == "track"
+        assert body["album_id"] is None
+        assert body["track"]["id"] == "trk-1"
+        app.dependency_overrides.clear()
+
+    def test_track_write_without_track_id_rejected_by_schema(self, client, app):
+        # The request validator requires the typed target for the named kind (422 before svc).
+        svc = MagicMock()
+        _override(app, svc)
+
+        resp = client.post("/api/buckets/bk-1/items", json={"item_type": "track"})
+
         assert resp.status_code == 422
+        svc.add_item.assert_not_called()
+        app.dependency_overrides.clear()
+
+    def test_missing_track_returns_404(self, client, app):
+        from app.services.bucket_service import TrackNotFoundError
+
+        svc = MagicMock()
+        svc.add_item.side_effect = TrackNotFoundError("trk-x")
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets/bk-1/items",
+            json={"track_id": "trk-x", "item_type": "track"},
+        )
+
+        assert resp.status_code == 404
         app.dependency_overrides.clear()
 
     def test_unknown_item_type_rejected_by_schema(self, client, app):
