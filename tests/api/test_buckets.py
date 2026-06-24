@@ -613,6 +613,31 @@ class TestUpdateItem:
         assert kwargs == {"status": "published"}
         app.dependency_overrides.clear()
 
+    def test_update_nonalbum_item_returns_200_without_500(self, client, app):
+        # FEAT-pocket-buckit Step 3: update_item has NO item_type gate, so post-Step-6 the
+        # front edits a non-album row (note/status/prep_tonight) via this PATCH. An
+        # unconditional str(item.album_id) would become uuid.UUID("None") in the UUID-typed
+        # batch lookups → 500. Pin the null-guard with a non-album row.
+        svc = MagicMock()
+        nonalbum = _nonalbum_item()
+        nonalbum.prep_tonight = True
+        svc.update_item.return_value = nonalbum
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.patch(
+            "/api/buckets/bk-1/items/it-trk", json={"prep_tonight": True}
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["item_type"] == "track"
+        assert body["album"] is None
+        assert body["album_id"] is None
+        # The album batch lookups were never asked about a "None" id.
+        assert svc.reviewed_album_ids.call_args[0][1] == []
+        app.dependency_overrides.clear()
+
     def test_update_prep_tonight_returns_200(self, client, app):
         # FEAT-editor-buckit Stage 1: the "오늘 밤 키우기" gate is a plain stored
         # bool — forwarded to the service and echoed on the response, no side-effect.

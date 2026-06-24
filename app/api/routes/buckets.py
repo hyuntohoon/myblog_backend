@@ -516,18 +516,24 @@ def update_item(
         item = svc.update_item(db, bucket_id, item_id, **updates)
     except ItemNotFoundError:
         raise HTTPException(status_code=404, detail="Item not found")
-    reviewed = svc.reviewed_album_ids(db, [str(item.album_id)])
-    research = research_svc.status_map(db, [str(item.album_id)])
-    genres = genre_svc.labels_map(db, [str(item.album_id)])
+    # Non-album-tolerant (FEAT-pocket-buckit Step 3): update_item has NO item_type gate
+    # (unlike add_item), so post-STEP-2 it can return a non-album row (album_id NULL). An
+    # unconditional [str(item.album_id)] would become ["None"] → uuid.UUID("None") in the
+    # UUID-typed .in_() lookups → 500. Guard the album-id batch like every other read path.
+    album_ids = [str(item.album_id)] if item.album_id is not None else []
+    reviewed = svc.reviewed_album_ids(db, album_ids)
+    research = research_svc.status_map(db, album_ids)
+    genres = genre_svc.labels_map(db, album_ids)
     resp = _item_response(
         item,
-        str(item.album_id) in reviewed,
-        research.get(str(item.album_id)),
-        genres.get(str(item.album_id)),
+        str(item.album_id) in reviewed if item.album_id is not None else False,
+        research.get(str(item.album_id)) if item.album_id is not None else None,
+        genres.get(str(item.album_id)) if item.album_id is not None else None,
     )
     # Auto-research: checking research_selected while the bucket is 'selected' mode
-    # enqueues that album (dedup-gated). Unchecking/other updates trigger nothing.
-    if updates.get("research_selected") is True:
+    # enqueues that album (dedup-gated). Unchecking/other updates trigger nothing. Album
+    # rows only — a non-album row has no album to research.
+    if updates.get("research_selected") is True and item.album_id is not None:
         bucket = svc.get_bucket(db, bucket_id)
         if bucket is not None and bucket.research_mode == "selected":
             _safe_enqueue_album(db, research_svc, item.album_id)
