@@ -39,7 +39,33 @@ def _item(item_id="it-1", album_id="alb-1", position=0, status="candidate"):
     # would fail validation, so set it explicitly (same reason as bucket.kind below).
     it.research_selected = False
     it.prep_tonight = False  # FEAT-editor-buckit: same validated-bool reason as above
+    # FEAT-pocket-buckit Step 3: typed membership fields — a bare MagicMock would
+    # auto-vivify truthy non-str values that fail validation, so set them explicitly.
+    it.item_type = "album"
+    it.track_id = None
+    it.review_target_id = None
     it.album = _album(album_id=album_id)
+    return it
+
+
+def _nonalbum_item(item_id="it-trk", item_type="track", track_id="trk-1", position=0):
+    """A non-album membership row as it will exist AFTER the STEP-2 relax (Step 6):
+    album_id is NULL, no `.album`, a typed FK set. Step 3 only ships the read-side
+    serializer that must tolerate this WITHOUT 500ing the board."""
+    it = MagicMock()
+    it.id = item_id
+    it.item_type = item_type
+    it.album_id = None
+    it.track_id = track_id
+    it.review_target_id = None
+    it.position = position
+    it.note = None
+    it.status = "candidate"
+    it.post_id = None
+    it.rec_reason = None
+    it.research_selected = False
+    it.prep_tonight = False
+    it.album = None
     return it
 
 
@@ -115,6 +141,35 @@ class TestListBuckets:
         assert bucket["items"][0]["rec_reason"] == "신보"
         # No genre map override → genres defaults to [] (FEAT-bucket-organize Step 2).
         assert bucket["items"][0]["album"]["genres"] == []
+        app.dependency_overrides.clear()
+
+    def test_mixed_album_and_nonalbum_bucket_serializes_without_500(self, client, app):
+        # FEAT-pocket-buckit Step 3 — the load-bearing serializer-before-relax gate. A
+        # non-album row (album_id NULL, no `.album`) must NOT 500 GET /api/buckets; the
+        # pre-Step-3 `str(item.album_id)` / `_album_brief(item.album)` did exactly that.
+        svc = MagicMock()
+        svc.list_buckets.return_value = [
+            _bucket(items=[_item(), _nonalbum_item()])
+        ]
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.get("/api/buckets")
+
+        assert resp.status_code == 200
+        items = resp.json()["buckets"][0]["items"]
+        assert len(items) == 2
+        album_item = next(i for i in items if i["item_type"] == "album")
+        track_item = next(i for i in items if i["item_type"] == "track")
+        assert album_item["album"]["title"] == "Album"
+        assert album_item["album_id"] == "alb-1"
+        # The non-album row carries no album payload and is not flagged reviewed.
+        assert track_item["album"] is None
+        assert track_item["album_id"] is None
+        assert track_item["track_id"] == "trk-1"
+        assert track_item["already_reviewed"] is False
+        # reviewed/research/genre batch lookups must only have been asked about the album.
+        assert svc.reviewed_album_ids.call_args[0][1] == ["alb-1"]
         app.dependency_overrides.clear()
 
     def test_list_surfaces_high_confidence_genres_on_album(self, client, app):
@@ -225,6 +280,27 @@ class TestPublicBuckets:
         assert item["already_reviewed"] is True
         # The service is what filters to is_public + kind='review'; the route calls it.
         assert svc.list_public_buckets.called
+        app.dependency_overrides.clear()
+
+    def test_public_skips_nonalbum_rows_without_500(self, client, app):
+        # The UNAUTHENTICATED viewer is the higher-blast-radius path: list_public_buckets
+        # dereferences it.album.id/.title/.artists, guarded only by `if it.album_id is not
+        # None`. Pin both guards (the all_album_ids batch + the items projection) with a
+        # mixed bucket so a future non-album row (post Step-6 relax) can't 500 the public viewer.
+        svc = MagicMock()
+        svc.list_public_buckets.return_value = [
+            _bucket(name="공개", is_public=True, items=[_item(), _nonalbum_item()])
+        ]
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.get("/api/buckets/public")
+
+        assert resp.status_code == 200
+        items = resp.json()["buckets"][0]["items"]
+        # Only the album row is projected; the non-album row is filtered out, not 500ing.
+        assert len(items) == 1
+        assert items[0]["album"]["title"] == "Album"
         app.dependency_overrides.clear()
 
     def test_public_omits_private_item_and_bucket_fields(self, client, app):
@@ -472,6 +548,53 @@ class TestAddItem:
         assert resp.status_code == 409
         app.dependency_overrides.clear()
 
+    def test_nonalbum_item_type_passed_through_to_service(self, client, app):
+        # The route threads item_type to the service unchanged; default stays 'album'.
+        svc = MagicMock()
+        svc.add_item.return_value = _item()
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        client.post(
+            "/api/buckets/bk-1/items",
+            json={"album_id": "alb-1", "item_type": "track"},
+        )
+
+        assert svc.add_item.call_args.kwargs["item_type"] == "track"
+        app.dependency_overrides.clear()
+
+    def test_nonalbum_write_returns_422_until_step2(self, client, app):
+        # FEAT-pocket-buckit Step 3: a non-album write is rejected with a clean 422 (the
+        # INSERT needs the STEP-2 album_id-NOT-NULL relax) — never a leaked IntegrityError.
+        from app.services.bucket_service import TypedMembershipNotEnabledError
+
+        svc = MagicMock()
+        svc.add_item.side_effect = TypedMembershipNotEnabledError("track")
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets/bk-1/items",
+            json={"album_id": "alb-1", "item_type": "track"},
+        )
+
+        assert resp.status_code == 422
+        app.dependency_overrides.clear()
+
+    def test_unknown_item_type_rejected_by_schema(self, client, app):
+        # The Literal on AddBucketItemRequest rejects an out-of-enum item_type (422)
+        # before the service is even called.
+        svc = MagicMock()
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets/bk-1/items",
+            json={"album_id": "alb-1", "item_type": "bogus"},
+        )
+
+        assert resp.status_code == 422
+        svc.add_item.assert_not_called()
+        app.dependency_overrides.clear()
+
 
 class TestUpdateItem:
     def test_update_status_returns_200(self, client, app):
@@ -488,6 +611,31 @@ class TestUpdateItem:
         assert resp.json()["status"] == "published"
         kwargs = svc.update_item.call_args.kwargs
         assert kwargs == {"status": "published"}
+        app.dependency_overrides.clear()
+
+    def test_update_nonalbum_item_returns_200_without_500(self, client, app):
+        # FEAT-pocket-buckit Step 3: update_item has NO item_type gate, so post-Step-6 the
+        # front edits a non-album row (note/status/prep_tonight) via this PATCH. An
+        # unconditional str(item.album_id) would become uuid.UUID("None") in the UUID-typed
+        # batch lookups → 500. Pin the null-guard with a non-album row.
+        svc = MagicMock()
+        nonalbum = _nonalbum_item()
+        nonalbum.prep_tonight = True
+        svc.update_item.return_value = nonalbum
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.patch(
+            "/api/buckets/bk-1/items/it-trk", json={"prep_tonight": True}
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["item_type"] == "track"
+        assert body["album"] is None
+        assert body["album_id"] is None
+        # The album batch lookups were never asked about a "None" id.
+        assert svc.reviewed_album_ids.call_args[0][1] == []
         app.dependency_overrides.clear()
 
     def test_update_prep_tonight_returns_200(self, client, app):

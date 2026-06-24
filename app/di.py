@@ -4,6 +4,7 @@ from app.services.section_service import SectionService
 from app.services.tag_service import TagService
 from app.services.bucket_service import BucketService
 from app.services.library_service import LibraryService
+from app.services.playback_service import PlaybackService
 from app.services.research_service import ResearchService
 from app.services.genre_service import GenreService
 from app.repositories.post_repository import PostRepository
@@ -26,6 +27,10 @@ def get_bucket_service() -> BucketService:
 
 def get_library_service() -> LibraryService:
     return LibraryService()
+
+
+def get_playback_service() -> PlaybackService:
+    return PlaybackService()
 
 
 def get_research_service() -> ResearchService:

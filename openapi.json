@@ -8,6 +8,18 @@
             "title": "Album Id",
             "type": "string"
           },
+          "item_type": {
+            "default": "album",
+            "enum": [
+              "album",
+              "track",
+              "review",
+              "playback",
+              "snapshot"
+            ],
+            "title": "Item Type",
+            "type": "string"
+          },
           "note": {
             "anyOf": [
               {
@@ -261,11 +273,25 @@
       "BucketItemResponse": {
         "properties": {
           "album": {
-            "$ref": "#/components/schemas/AlbumBrief"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlbumBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "album_id": {
-            "title": "Album Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
           },
           "already_reviewed": {
             "default": false,
@@ -274,6 +300,11 @@
           },
           "id": {
             "title": "Id",
+            "type": "string"
+          },
+          "item_type": {
+            "default": "album",
+            "title": "Item Type",
             "type": "string"
           },
           "note": {
@@ -334,17 +365,37 @@
             ],
             "title": "Research Status"
           },
+          "review_target_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Target Id"
+          },
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "track_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Id"
           }
         },
         "required": [
           "id",
-          "album_id",
           "position",
-          "status",
-          "album"
+          "status"
         ],
         "title": "BucketItemResponse",
         "type": "object"
@@ -2083,6 +2134,29 @@
           "status"
         ],
         "title": "SpotifyLibrarySyncResponse",
+        "type": "object"
+      },
+      "SpotifyStreamingTokenResponse": {
+        "properties": {
+          "access_token": {
+            "title": "Access Token",
+            "type": "string"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "token_type": {
+            "default": "Bearer",
+            "title": "Token Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_token",
+          "expires_in"
+        ],
+        "title": "SpotifyStreamingTokenResponse",
         "type": "object"
       },
       "StreamAlbumRankItem": {
@@ -5056,6 +5130,32 @@
         "summary": "Batch Metrics",
         "tags": [
           "metrics"
+        ]
+      }
+    },
+    "/api/playback/spotify-token": {
+      "get": {
+        "operationId": "spotify_token_api_playback_spotify_token_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpotifyStreamingTokenResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Spotify Token",
+        "tags": [
+          "playback"
         ]
       }
     },

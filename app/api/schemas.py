@@ -161,6 +161,13 @@ class UpdateBucketRequest(BaseModel):
 class AddBucketItemRequest(BaseModel):
     album_id: str = Field(min_length=1)
     note: Optional[str] = None
+    # FEAT-pocket-buckit Step 3: typed membership discriminator. Defaults 'album' so every
+    # existing caller is unchanged. Non-album writes are intentionally REJECTED with 422
+    # until the schema STEP-2 relax (Step 6 drops album_id NOT NULL + adds per-kind
+    # partial-uniques) — the read-side serializer ships non-album-tolerant first (the
+    # rule-#4 serializer-before-relax gate). The typed target fields (track_id, etc.) are
+    # added to this request alongside that relax, when the front actually sends them.
+    item_type: Literal["album", "track", "review", "playback", "snapshot"] = "album"
 
 
 class UpdateBucketItemRequest(BaseModel):
@@ -204,7 +211,16 @@ class AlbumBrief(BaseModel):
 
 class BucketItemResponse(BaseModel):
     id: str
-    album_id: str
+    # FEAT-pocket-buckit Step 3: typed membership discriminator (defaults 'album'). The
+    # serializer is now non-album-TOLERANT — album_id/album are Optional and null on a
+    # non-album row (track/review/playback/snapshot). This read-side change ships and is
+    # prod-verified BEFORE the STEP-2 relax that lets such rows exist, so the first
+    # non-album row can never 500 GET /api/buckets (the carried serializer-before-relax
+    # gate). track_id/review_target_id echo the typed FK when set.
+    item_type: str = "album"
+    album_id: Optional[str] = None
+    track_id: Optional[str] = None
+    review_target_id: Optional[str] = None
     position: int
     note: Optional[str] = None
     status: str
@@ -221,7 +237,8 @@ class BucketItemResponse(BaseModel):
     research_status: Optional[str] = None
     # FEAT-editor-buckit Stage 1: "오늘 밤 키우기" gate (see UpdateBucketItemRequest).
     prep_tonight: bool = False
-    album: AlbumBrief
+    # Optional (FEAT-pocket-buckit Step 3): present on album rows, null on non-album rows.
+    album: Optional[AlbumBrief] = None
 
 
 class BucketResponse(BaseModel):
@@ -373,6 +390,21 @@ class SpotifyLibraryStateResponse(BaseModel):
     # the "검토 모드" banner. False = plan-only; the worker issues no real Spotify writes.
     writes_enabled: bool = False
     albums: List[SpotifyLibraryAlbumState] = Field(default_factory=list)
+
+
+# ====== Playback token (FEAT-pocket-buckit Step 3, D3 / OQ8) ======
+# GET /api/playback/spotify-token async-mints a short-lived Spotify Web Playback SDK
+# access token from the owner's per-listener `streaming`-scope refresh token (rule #9:
+# the play path is client-side; the server only mints/refreshes a token, never proxies a
+# Spotify content call). Dormant until the Step-5 `streaming` OAuth consent provisions the
+# refresh token — until then the route is a real Cognito-JWT route that returns 503.
+
+class SpotifyStreamingTokenResponse(BaseModel):
+    # The short-lived Web Playback SDK access token + its lifetime (Spotify returns ~3600s).
+    # The front re-mints before expiry; the token itself is never persisted server-side.
+    access_token: str
+    expires_in: int
+    token_type: str = "Bearer"
 
 
 # ====== Member library (FEAT-member-dashboard Step 2, D18) ======

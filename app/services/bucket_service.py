@@ -44,6 +44,18 @@ class DuplicateItemError(Exception):
     """
 
 
+class TypedMembershipNotEnabledError(Exception):
+    """FEAT-pocket-buckit Step 3: a non-album (track/review/playback/snapshot) membership
+    write was requested before the schema STEP-2 relax. Route maps to 422.
+
+    V28 (STEP-1) added the `item_type` discriminator + typed FKs but kept `album_id NOT
+    NULL` + the named UNIQUE; STEP-2 (Step 6, a separate rule-#4 schema session) drops the
+    NOT NULL and adds per-kind partial-uniques. Until then a non-album INSERT would violate
+    `album_id NOT NULL` — reject it cleanly here rather than leak an IntegrityError. The
+    read-side serializer is already non-album-tolerant (it ships + is prod-verified first,
+    so when STEP-2 enables these rows the board never 500s)."""
+
+
 # Auto-recommendation: initial position is seeded from a weighted blend of two
 # DB-only signals (RFC §"백엔드 API" — release recency + Spotify popularity).
 # After the first placement, manual drag (PUT /reorder) is the source of truth.
@@ -348,14 +360,23 @@ class BucketService:
         *,
         album_id: str,
         note: Optional[str] = None,
+        item_type: str = "album",
         today: Optional[date] = None,
     ) -> ReviewBucketItem:
         """Queue an album into a bucket, seeding its position from the recency+
         popularity score. The new item is inserted above existing items whose
-        live score is lower, shifting them down (idempotent positions 0..n)."""
+        live score is lower, shifting them down (idempotent positions 0..n).
+
+        FEAT-pocket-buckit Step 3: only ``item_type='album'`` is writable today. A
+        non-album kind raises ``TypedMembershipNotEnabledError`` (422) — its INSERT
+        needs the STEP-2 relax of ``album_id NOT NULL`` (Step 6). The album path below
+        is unchanged (Album lookup + score seeding + the UNIQUE dedup)."""
         bucket = self.get_bucket(db, bucket_id)
         if bucket is None:
             raise BucketNotFoundError(bucket_id)
+
+        if item_type != "album":
+            raise TypedMembershipNotEnabledError(item_type)
 
         album = db.query(Album).filter(Album.id == album_id).first()
         if album is None:

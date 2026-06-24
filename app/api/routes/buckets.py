@@ -26,7 +26,7 @@ from app.api.schemas import (
     UpdateBucketRequest,
 )
 from app.clients.sqs_client import get_spotify_connection_status
-from app.core.auth import require_cognito_token
+from app.core.auth import require_cognito_token, resolve_owner
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.di import (
@@ -41,6 +41,7 @@ from app.services.bucket_service import (
     BucketService,
     DuplicateItemError,
     ItemNotFoundError,
+    TypedMembershipNotEnabledError,
 )
 from app.services.enqueue import (
     safe_enqueue_album as _safe_enqueue_album,
@@ -78,9 +79,24 @@ def _item_response(
     research_status: str | None = None,
     genres: list[str] | None = None,
 ) -> BucketItemResponse:
+    # FEAT-pocket-buckit Step 3 — non-album-TOLERANT serializer. The pre-Step-3 code did
+    # `str(item.album_id)` + `_album_brief(item.album, …)` UNCONDITIONALLY; on a non-album
+    # row (album_id NULL, no `.album`) that 500s the whole board. Branch on the typed
+    # membership: emit the AlbumBrief only when an album is present, and null the
+    # album fields otherwise. Ships + is prod-verified BEFORE the STEP-2 relax that lets
+    # non-album rows exist, so the first such row can't 500 GET /api/buckets.
+    item_type = getattr(item, "item_type", "album")
+    if not isinstance(item_type, str):  # defensive: ORM None / a test MagicMock → 'album'
+        item_type = "album"
+    album = getattr(item, "album", None)
+    track_id = getattr(item, "track_id", None)
+    review_target_id = getattr(item, "review_target_id", None)
     return BucketItemResponse(
         id=str(item.id),
-        album_id=str(item.album_id),
+        item_type=item_type,
+        album_id=str(item.album_id) if item.album_id is not None else None,
+        track_id=str(track_id) if track_id is not None else None,
+        review_target_id=str(review_target_id) if review_target_id is not None else None,
         position=item.position,
         note=item.note,
         status=item.status,
@@ -90,7 +106,7 @@ def _item_response(
         research_selected=item.research_selected,
         research_status=research_status,
         prep_tonight=item.prep_tonight,
-        album=_album_brief(item.album, genres),
+        album=_album_brief(album, genres) if album is not None else None,
     )
 
 
@@ -121,9 +137,10 @@ def _bucket_response(
         items=[
             _item_response(
                 it,
-                str(it.album_id) in reviewed,
-                research.get(str(it.album_id)),
-                genres.get(str(it.album_id)),
+                # Non-album rows have no album_id → not "reviewed", no research/genre map.
+                str(it.album_id) in reviewed if it.album_id is not None else False,
+                research.get(str(it.album_id)) if it.album_id is not None else None,
+                genres.get(str(it.album_id)) if it.album_id is not None else None,
             )
             for it in b.items
         ],
@@ -151,8 +168,12 @@ def list_buckets(
     roots = svc.list_buckets(db)
     # Batch the already_reviewed + research-status + genre-label lookups across every
     # album in the whole tree (one query each), then serialize roots recursively.
+    # Skip non-album rows (album_id NULL) — they carry no album to look up.
     all_album_ids = [
-        str(it.album_id) for b in _iter_tree(roots) for it in b.items
+        str(it.album_id)
+        for b in _iter_tree(roots)
+        for it in b.items
+        if it.album_id is not None
     ]
     reviewed = svc.reviewed_album_ids(db, all_album_ids)
     research = research_svc.status_map(db, all_album_ids)
@@ -179,7 +200,11 @@ def list_public_buckets(
     genre_svc: GenreService = Depends(get_genre_service),
 ):
     buckets = svc.list_public_buckets(db)
-    all_album_ids = [str(it.album_id) for b in buckets for it in b.items]
+    # The public viewer projects album shelves only; a non-album row (album_id NULL, post
+    # STEP-2) is simply not shown rather than 500ing the unauthenticated viewer.
+    all_album_ids = [
+        str(it.album_id) for b in buckets for it in b.items if it.album_id is not None
+    ]
     reviewed = svc.reviewed_album_ids(db, all_album_ids)
     genres = genre_svc.labels_map(db, all_album_ids)
     return PublicBucketsResponse(
@@ -204,6 +229,7 @@ def list_public_buckets(
                         ),
                     )
                     for it in b.items
+                    if it.album_id is not None
                 ],
             )
             for b in buckets
@@ -320,7 +346,7 @@ def update_bucket(
         raise HTTPException(
             status_code=409, detail='"평론 완료" 버킷은 하나만 지정할 수 있습니다.'
         )
-    album_ids = [str(it.album_id) for it in bucket.items]
+    album_ids = [str(it.album_id) for it in bucket.items if it.album_id is not None]
     reviewed = svc.reviewed_album_ids(db, album_ids)
     research = research_svc.status_map(db, album_ids)
     genres = genre_svc.labels_map(db, album_ids)
@@ -336,9 +362,9 @@ def update_bucket(
         items=[
             _item_response(
                 it,
-                str(it.album_id) in reviewed,
-                research.get(str(it.album_id)),
-                genres.get(str(it.album_id)),
+                str(it.album_id) in reviewed if it.album_id is not None else False,
+                research.get(str(it.album_id)) if it.album_id is not None else None,
+                genres.get(str(it.album_id)) if it.album_id is not None else None,
             )
             for it in bucket.items
         ],
@@ -432,14 +458,28 @@ def add_item(
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
     genre_svc: GenreService = Depends(get_genre_service),
-    _claims: Dict = Depends(require_cognito_token),
+    claims: Dict = Depends(require_cognito_token),
 ):
+    # FEAT-pocket-buckit Step 3 (OQ11): the drop endpoint reads the owner from the verified
+    # JWT `sub`, never the request body (single-owner today; the public-page sign-in handoff
+    # in Step 5 replays its pending intent against this route). No owner_id is stored in v1
+    # (OQ12) — this establishes the first-`sub`-consumer pattern + the local/dev fallback.
+    _owner = resolve_owner(claims)
     try:
-        item = svc.add_item(db, bucket_id, album_id=req.album_id, note=req.note)
+        item = svc.add_item(
+            db, bucket_id, album_id=req.album_id, note=req.note, item_type=req.item_type
+        )
     except BucketNotFoundError:
         raise HTTPException(status_code=404, detail="Bucket not found")
     except AlbumNotFoundError:
         raise HTTPException(status_code=404, detail="Album not found")
+    except TypedMembershipNotEnabledError:
+        # Non-album membership writes land with the STEP-2 relax (Step 6). Clean 422 instead
+        # of a leaked IntegrityError on album_id NOT NULL.
+        raise HTTPException(
+            status_code=422,
+            detail="Only album items can be added yet (typed membership pending schema STEP-2)",
+        )
     except DuplicateItemError:
         raise HTTPException(status_code=409, detail="Album already in this bucket")
     reviewed = svc.reviewed_album_ids(db, [str(item.album_id)])
@@ -476,18 +516,24 @@ def update_item(
         item = svc.update_item(db, bucket_id, item_id, **updates)
     except ItemNotFoundError:
         raise HTTPException(status_code=404, detail="Item not found")
-    reviewed = svc.reviewed_album_ids(db, [str(item.album_id)])
-    research = research_svc.status_map(db, [str(item.album_id)])
-    genres = genre_svc.labels_map(db, [str(item.album_id)])
+    # Non-album-tolerant (FEAT-pocket-buckit Step 3): update_item has NO item_type gate
+    # (unlike add_item), so post-STEP-2 it can return a non-album row (album_id NULL). An
+    # unconditional [str(item.album_id)] would become ["None"] → uuid.UUID("None") in the
+    # UUID-typed .in_() lookups → 500. Guard the album-id batch like every other read path.
+    album_ids = [str(item.album_id)] if item.album_id is not None else []
+    reviewed = svc.reviewed_album_ids(db, album_ids)
+    research = research_svc.status_map(db, album_ids)
+    genres = genre_svc.labels_map(db, album_ids)
     resp = _item_response(
         item,
-        str(item.album_id) in reviewed,
-        research.get(str(item.album_id)),
-        genres.get(str(item.album_id)),
+        str(item.album_id) in reviewed if item.album_id is not None else False,
+        research.get(str(item.album_id)) if item.album_id is not None else None,
+        genres.get(str(item.album_id)) if item.album_id is not None else None,
     )
     # Auto-research: checking research_selected while the bucket is 'selected' mode
-    # enqueues that album (dedup-gated). Unchecking/other updates trigger nothing.
-    if updates.get("research_selected") is True:
+    # enqueues that album (dedup-gated). Unchecking/other updates trigger nothing. Album
+    # rows only — a non-album row has no album to research.
+    if updates.get("research_selected") is True and item.album_id is not None:
         bucket = svc.get_bucket(db, bucket_id)
         if bucket is not None and bucket.research_mode == "selected":
             _safe_enqueue_album(db, research_svc, item.album_id)

@@ -92,6 +92,21 @@ def verify_token(token: str) -> Dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
+# FEAT-pocket-buckit Step 3 (OQ11 / OQ12): single-owner-from-sub. The drop + playback
+# routes read the owner from the VERIFIED JWT `sub`, never the request body, so a later
+# per-owner generalization (FEAT-multi-user-accounts) is a plain additive change. v1 has
+# no `owner_id` column anywhere (OQ12 defers all multi-user scoping), so this resolves the
+# *pattern* + the local/dev fallback, not a value that gets stored. `require_cognito_token`
+# returns `{}` in local/dev, so `claims.get('sub')` is None there → the single-owner
+# sentinel; a bare `claims['sub']` would KeyError (the carried adversarial must-fix).
+SINGLE_OWNER = "owner"
+
+
+def resolve_owner(claims: Dict[str, Any] | None) -> str:
+    """The acting owner id: the verified JWT `sub`, else the single-owner sentinel."""
+    return (claims or {}).get("sub") or SINGLE_OWNER
+
+
 def require_cognito_token(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> Dict[str, Any]:
