@@ -1180,6 +1180,19 @@
         "title": "OnThisDayItem",
         "type": "object"
       },
+      "PlaybackResolveResponse": {
+        "properties": {
+          "uri": {
+            "title": "Uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uri"
+        ],
+        "title": "PlaybackResolveResponse",
+        "type": "object"
+      },
       "PostDetailResponse": {
         "properties": {
           "album_ids": {
@@ -5325,6 +5338,62 @@
         "summary": "Batch Metrics",
         "tags": [
           "metrics"
+        ]
+      }
+    },
+    "/api/playback/resolve": {
+      "get": {
+        "description": "Map a catalog DB id \u2192 a Spotify URI (spotify:album|track:<spotify_id>) for the Web\nPlayback SDK (FEAT-spotify-streaming-playback Step 2). Unlike /spotify-token this is\nedge_guard-only \u2014 NO Cognito JWT, NO dedicated infra/apigateway.tf route: spotify_id is\na public identifier and the catalog is otherwise edge_guard-only (unified search, bucket\nreads), so there is nothing to JWT-gate. rule #9 holds: a direct catalog DB read, never a\nsynchronous Spotify content call. Bad type \u2192 422 (Literal); unknown/empty id \u2192 404.",
+        "operationId": "resolve_playback_uri_api_playback_resolve_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "type",
+            "required": true,
+            "schema": {
+              "enum": [
+                "album",
+                "track"
+              ],
+              "title": "Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybackResolveResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Playback Uri",
+        "tags": [
+          "playback"
         ]
       }
     },

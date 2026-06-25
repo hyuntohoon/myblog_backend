@@ -19,11 +19,14 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from typing import Dict, Optional
 
 import httpx
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from myblog_shared_db.models import Album, Track
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,11 @@ class PlaybackNotConfiguredError(Exception):
 
 class PlaybackProviderError(Exception):
     """Spotify rejected the token exchange (invalid_grant / network / 5xx) — 502."""
+
+
+class PlaybackItemNotFoundError(Exception):
+    """No catalog Album/Track with that id, or the row has no spotify_id, or the id is
+    malformed — the resolve route maps this to 404 (FEAT-spotify-streaming-playback Step 2)."""
 
 
 # accounts.spotify.com is the AUTH host (token mint), NOT the Web API content host. A mint
@@ -72,6 +80,22 @@ class PlaybackService:
         except Exception as e:  # pragma: no cover - IAM/network failure path
             logger.error("Failed to read Spotify secret for playback token: %s", e)
             return {}
+
+    def resolve_uri(self, db: Session, *, item_type: str, item_id: str) -> str:
+        """Map a catalog DB id → a Spotify URI via the stored ``spotify_id`` — a direct DB
+        read, NO Spotify search (rule #9-safe). ``spotify:album:<id>`` is played as a
+        context_uri; ``spotify:track:<id>`` as a uris[] entry. Raises
+        PlaybackItemNotFoundError (→404) for a malformed/unknown id or a row with no
+        spotify_id. ``item_type`` is constrained to 'album'|'track' by the route's Literal."""
+        try:
+            uuid.UUID(str(item_id))  # str() so a non-str caller can't raise an uncaught error
+        except ValueError:
+            raise PlaybackItemNotFoundError(f"{item_type}:{item_id}")
+        model = Album if item_type == "album" else Track
+        spotify_id = db.query(model.spotify_id).filter(model.id == item_id).scalar()
+        if not spotify_id:
+            raise PlaybackItemNotFoundError(f"{item_type}:{item_id}")
+        return f"spotify:{item_type}:{spotify_id}"
 
     def _load_streaming_creds(self) -> Dict[str, str]:
         """Resolve {client_id, client_secret, streaming_refresh_token}. Settings (env)

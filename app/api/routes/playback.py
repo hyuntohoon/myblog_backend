@@ -9,14 +9,17 @@ never mint a streaming token. The FastAPI dependency below enforces the same in-
 never proxies a Spotify content call.
 """
 import logging
-from typing import Dict
+from typing import Dict, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
 
-from app.api.schemas import SpotifyStreamingTokenResponse
+from app.api.schemas import PlaybackResolveResponse, SpotifyStreamingTokenResponse
 from app.core.auth import require_cognito_token, resolve_owner
+from app.db.session import get_db
 from app.di import get_playback_service
 from app.services.playback_service import (
+    PlaybackItemNotFoundError,
     PlaybackNotConfiguredError,
     PlaybackProviderError,
     PlaybackService,
@@ -46,3 +49,23 @@ def spotify_token(
         expires_in=int(tok["expires_in"]),  # type: ignore[arg-type]
         token_type=str(tok["token_type"]),
     )
+
+
+@router.get("/resolve", response_model=PlaybackResolveResponse)
+def resolve_playback_uri(
+    item_type: Literal["album", "track"] = Query(..., alias="type"),
+    item_id: str = Query(..., alias="id"),
+    svc: PlaybackService = Depends(get_playback_service),
+    db: Session = Depends(get_db),
+):
+    """Map a catalog DB id → a Spotify URI (spotify:album|track:<spotify_id>) for the Web
+    Playback SDK (FEAT-spotify-streaming-playback Step 2). Unlike /spotify-token this is
+    edge_guard-only — NO Cognito JWT, NO dedicated infra/apigateway.tf route: spotify_id is
+    a public identifier and the catalog is otherwise edge_guard-only (unified search, bucket
+    reads), so there is nothing to JWT-gate. rule #9 holds: a direct catalog DB read, never a
+    synchronous Spotify content call. Bad type → 422 (Literal); unknown/empty id → 404."""
+    try:
+        uri = svc.resolve_uri(db, item_type=item_type, item_id=item_id)
+    except PlaybackItemNotFoundError:
+        raise HTTPException(status_code=404, detail=f"No {item_type} with id {item_id}")
+    return PlaybackResolveResponse(uri=uri)

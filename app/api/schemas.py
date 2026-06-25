@@ -458,6 +458,13 @@ class SpotifyStreamingTokenResponse(BaseModel):
     token_type: str = "Bearer"
 
 
+class PlaybackResolveResponse(BaseModel):
+    # A Spotify URI resolved from a catalog DB id via the stored spotify_id (FEAT-spotify-
+    # streaming-playback Step 2). spotify:track:<id> is played as a uris[] entry;
+    # spotify:album:<id> as a context_uri (full-album context).
+    uri: str
+
+
 # ====== Member library (FEAT-member-dashboard Step 2, D18) ======
 # Two sources: 들을 것 (to-listen queue, a real table) and 평론한 앨범 (reviewed,
 # a derived view over published posts). 최근 들은 앨범 is Step 3.
