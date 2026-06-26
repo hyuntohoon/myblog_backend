@@ -7,7 +7,7 @@ from typing import Any, List, Optional, Sequence, Tuple
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from myblog_shared_db.models import (
     Album,
@@ -124,8 +124,19 @@ class BucketService:
         ``children_nodes`` is a non-column attribute attached for serialization —
         it does not exist on the ORM model and is never persisted.
         """
+        # Eager-load the item briefs in a fixed number of queries (one extra SELECT
+        # per relationship level via selectinload) instead of a 2-level N+1 that fired
+        # item.album + album.artists (+ track + track.artists) lazily PER board item.
         all_buckets = (
             db.query(ReviewBucket)
+            .options(
+                selectinload(ReviewBucket.items)
+                .selectinload(ReviewBucketItem.album)
+                .selectinload(Album.artists),
+                selectinload(ReviewBucket.items)
+                .selectinload(ReviewBucketItem.track)
+                .selectinload(Track.artists),
+            )
             .order_by(ReviewBucket.position, ReviewBucket.created_at)
             .all()
         )
@@ -339,6 +350,14 @@ class BucketService:
         """
         return (
             db.query(ReviewBucket)
+            .options(
+                selectinload(ReviewBucket.items)
+                .selectinload(ReviewBucketItem.album)
+                .selectinload(Album.artists),
+                selectinload(ReviewBucket.items)
+                .selectinload(ReviewBucketItem.track)
+                .selectinload(Track.artists),
+            )
             .filter(ReviewBucket.is_public.is_(True))
             .filter(ReviewBucket.kind == "review")
             .order_by(ReviewBucket.position, ReviewBucket.created_at)
