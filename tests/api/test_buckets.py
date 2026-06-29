@@ -6,7 +6,9 @@ from unittest.mock import MagicMock, patch
 from app.di import get_bucket_service
 from app.services.bucket_service import (
     AlbumNotFoundError,
+    ArtistNotFoundError,
     BucketNotFoundError,
+    BucketTypeError,
     DuplicateItemError,
     ItemNotFoundError,
 )
@@ -44,6 +46,7 @@ def _item(item_id="it-1", album_id="alb-1", position=0, status="candidate"):
     it.item_type = "album"
     it.track_id = None
     it.review_target_id = None
+    it.artist_id = None  # FEAT-my-buckit-artist (V32): null on non-artist rows
     it.album = _album(album_id=album_id)
     return it
 
@@ -70,6 +73,7 @@ def _nonalbum_item(item_id="it-trk", item_type="track", track_id="trk-1", positi
     it.album_id = None
     it.track_id = track_id
     it.review_target_id = None
+    it.artist_id = None  # FEAT-my-buckit-artist (V32): null unless an artist row
     it.position = position
     it.note = None
     it.status = "candidate"
@@ -83,9 +87,40 @@ def _nonalbum_item(item_id="it-trk", item_type="track", track_id="trk-1", positi
     return it
 
 
+def _artist(artist_id="art-1", name="아티스트 A", photo_url="https://cdn/a.jpg"):
+    """An Artist ORM-shaped mock for the ArtistBrief serializer (FEAT-my-buckit-artist V32)."""
+    a = MagicMock()
+    a.id = artist_id
+    a.name = name
+    a.photo_url = photo_url
+    return a
+
+
+def _artist_item(item_id="it-art", artist_id="art-1", position=0):
+    """An artist membership row (item_type='artist', album_id NULL, artist_id + .artist set)."""
+    it = MagicMock()
+    it.id = item_id
+    it.item_type = "artist"
+    it.album_id = None
+    it.track_id = None
+    it.review_target_id = None
+    it.artist_id = artist_id
+    it.position = position
+    it.note = None
+    it.status = "candidate"
+    it.post_id = None
+    it.rec_reason = None
+    it.research_selected = False
+    it.prep_tonight = False
+    it.album = None
+    it.track = None
+    it.artist = _artist(artist_id=artist_id)
+    return it
+
+
 def _bucket(
     bucket_id="bk-1", name="꼭", position=0, is_done=False, items=(),
-    children=(), kind="review", is_public=False,
+    children=(), kind="review", is_public=False, type="general",
 ):
     b = MagicMock()
     b.id = bucket_id
@@ -99,6 +134,9 @@ def _bucket(
     # FEAT-spotify-library-sync: BucketResponse now carries `kind` (validated as a
     # str), so set it explicitly — a bare MagicMock auto-vivifies a non-string here.
     b.kind = kind
+    # FEAT-my-buckit-artist (V32): BucketResponse carries `type` (validated str general|artist)
+    # — set it explicitly so a bare MagicMock doesn't auto-vivify a non-string.
+    b.type = type
     # research_mode is a validated str on BucketResponse (off|all|selected) — set it
     # explicitly so a bare MagicMock doesn't auto-vivify a non-string / truthy value.
     b.research_mode = "off"
@@ -371,6 +409,31 @@ class TestCreateBucket:
         assert resp.status_code == 201
         assert resp.json()["name"] == "신보"
         assert resp.json()["items"] == []
+        # FEAT-my-buckit-artist (V32): default type is general.
+        assert resp.json()["type"] == "general"
+        app.dependency_overrides.clear()
+
+    def test_create_artist_bucket_forwards_type(self, client, app):
+        svc = MagicMock()
+        svc.create_bucket.return_value = _bucket(name="좋아하는 아티스트", type="artist")
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets", json={"name": "좋아하는 아티스트", "type": "artist"}
+        )
+
+        assert resp.status_code == 201
+        assert resp.json()["type"] == "artist"
+        assert svc.create_bucket.call_args.kwargs["type"] == "artist"
+        app.dependency_overrides.clear()
+
+    def test_create_bad_type_rejected_by_schema_422(self, client, app):
+        # The Literal on CreateBucketRequest rejects an out-of-enum type before the service.
+        svc = MagicMock()
+        _override(app, svc)
+        resp = client.post("/api/buckets", json={"name": "x", "type": "bogus"})
+        assert resp.status_code == 422
+        svc.create_bucket.assert_not_called()
         app.dependency_overrides.clear()
 
     def test_blank_name_returns_400(self, client, app):
@@ -642,6 +705,152 @@ class TestAddItem:
         app.dependency_overrides.clear()
 
 
+class TestAddArtistItem:
+    """FEAT-my-buckit-artist (V32): artist membership + type gate + source expansion."""
+
+    def test_add_artist_returns_201_with_brief(self, client, app):
+        svc = MagicMock()
+        svc.add_item.return_value = _artist_item(artist_id="art-9")
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets/bk-1/items",
+            json={"item_type": "artist", "artist_id": "art-9"},
+        )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["item_type"] == "artist"
+        assert body["artist_id"] == "art-9"
+        assert body["artist"]["id"] == "art-9"
+        assert body["artist"]["name"] == "아티스트 A"
+        # A direct artist add returns BucketItemResponse — no expansion shape.
+        assert "expansion" not in body
+        assert svc.add_item.call_args.kwargs["item_type"] == "artist"
+        assert svc.add_item.call_args.kwargs["artist_id"] == "art-9"
+        app.dependency_overrides.clear()
+
+    def test_artist_add_without_target_rejected_by_schema_422(self, client, app):
+        # Neither artist_id nor a source_* → the request validator rejects (422).
+        svc = MagicMock()
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets/bk-1/items", json={"item_type": "artist"}
+        )
+
+        assert resp.status_code == 422
+        svc.add_item.assert_not_called()
+        app.dependency_overrides.clear()
+
+    def test_artist_add_with_two_targets_rejected_by_schema_422(self, client, app):
+        # artist_id AND a source_* together → exactly-one validator rejects (422).
+        svc = MagicMock()
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets/bk-1/items",
+            json={"item_type": "artist", "artist_id": "art-1", "source_album_id": "alb-1"},
+        )
+
+        assert resp.status_code == 422
+        svc.add_item.assert_not_called()
+        app.dependency_overrides.clear()
+
+    def test_type_gate_album_into_artist_bucket_returns_400(self, client, app):
+        svc = MagicMock()
+        svc.add_item.side_effect = BucketTypeError("artist only")
+        _override(app, svc)
+
+        resp = client.post("/api/buckets/bk-art/items", json={"album_id": "alb-1"})
+
+        assert resp.status_code == 400
+        app.dependency_overrides.clear()
+
+    def test_missing_artist_returns_404(self, client, app):
+        svc = MagicMock()
+        svc.add_item.side_effect = ArtistNotFoundError("art-x")
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets/bk-1/items",
+            json={"item_type": "artist", "artist_id": "art-x"},
+        )
+
+        assert resp.status_code == 404
+        app.dependency_overrides.clear()
+
+    def test_duplicate_artist_returns_409(self, client, app):
+        svc = MagicMock()
+        svc.add_item.side_effect = DuplicateItemError("art-1")
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets/bk-1/items",
+            json={"item_type": "artist", "artist_id": "art-1"},
+        )
+
+        assert resp.status_code == 409
+        app.dependency_overrides.clear()
+
+    def test_source_expansion_returns_201_with_added_skipped(self, client, app):
+        # A source_album_id expands → expand_artist_source returns (added, skipped). The route
+        # serializes the SUMMARY (no single row; id/position/status null), 201 since ≥1 added.
+        svc = MagicMock()
+        svc.expand_artist_source.return_value = (
+            [_artist(artist_id="art-1", name="A"), _artist(artist_id="art-2", name="B")],
+            [_artist(artist_id="art-3", name="C")],
+        )
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets/bk-art/items",
+            json={"item_type": "artist", "source_album_id": "alb-comp"},
+        )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        # The expansion summary (ArtistExpansionResponse) carries no single-row id.
+        assert "id" not in body
+        assert body["item_type"] == "artist"
+        assert [a["id"] for a in body["expansion"]["added"]] == ["art-1", "art-2"]
+        assert [a["id"] for a in body["expansion"]["skipped"]] == ["art-3"]
+        assert svc.expand_artist_source.call_args.kwargs["source_album_id"] == "alb-comp"
+        # The single-row add path is NOT taken for a source_* add.
+        svc.add_item.assert_not_called()
+        app.dependency_overrides.clear()
+
+    def test_source_expansion_noop_returns_200(self, client, app):
+        # VA compilation → 0 added (or every credited artist already present) → 200, not 201.
+        svc = MagicMock()
+        svc.expand_artist_source.return_value = ([], [])
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets/bk-art/items",
+            json={"item_type": "artist", "source_track_id": "trk-va"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["expansion"]["added"] == []
+        assert svc.expand_artist_source.call_args.kwargs["source_track_id"] == "trk-va"
+        app.dependency_overrides.clear()
+
+    def test_expansion_missing_source_album_returns_404(self, client, app):
+        svc = MagicMock()
+        svc.expand_artist_source.side_effect = AlbumNotFoundError("alb-x")
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets/bk-art/items",
+            json={"item_type": "artist", "source_album_id": "alb-x"},
+        )
+
+        assert resp.status_code == 404
+        app.dependency_overrides.clear()
+
+
 class TestUpdateItem:
     def test_update_status_returns_200(self, client, app):
         svc = MagicMock()
@@ -818,6 +1027,21 @@ class TestReorder:
         )
 
         assert resp.status_code == 404
+        app.dependency_overrides.clear()
+
+    def test_reorder_non_artist_into_artist_bucket_returns_400(self, client, app):
+        # FEAT-my-buckit-artist (V32): the move path's artist-only gate rejects a non-artist
+        # item dragged into an Artist bucket (the hard invariant has no cross-table DB CHECK).
+        svc = MagicMock()
+        svc.reorder.side_effect = BucketTypeError("artist only")
+        _override(app, svc)
+
+        resp = client.put(
+            "/api/buckets/reorder",
+            json={"buckets": [{"id": "bk-art", "item_ids": ["it-album"]}]},
+        )
+
+        assert resp.status_code == 400
         app.dependency_overrides.clear()
 
 

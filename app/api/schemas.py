@@ -139,6 +139,10 @@ class PostDetailResponse(BaseModel):
 class CreateBucketRequest(BaseModel):
     name: str = Field(min_length=1)
     color: Optional[str] = None
+    # FEAT-my-buckit-artist (V32): the bucket-level type discriminator. 'general' (default,
+    # today's polymorphic membership — every existing caller unchanged) | 'artist' (accepts
+    # artist members only). Set once at create; immutable in v1 (see update_bucket guard).
+    type: Literal["general", "artist"] = "general"
 
 
 class UpdateBucketRequest(BaseModel):
@@ -185,17 +189,36 @@ class AddBucketItemRequest(BaseModel):
     # non-album writes are now enabled. item_type defaults 'album' so every existing caller is
     # unchanged; each kind carries its own typed target, validated below. album_id is now
     # optional (only album rows carry it).
-    item_type: Literal["album", "track", "review", "playback", "snapshot"] = "album"
+    item_type: Literal["album", "track", "review", "playback", "snapshot", "artist"] = "album"
     album_id: Optional[str] = None             # required for item_type='album'
     track_id: Optional[str] = None             # required for item_type in {'track','playback'}
     review_target_id: Optional[str] = None     # required for item_type='review'
     note: Optional[str] = None
     snapshot: Optional[SnapshotCaptureRequest] = None  # required for item_type='snapshot'
+    # FEAT-my-buckit-artist (V32): item_type='artist' carries EITHER a direct artist_id (add
+    # one known artist) OR exactly one source_* (a featuring track / compilation album the
+    # server EXPANDS into its credited artists — the source itself is never stored). The
+    # validator below enforces the either/or.
+    artist_id: Optional[str] = None            # a direct artist add (item_type='artist')
+    source_album_id: Optional[str] = None      # expand this album's credited artists
+    source_track_id: Optional[str] = None      # expand this track's credited artists
 
     @model_validator(mode="after")
     def _require_typed_target(self) -> "AddBucketItemRequest":
         # Reject a write that names a kind but omits its typed target up front (422) rather
         # than leaking a downstream IntegrityError / NOT-NULL violation.
+        if self.item_type == "artist":
+            # Exactly one of {artist_id, source_album_id, source_track_id}. A direct add names
+            # the artist; a source_* triggers server-side expansion (mutually exclusive).
+            provided = [
+                v for v in (self.artist_id, self.source_album_id, self.source_track_id) if v
+            ]
+            if len(provided) != 1:
+                raise ValueError(
+                    "artist item requires exactly one of artist_id / source_album_id / "
+                    "source_track_id"
+                )
+            return self
         required = {
             "album": self.album_id,
             "track": self.track_id,
@@ -258,6 +281,36 @@ class TrackBrief(BaseModel):
     duration_sec: Optional[int] = None
 
 
+class ArtistBrief(BaseModel):
+    """FEAT-my-buckit-artist (V32): minimal artist display for an artist-kind membership row
+    (Artist Buckit member) and for the expansion added/skipped lists. Member click-through
+    targets the existing /artist/[id] page (no new detail modal)."""
+    id: str
+    name: str
+    photo_url: Optional[str] = None
+
+
+class BucketItemExpansion(BaseModel):
+    """FEAT-my-buckit-artist (V32): the result of a source_* artist add — a featuring track /
+    compilation album expanded into its credited artists (Various Artists excluded). Present
+    ONLY on the add response for a source_* artist add; the source row itself is never stored.
+    `added` = artists newly inserted this call; `skipped` = credited artists already present
+    in the bucket (dedup), so the front can toast "N 담음 · M 중복 건너뜀"."""
+    added: List[ArtistBrief] = Field(default_factory=list)
+    skipped: List[ArtistBrief] = Field(default_factory=list)
+
+
+class ArtistExpansionResponse(BaseModel):
+    """FEAT-my-buckit-artist (V32): the add-item response for a source_* artist expansion (a
+    featuring track / compilation album expanded into its credited artists). This is a DISTINCT
+    shape from BucketItemResponse — there is no single membership row to echo, only the
+    added/skipped lists — so BucketItemResponse stays strict (id/position/status required) and
+    POST /items returns a Union of the two. The front discriminates on the presence of
+    `expansion` (only this shape carries it)."""
+    item_type: Literal["artist"] = "artist"
+    expansion: BucketItemExpansion
+
+
 class BucketItemResponse(BaseModel):
     id: str
     # FEAT-pocket-buckit Step 3: typed membership discriminator (defaults 'album'). The
@@ -270,6 +323,8 @@ class BucketItemResponse(BaseModel):
     album_id: Optional[str] = None
     track_id: Optional[str] = None
     review_target_id: Optional[str] = None
+    # FEAT-my-buckit-artist (V32): the artist FK for an artist-kind row (else null).
+    artist_id: Optional[str] = None
     position: int
     note: Optional[str] = None
     status: str
@@ -290,6 +345,9 @@ class BucketItemResponse(BaseModel):
     album: Optional[AlbumBrief] = None
     # Optional (FEAT-pocket-buckit Step 6): present on track/playback rows, null otherwise.
     track: Optional[TrackBrief] = None
+    # FEAT-my-buckit-artist (V32): present on artist rows, null otherwise. (A source_* artist
+    # EXPANSION returns the separate ArtistExpansionResponse, not this model.)
+    artist: Optional[ArtistBrief] = None
 
 
 class BucketResponse(BaseModel):
@@ -302,6 +360,11 @@ class BucketResponse(BaseModel):
     # (the single bucket mirroring the owner's Spotify saved-albums Library). Lets the
     # FRONT identify/filter the special bucket out of the normal tree.
     kind: str = "review"
+    # FEAT-my-buckit-artist (V32): bucket-level type discriminator — 'general' (today's
+    # polymorphic membership) | 'artist' (artist members only). Orthogonal to `kind`
+    # (role/system). Every existing & system bucket is 'general'. The front renders the
+    # General/Artist segmented control + type-filter chips off this.
+    type: str = "general"
     # FEAT-album-research-notes: auto-research scope for this bucket
     # ('off' | 'all' | 'selected'). The front renders the off/전체/선택 control.
     research_mode: str = "off"

@@ -13,6 +13,7 @@ so the shared test branch stays pristine.
 from __future__ import annotations
 
 import os
+import uuid
 from datetime import date
 
 import pytest
@@ -21,15 +22,20 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.services.bucket_service import (
+    ArtistNotFoundError,
     BucketNotFoundError,
     BucketService,
+    BucketTypeError,
     DuplicateItemError,
 )
+from app.services.distribution import VARIOUS_ARTISTS
 from myblog_shared_db.models import (
     Album,
+    Artist,
     Post,
     ReviewBucket,
     ReviewBucketItem,
+    Track,
     post_albums_table as post_albums,
 )
 
@@ -411,3 +417,202 @@ class TestAlreadyReviewed:
 
         if reviewed_id:
             assert reviewed_id in svc.reviewed_album_ids(db, [reviewed_id])
+
+
+# ── FEAT-my-buckit-artist (V32): artist membership + type gate + source expansion ──
+# Real-SQL semantics the route mock tests are blind to: the type CHECK, the
+# uq_review_bucket_items_artist partial-unique + the artist_id-present/only-on-artist
+# guards, the VA filter, and the SAVEPOINT-per-row expansion. Everything is built
+# transiently and rolled back on teardown (the shared test branch stays pristine).
+
+def _mk_artist(db, name):
+    a = Artist(name=name, spotify_id=f"sp-art-{uuid.uuid4().hex}")
+    db.add(a)
+    db.flush()
+    return a
+
+
+def _mk_album_with_artists(db, artists, title="Comp"):
+    alb = Album(title=title, spotify_id=f"sp-alb-{uuid.uuid4().hex}")
+    alb.artists = list(artists)
+    db.add(alb)
+    db.flush()
+    return alb
+
+
+def _mk_track_with_artists(db, album, artists, title="Feat"):
+    trk = Track(
+        album_id=album.id, title=title, spotify_id=f"sp-trk-{uuid.uuid4().hex}"
+    )
+    trk.artists = list(artists)
+    db.add(trk)
+    db.flush()
+    return trk
+
+
+class TestArtistBuckit:
+    def test_create_artist_bucket_persists_type(self, db, svc):
+        b = svc.create_bucket(db, name="아티스트", type="artist")
+        assert db.get(ReviewBucket, b.id).type == "artist"
+
+    def test_default_bucket_type_is_general(self, db, svc):
+        b = svc.create_bucket(db, name="일반")
+        assert db.get(ReviewBucket, b.id).type == "general"
+
+    def test_add_artist_member(self, db, svc):
+        bucket = svc.create_bucket(db, name="A", type="artist")
+        artist = _mk_artist(db, "Solo")
+        item = svc.add_item(
+            db, str(bucket.id), item_type="artist", artist_id=str(artist.id)
+        )
+        assert item.item_type == "artist"
+        assert str(item.artist_id) == str(artist.id)
+
+    def test_duplicate_artist_blocked(self, db, svc):
+        bucket = svc.create_bucket(db, name="A", type="artist")
+        artist = _mk_artist(db, "Dup")
+        svc.add_item(db, str(bucket.id), item_type="artist", artist_id=str(artist.id))
+        with pytest.raises(DuplicateItemError):
+            svc.add_item(
+                db, str(bucket.id), item_type="artist", artist_id=str(artist.id)
+            )
+
+    def test_unknown_artist_raises(self, db, svc):
+        bucket = svc.create_bucket(db, name="A", type="artist")
+        with pytest.raises(ArtistNotFoundError):
+            svc.add_item(
+                db, str(bucket.id), item_type="artist", artist_id=str(uuid.uuid4())
+            )
+
+    def test_type_gate_rejects_album_into_artist_bucket(self, db, svc, album_ids):
+        bucket = svc.create_bucket(db, name="A", type="artist")
+        with pytest.raises(BucketTypeError):
+            svc.add_item(db, str(bucket.id), item_type="album", album_id=album_ids[0])
+
+    def test_general_bucket_accepts_artist(self, db, svc):
+        bucket = svc.create_bucket(db, name="G", type="general")
+        artist = _mk_artist(db, "InGeneral")
+        item = svc.add_item(
+            db, str(bucket.id), item_type="artist", artist_id=str(artist.id)
+        )
+        assert item.item_type == "artist"
+
+    def test_type_is_immutable(self, db, svc):
+        bucket = svc.create_bucket(db, name="A", type="artist")
+        # A same-type value is a no-op (no raise); an actual change is rejected.
+        svc.update_bucket(db, str(bucket.id), type="artist")
+        with pytest.raises(BucketTypeError):
+            svc.update_bucket(db, str(bucket.id), type="general")
+
+    def test_expand_album_adds_credited_artists(self, db, svc):
+        bucket = svc.create_bucket(db, name="A", type="artist")
+        a1, a2 = _mk_artist(db, "X"), _mk_artist(db, "Y")
+        album = _mk_album_with_artists(db, [a1, a2])
+        added, skipped = svc.expand_artist_source(
+            db, str(bucket.id), source_album_id=str(album.id)
+        )
+        assert {str(a.id) for a in added} == {str(a1.id), str(a2.id)}
+        assert skipped == []
+        rows = (
+            db.query(ReviewBucketItem)
+            .filter(ReviewBucketItem.bucket_id == bucket.id)
+            .all()
+        )
+        assert {str(r.artist_id) for r in rows} == {str(a1.id), str(a2.id)}
+
+    def test_expand_track_skips_already_present(self, db, svc):
+        bucket = svc.create_bucket(db, name="A", type="artist")
+        a1, a2 = _mk_artist(db, "P"), _mk_artist(db, "Q")
+        # a1 already in the bucket; expansion must skip it and add only a2.
+        svc.add_item(db, str(bucket.id), item_type="artist", artist_id=str(a1.id))
+        album = _mk_album_with_artists(db, [a1])
+        track = _mk_track_with_artists(db, album, [a1, a2])
+        added, skipped = svc.expand_artist_source(
+            db, str(bucket.id), source_track_id=str(track.id)
+        )
+        assert [str(a.id) for a in added] == [str(a2.id)]
+        assert [str(a.id) for a in skipped] == [str(a1.id)]
+
+    def test_expand_is_idempotent_on_redrop(self, db, svc):
+        bucket = svc.create_bucket(db, name="A", type="artist")
+        a1, a2 = _mk_artist(db, "M"), _mk_artist(db, "N")
+        album = _mk_album_with_artists(db, [a1, a2])
+        svc.expand_artist_source(db, str(bucket.id), source_album_id=str(album.id))
+        added, skipped = svc.expand_artist_source(
+            db, str(bucket.id), source_album_id=str(album.id)
+        )
+        assert added == []
+        assert {str(a.id) for a in skipped} == {str(a1.id), str(a2.id)}
+
+    def test_va_compilation_adds_zero_artists(self, db, svc):
+        bucket = svc.create_bucket(db, name="A", type="artist")
+        va = _mk_artist(db, VARIOUS_ARTISTS)
+        album = _mk_album_with_artists(db, [va], title="VA Comp")
+        added, skipped = svc.expand_artist_source(
+            db, str(bucket.id), source_album_id=str(album.id)
+        )
+        assert added == []
+        assert skipped == []
+        count = (
+            db.query(ReviewBucketItem)
+            .filter(ReviewBucketItem.bucket_id == bucket.id)
+            .count()
+        )
+        assert count == 0
+
+    def test_expand_excludes_va_keeps_real_artists(self, db, svc):
+        # A track crediting a real performer + the VA placeholder → only the real one.
+        bucket = svc.create_bucket(db, name="A", type="artist")
+        real = _mk_artist(db, "RealPerformer")
+        va = _mk_artist(db, VARIOUS_ARTISTS)
+        album = _mk_album_with_artists(db, [va])
+        track = _mk_track_with_artists(db, album, [real, va])
+        added, _ = svc.expand_artist_source(
+            db, str(bucket.id), source_track_id=str(track.id)
+        )
+        assert [str(a.id) for a in added] == [str(real.id)]
+
+    def test_reorder_blocks_album_move_into_artist_bucket(self, db, svc, album_ids):
+        # FEAT-my-buckit-artist (V32): the move/reorder path enforces the artist-only gate too —
+        # a cross-bucket drag can't park an album in an Artist bucket (no DB backstop exists).
+        general = svc.create_bucket(db, name="G", type="general")
+        artist_bucket = svc.create_bucket(db, name="A", type="artist")
+        album_item = svc.add_item(
+            db, str(general.id), item_type="album", album_id=album_ids[0]
+        )
+        with pytest.raises(BucketTypeError):
+            svc.reorder(
+                db,
+                [{"id": str(artist_bucket.id), "item_ids": [str(album_item.id)]}],
+            )
+        # The failed move must not have persisted — the album stays in the general bucket.
+        db.rollback()
+        moved = db.get(ReviewBucketItem, album_item.id)
+        assert str(moved.bucket_id) == str(general.id)
+
+    def test_reorder_allows_artist_move_into_artist_bucket(self, db, svc):
+        a_src = svc.create_bucket(db, name="S", type="artist")
+        a_dst = svc.create_bucket(db, name="D", type="artist")
+        artist = _mk_artist(db, "Mover")
+        item = svc.add_item(
+            db, str(a_src.id), item_type="artist", artist_id=str(artist.id)
+        )
+        svc.reorder(db, [{"id": str(a_dst.id), "item_ids": [str(item.id)]}])
+        assert str(db.get(ReviewBucketItem, item.id).bucket_id) == str(a_dst.id)
+
+    def test_artist_id_only_on_artist_row_constraint(self, db, svc, album_ids):
+        # The V32 inverse guard: a non-artist row can't carry an artist_id. Inserting one
+        # directly must raise an IntegrityError (ck_review_bucket_items_artist_id_only_on_artist).
+        bucket = svc.create_bucket(db, name="G", type="general")
+        artist = _mk_artist(db, "Stray")
+        db.add(
+            ReviewBucketItem(
+                bucket_id=bucket.id,
+                item_type="album",
+                album_id=album_ids[0],
+                artist_id=artist.id,
+                position=0,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db.flush()

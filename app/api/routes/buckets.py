@@ -1,6 +1,6 @@
 # app/api/routes/buckets.py
 import logging
-from typing import Dict
+from typing import Dict, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.exc import IntegrityError
@@ -9,6 +9,9 @@ from sqlalchemy.orm import Session
 from app.api.schemas import (
     AddBucketItemRequest,
     AlbumBrief,
+    ArtistBrief,
+    ArtistExpansionResponse,
+    BucketItemExpansion,
     BucketItemResponse,
     BucketResponse,
     BucketsResponse,
@@ -38,8 +41,10 @@ from app.di import (
 )
 from app.services.bucket_service import (
     AlbumNotFoundError,
+    ArtistNotFoundError,
     BucketNotFoundError,
     BucketService,
+    BucketTypeError,
     DuplicateItemError,
     ItemNotFoundError,
     ReviewTargetNotFoundError,
@@ -85,6 +90,16 @@ def _track_brief(track) -> TrackBrief:
     )
 
 
+def _artist_brief(artist) -> ArtistBrief:
+    # FEAT-my-buckit-artist (V32): minimal artist display for an artist-kind membership row and
+    # for the expansion added/skipped lists. Member click-through → /artist/[id] (front).
+    return ArtistBrief(
+        id=str(artist.id),
+        name=artist.name,
+        photo_url=getattr(artist, "photo_url", None),
+    )
+
+
 def _item_response(
     item,
     already_reviewed: bool,
@@ -103,15 +118,20 @@ def _item_response(
     album = getattr(item, "album", None)
     track_id = getattr(item, "track_id", None)
     review_target_id = getattr(item, "review_target_id", None)
+    artist_id = getattr(item, "artist_id", None)
     # Track display for track/playback rows (gated on item_type so an album row's
     # auto-vivified ORM `.track` is never touched).
     track = getattr(item, "track", None) if item_type in ("track", "playback") else None
+    # FEAT-my-buckit-artist (V32): artist display for an artist row (gated on item_type so a
+    # non-artist row's auto-vivified ORM `.artist` is never touched).
+    artist = getattr(item, "artist", None) if item_type == "artist" else None
     return BucketItemResponse(
         id=str(item.id),
         item_type=item_type,
         album_id=str(item.album_id) if item.album_id is not None else None,
         track_id=str(track_id) if track_id is not None else None,
         review_target_id=str(review_target_id) if review_target_id is not None else None,
+        artist_id=str(artist_id) if artist_id is not None else None,
         position=item.position,
         note=item.note,
         status=item.status,
@@ -123,6 +143,7 @@ def _item_response(
         prep_tonight=item.prep_tonight,
         album=_album_brief(album, genres) if album is not None else None,
         track=_track_brief(track) if track is not None else None,
+        artist=_artist_brief(artist) if artist is not None else None,
     )
 
 
@@ -148,6 +169,7 @@ def _bucket_response(
         color=b.color,
         is_done=b.is_done,
         kind=b.kind,
+        type=b.type,
         research_mode=b.research_mode,
         is_public=b.is_public,
         items=[
@@ -323,7 +345,7 @@ def create_bucket(
     _claims: Dict = Depends(require_cognito_token),
 ):
     try:
-        bucket = svc.create_bucket(db, name=req.name, color=req.color)
+        bucket = svc.create_bucket(db, name=req.name, color=req.color, type=req.type)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return BucketResponse(
@@ -333,6 +355,7 @@ def create_bucket(
         color=bucket.color,
         is_done=bucket.is_done,
         kind=bucket.kind,
+        type=bucket.type,
         research_mode=bucket.research_mode,
         is_public=bucket.is_public,
         items=[],
@@ -354,6 +377,8 @@ def update_bucket(
         bucket = svc.update_bucket(db, bucket_id, **updates)
     except BucketNotFoundError:
         raise HTTPException(status_code=404, detail="Bucket not found")
+    except BucketTypeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except IntegrityError:
@@ -373,6 +398,7 @@ def update_bucket(
         color=bucket.color,
         is_done=bucket.is_done,
         kind=bucket.kind,
+        type=bucket.type,
         research_mode=bucket.research_mode,
         is_public=bucket.is_public,
         items=[
@@ -421,6 +447,10 @@ def reorder(
         raise HTTPException(status_code=404, detail="Bucket not found")
     except ItemNotFoundError:
         raise HTTPException(status_code=404, detail="Item not found")
+    except BucketTypeError as e:
+        # FEAT-my-buckit-artist (V32): a cross-bucket move of a non-artist item into an Artist
+        # bucket is rejected (the move path's artist-only gate).
+        raise HTTPException(status_code=400, detail=str(e))
     # Auto-research: dragging an album INTO an 'all'-mode bucket persists through
     # this cross-bucket reorder (bucket_id reassigned), which add_item's enqueue
     # never sees — so a moved-in album would otherwise never get a research row.
@@ -463,13 +493,14 @@ def move_bucket(
 
 @router.post(
     "/{bucket_id}/items",
-    response_model=BucketItemResponse,
+    response_model=Union[BucketItemResponse, ArtistExpansionResponse],
     status_code=201,
     responses={409: {"description": "Item already in this bucket"}},
 )
 def add_item(
     bucket_id: str,
     req: AddBucketItemRequest,
+    response: Response,
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
@@ -481,6 +512,34 @@ def add_item(
     # in Step 5 replays its pending intent against this route). No owner_id is stored in v1
     # (OQ12) — this establishes the first-`sub`-consumer pattern + the local/dev fallback.
     _owner = resolve_owner(claims)
+
+    # FEAT-my-buckit-artist (V32): a source_* artist add EXPANDS the source (featuring track /
+    # compilation album) into its credited artists. The source row is never stored; the result
+    # is the added/skipped lists, returned as an expansion SUMMARY (no single membership row to
+    # echo, so id/position/status are null). 201 when ≥1 artist was added, 200 on a pure no-op
+    # (VA compilation → 0, or every credited artist already present).
+    if req.item_type == "artist" and (req.source_album_id or req.source_track_id):
+        try:
+            added, skipped = svc.expand_artist_source(
+                db,
+                bucket_id,
+                source_album_id=req.source_album_id,
+                source_track_id=req.source_track_id,
+            )
+        except BucketNotFoundError:
+            raise HTTPException(status_code=404, detail="Bucket not found")
+        except AlbumNotFoundError:
+            raise HTTPException(status_code=404, detail="Album not found")
+        except TrackNotFoundError:
+            raise HTTPException(status_code=404, detail="Track not found")
+        response.status_code = 201 if added else 200
+        return ArtistExpansionResponse(
+            expansion=BucketItemExpansion(
+                added=[_artist_brief(a) for a in added],
+                skipped=[_artist_brief(a) for a in skipped],
+            ),
+        )
+
     try:
         item = svc.add_item(
             db,
@@ -489,17 +548,22 @@ def add_item(
             album_id=req.album_id,
             track_id=req.track_id,
             review_target_id=req.review_target_id,
+            artist_id=req.artist_id,
             note=req.note,
             snapshot=req.snapshot,
         )
     except BucketNotFoundError:
         raise HTTPException(status_code=404, detail="Bucket not found")
+    except BucketTypeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except AlbumNotFoundError:
         raise HTTPException(status_code=404, detail="Album not found")
     except TrackNotFoundError:
         raise HTTPException(status_code=404, detail="Track not found")
     except ReviewTargetNotFoundError:
         raise HTTPException(status_code=404, detail="Review target not found")
+    except ArtistNotFoundError:
+        raise HTTPException(status_code=404, detail="Artist not found")
     except DuplicateItemError:
         raise HTTPException(status_code=409, detail="Item already in this bucket")
     # Album-only enrichments — skip for non-album rows (album_id NULL) so the UUID-typed

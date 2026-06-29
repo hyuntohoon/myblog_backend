@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from myblog_shared_db.models import (
     Album,
+    Artist,
     BucketItemSnapshot,
     Post,
     ReviewBucket,
@@ -19,6 +20,8 @@ from myblog_shared_db.models import (
     Track,
     post_albums_table as post_albums,
 )
+
+from app.services.distribution import VARIOUS_ARTISTS
 
 # Sentinel for "argument not provided" — lets update_bucket() tell an omitted
 # field apart from an explicit None. The route strips unsent fields via
@@ -56,6 +59,17 @@ class TrackNotFoundError(Exception):
 class ReviewTargetNotFoundError(Exception):
     """Raised when a review_target_id (a posts.id) does not exist for a review membership.
     Route maps to 404. DISTINCT from post_id (= the review an album produced)."""
+
+
+class ArtistNotFoundError(Exception):
+    """Raised when an artist_id (artist / source-expansion member) does not exist. Route maps
+    to 404. FEAT-my-buckit-artist (V32)."""
+
+
+class BucketTypeError(Exception):
+    """Raised when a write violates a bucket's type discriminator — e.g. a non-artist item
+    dropped on an Artist bucket, or an attempt to change a bucket's immutable type. Route maps
+    to 400. FEAT-my-buckit-artist (V32)."""
 
 
 # Auto-recommendation: initial position is seeded from a weighted blend of two
@@ -136,6 +150,9 @@ class BucketService:
                 selectinload(ReviewBucket.items)
                 .selectinload(ReviewBucketItem.track)
                 .selectinload(Track.artists),
+                # FEAT-my-buckit-artist (V32): artist briefs for artist-kind rows (one extra
+                # SELECT, same idiom — avoids a lazy item.artist per Artist Buckit member).
+                selectinload(ReviewBucket.items).selectinload(ReviewBucketItem.artist),
             )
             .order_by(ReviewBucket.position, ReviewBucket.created_at)
             .all()
@@ -275,15 +292,26 @@ class BucketService:
     # ── bucket CRUD ─────────────────────────────────────────────────────────────
 
     def create_bucket(
-        self, db: Session, *, name: str, color: Optional[str] = None
+        self,
+        db: Session,
+        *,
+        name: str,
+        color: Optional[str] = None,
+        type: str = "general",
     ) -> ReviewBucket:
         name = (name or "").strip()
         if not name:
             raise ValueError("name required")
+        # FEAT-my-buckit-artist (V32): the bucket-level type discriminator. create_bucket only
+        # ever mints user buckets (kind defaults 'review'); system buckets (spotify_library /
+        # to_listen) are seeded elsewhere and stay 'general'. Guard the enum here for direct
+        # callers (the request Literal already gates the route).
+        if type not in ("general", "artist"):
+            raise ValueError("type must be general|artist")
         next_pos = db.execute(
             select(func.coalesce(func.max(ReviewBucket.position), -1))
         ).scalar_one()
-        bucket = ReviewBucket(name=name, color=color, position=int(next_pos) + 1)
+        bucket = ReviewBucket(name=name, color=color, type=type, position=int(next_pos) + 1)
         db.add(bucket)
         db.commit()
         db.refresh(bucket)
@@ -303,10 +331,17 @@ class BucketService:
         is_done: Optional[bool] = None,
         research_mode: Optional[str] = None,
         is_public: Optional[bool] = None,
+        type: Any = _UNSET,
     ) -> ReviewBucket:
         bucket = self.get_bucket(db, bucket_id)
         if bucket is None:
             raise BucketNotFoundError(bucket_id)
+        # FEAT-my-buckit-artist (V32): bucket type is set once at create and immutable in v1.
+        # UpdateBucketRequest omits `type` today, so this guard only fires for a direct service
+        # caller (or a future field add) — a no-op same-type value passes, an actual change is a
+        # 400. Pre-empts a silent General↔Artist flip that would orphan member-composition.
+        if type is not _UNSET and type != bucket.type:
+            raise BucketTypeError("bucket type is immutable")
         if name is not None:
             name = name.strip()
             if not name:
@@ -383,6 +418,7 @@ class BucketService:
         album_id: Optional[str] = None,
         track_id: Optional[str] = None,
         review_target_id: Optional[str] = None,
+        artist_id: Optional[str] = None,
         note: Optional[str] = None,
         snapshot: Optional[Any] = None,
         today: Optional[date] = None,
@@ -399,12 +435,27 @@ class BucketService:
         - ``snapshot`` — append-only capture: a 'snapshot' membership row + one
           bucket_item_snapshots side-row frozen from ``snapshot`` (never an UPDATE; a refresh
           is a new row). Allows duplicates (D8).
+        - ``artist`` — Artist lookup (FEAT-my-buckit-artist V32); appended at the end; de-dupes
+          (uq_..._artist). The SOURCE-expansion variant (a featuring track / compilation album)
+          is handled by :meth:`expand_artist_source`, not this single-row path.
+
+        FEAT-my-buckit-artist type gate: an Artist bucket (``type='artist'``) accepts only
+        ``item_type='artist'`` rows; any other kind is a 400 (BucketTypeError). A General bucket
+        accepts every kind, including artist (today's behavior preserved).
 
         Raises BucketNotFoundError / AlbumNotFoundError / TrackNotFoundError /
-        ReviewTargetNotFoundError / DuplicateItemError, mapped to HTTP by the route."""
+        ReviewTargetNotFoundError / ArtistNotFoundError / BucketTypeError / DuplicateItemError,
+        mapped to HTTP by the route."""
         bucket = self.get_bucket(db, bucket_id)
         if bucket is None:
             raise BucketNotFoundError(bucket_id)
+
+        # getattr default mirrors the serializer's defensive item_type read — a partial test
+        # mock / pre-V32 row reads as 'general' (no gate); the real ORM column is NOT NULL.
+        if getattr(bucket, "type", "general") == "artist" and item_type != "artist":
+            raise BucketTypeError(
+                "this bucket only holds artists; non-artist items are rejected"
+            )
 
         if item_type == "album":
             return self._add_album_item(db, bucket, album_id=album_id, note=note, today=today)
@@ -414,6 +465,7 @@ class BucketService:
             item_type=item_type,
             track_id=track_id,
             review_target_id=review_target_id,
+            artist_id=artist_id,
             note=note,
             snapshot=snapshot,
         )
@@ -498,10 +550,11 @@ class BucketService:
         review_target_id: Optional[str],
         note: Optional[str],
         snapshot: Optional[Any],
+        artist_id: Optional[str] = None,
     ) -> ReviewBucketItem:
-        """Non-album kinds (track/review/playback/snapshot). Appended at the end (no album
-        score); per-kind dedup matches the V30 partial-uniques; snapshot additionally writes
-        one append-only bucket_item_snapshots side-row."""
+        """Non-album kinds (track/review/playback/snapshot/artist). Appended at the end (no
+        album score); per-kind dedup matches the V30/V32 partial-uniques; snapshot additionally
+        writes one append-only bucket_item_snapshots side-row."""
         existing = (
             db.query(ReviewBucketItem)
             .filter(ReviewBucketItem.bucket_id == bucket.id)
@@ -537,6 +590,20 @@ class BucketService:
                 for it in existing
             ):
                 raise DuplicateItemError(review_target_id)
+        elif item_type == "artist":
+            # FEAT-my-buckit-artist (V32): a single direct artist add. Validate the artist
+            # exists, then per-kind dedup (uq_..._artist) → skip a re-add as a 409, mirroring
+            # track/review. The source-expansion variant lives in expand_artist_source.
+            if not artist_id:
+                raise ValueError("artist_id required")
+            if db.query(Artist).filter(Artist.id == artist_id).first() is None:
+                raise ArtistNotFoundError(artist_id)
+            kwargs["artist_id"] = artist_id
+            if any(
+                it.item_type == "artist" and str(it.artist_id) == str(artist_id)
+                for it in existing
+            ):
+                raise DuplicateItemError(artist_id)
         elif item_type == "snapshot":
             if snapshot is None:
                 raise ValueError("snapshot capture required")
@@ -554,14 +621,114 @@ class BucketService:
             db.commit()
         except IntegrityError:
             db.rollback()
-            # Only track/review have a unique index (D8: playback/snapshot allow dups), so an
-            # IntegrityError there is a concurrent-insert dup → 409. For playback/snapshot it is
-            # some OTHER constraint error — don't mislabel it as a duplicate; let it surface.
-            if item_type in ("track", "review"):
-                raise DuplicateItemError(track_id or review_target_id)
+            # Only track/review/artist have a unique index (D8: playback/snapshot allow dups),
+            # so an IntegrityError there is a concurrent-insert dup → 409. For playback/snapshot
+            # it is some OTHER constraint error — don't mislabel it as a duplicate; let it
+            # surface.
+            if item_type in ("track", "review", "artist"):
+                raise DuplicateItemError(track_id or review_target_id or artist_id)
             raise
         db.refresh(item)
         return item
+
+    def expand_artist_source(
+        self,
+        db: Session,
+        bucket_id: str,
+        *,
+        source_album_id: Optional[str] = None,
+        source_track_id: Optional[str] = None,
+    ) -> Tuple[List[Artist], List[Artist]]:
+        """FEAT-my-buckit-artist (V32): expand a featuring track / compilation album into its
+        credited artists, adding each NOT-already-present one as an artist member. The SOURCE
+        row is never stored — only its credited artists. Returns ``(added, skipped)`` Artist
+        lists: ``added`` = newly inserted this call, ``skipped`` = credited artists already in
+        the bucket (dedup). The Various Artists placeholder is excluded, so a VA compilation
+        contributes zero artists (never a junk member). A mid-batch concurrent dup is treated
+        as skipped (idempotent), never a 409 — each insert runs in its own SAVEPOINT so a race
+        can't poison the whole batch.
+
+        Every produced row is an artist row, so the artist-only type gate is satisfied on both
+        General and Artist buckets (expansion is valid on either)."""
+        bucket = self.get_bucket(db, bucket_id)
+        if bucket is None:
+            raise BucketNotFoundError(bucket_id)
+        # Exactly one source. The request validator guarantees this; guard direct callers.
+        if bool(source_album_id) == bool(source_track_id):
+            raise ValueError("exactly one of source_album_id / source_track_id required")
+
+        # Resolve the source's structured credited artists (album_artists / track_artists).
+        if source_album_id:
+            source = (
+                db.query(Album)
+                .options(selectinload(Album.artists))
+                .filter(Album.id == source_album_id)
+                .first()
+            )
+            if source is None:
+                raise AlbumNotFoundError(source_album_id)
+        else:
+            source = (
+                db.query(Track)
+                .options(selectinload(Track.artists))
+                .filter(Track.id == source_track_id)
+                .first()
+            )
+            if source is None:
+                raise TrackNotFoundError(source_track_id)
+
+        # Exclude the Various Artists placeholder, then de-dup the source's own credit list (a
+        # track may credit the same artist twice).
+        seen_ids: set = set()
+        credited: List[Artist] = []
+        for a in source.artists:
+            if a.name == VARIOUS_ARTISTS:
+                continue
+            if str(a.id) in seen_ids:
+                continue
+            seen_ids.add(str(a.id))
+            credited.append(a)
+
+        existing = (
+            db.query(ReviewBucketItem)
+            .filter(ReviewBucketItem.bucket_id == bucket.id)
+            .order_by(ReviewBucketItem.position)
+            .all()
+        )
+        present_artist_ids = {
+            str(it.artist_id)
+            for it in existing
+            if it.item_type == "artist" and it.artist_id is not None
+        }
+        next_pos = max((it.position for it in existing), default=-1) + 1
+
+        added: List[Artist] = []
+        skipped: List[Artist] = []
+        for a in credited:
+            if str(a.id) in present_artist_ids:
+                skipped.append(a)
+                continue
+            try:
+                with db.begin_nested():  # SAVEPOINT — a concurrent dup rolls back only this row
+                    db.add(
+                        ReviewBucketItem(
+                            bucket_id=bucket.id,
+                            item_type="artist",
+                            artist_id=a.id,
+                            position=next_pos,
+                        )
+                    )
+                    db.flush()
+            except IntegrityError:
+                # The same artist landed concurrently (uq_..._artist) → idempotent skip, not 409.
+                skipped.append(a)
+                continue
+            added.append(a)
+            present_artist_ids.add(str(a.id))
+            next_pos += 1
+
+        db.commit()
+        return added, skipped
 
     @staticmethod
     def _build_snapshot(item_id, snap: Any) -> BucketItemSnapshot:
@@ -646,15 +813,15 @@ class BucketService:
         other than its current one is a cross-bucket move (bucket_id reassigned).
         Positions are rewritten 0..n so repeated calls converge.
         """
-        # Validate target buckets up front.
+        # Validate target buckets up front, capturing each one's type for the gate below.
         bucket_ids = [b["id"] for b in buckets]
-        found = {
-            str(b.id)
-            for b in db.query(ReviewBucket.id)
+        bucket_type_by_id = {
+            str(bid): btype
+            for bid, btype in db.query(ReviewBucket.id, ReviewBucket.type)
             .filter(ReviewBucket.id.in_(bucket_ids))
             .all()
         }
-        missing = [bid for bid in bucket_ids if str(bid) not in found]
+        missing = [bid for bid in bucket_ids if str(bid) not in bucket_type_by_id]
         if missing:
             raise BucketNotFoundError(missing[0])
 
@@ -669,6 +836,20 @@ class BucketService:
         unknown = [iid for iid in all_item_ids if str(iid) not in items_by_id]
         if unknown:
             raise ItemNotFoundError(unknown[0])
+
+        # FEAT-my-buckit-artist (V32): the artist-only type gate also guards this move path —
+        # not just add_item — so a cross-bucket drag can't park a non-artist item in an Artist
+        # bucket (the hard invariant has no cross-table DB CHECK to fall back on). Validate the
+        # whole batch BEFORE mutating so a bad move rejects atomically (no partial reorder).
+        for b in buckets:
+            if bucket_type_by_id.get(str(b["id"])) != "artist":
+                continue
+            for item_id in b.get("item_ids", []):
+                item = items_by_id[str(item_id)]
+                if item.item_type != "artist":
+                    raise BucketTypeError(
+                        "this bucket only holds artists; non-artist items are rejected"
+                    )
 
         for b in buckets:
             for pos, item_id in enumerate(b.get("item_ids", [])):
