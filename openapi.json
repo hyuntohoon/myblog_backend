@@ -14,6 +14,17 @@
             ],
             "title": "Album Id"
           },
+          "artist_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Id"
+          },
           "item_type": {
             "default": "album",
             "enum": [
@@ -21,7 +32,8 @@
               "track",
               "review",
               "playback",
-              "snapshot"
+              "snapshot",
+              "artist"
             ],
             "title": "Item Type",
             "type": "string"
@@ -57,6 +69,28 @@
                 "type": "null"
               }
             ]
+          },
+          "source_album_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Album Id"
+          },
+          "source_track_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Track Id"
           },
           "track_id": {
             "anyOf": [
@@ -305,6 +339,76 @@
         "title": "AlbumResearchResponse",
         "type": "object"
       },
+      "ArtistBrief": {
+        "description": "FEAT-my-buckit-artist (V32): minimal artist display for an artist-kind membership row\n(Artist Buckit member) and for the expansion added/skipped lists. Member click-through\ntargets the existing /artist/[id] page (no new detail modal).",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "photo_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Photo Url"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ArtistBrief",
+        "type": "object"
+      },
+      "ArtistExpansionResponse": {
+        "description": "FEAT-my-buckit-artist (V32): the add-item response for a source_* artist expansion (a\nfeaturing track / compilation album expanded into its credited artists). This is a DISTINCT\nshape from BucketItemResponse \u2014 there is no single membership row to echo, only the\nadded/skipped lists \u2014 so BucketItemResponse stays strict (id/position/status required) and\nPOST /items returns a Union of the two. The front discriminates on the presence of\n`expansion` (only this shape carries it).",
+        "properties": {
+          "expansion": {
+            "$ref": "#/components/schemas/BucketItemExpansion"
+          },
+          "item_type": {
+            "const": "artist",
+            "default": "artist",
+            "title": "Item Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expansion"
+        ],
+        "title": "ArtistExpansionResponse",
+        "type": "object"
+      },
+      "BucketItemExpansion": {
+        "description": "FEAT-my-buckit-artist (V32): the result of a source_* artist add \u2014 a featuring track /\ncompilation album expanded into its credited artists (Various Artists excluded). Present\nONLY on the add response for a source_* artist add; the source row itself is never stored.\n`added` = artists newly inserted this call; `skipped` = credited artists already present\nin the bucket (dedup), so the front can toast \"N \ub2f4\uc74c \u00b7 M \uc911\ubcf5 \uac74\ub108\ub700\".",
+        "properties": {
+          "added": {
+            "items": {
+              "$ref": "#/components/schemas/ArtistBrief"
+            },
+            "title": "Added",
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "$ref": "#/components/schemas/ArtistBrief"
+            },
+            "title": "Skipped",
+            "type": "array"
+          }
+        },
+        "title": "BucketItemExpansion",
+        "type": "object"
+      },
       "BucketItemResponse": {
         "properties": {
           "album": {
@@ -332,6 +436,27 @@
             "default": false,
             "title": "Already Reviewed",
             "type": "boolean"
+          },
+          "artist": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtistBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "artist_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Id"
           },
           "id": {
             "title": "Id",
@@ -502,6 +627,11 @@
             "default": "off",
             "title": "Research Mode",
             "type": "string"
+          },
+          "type": {
+            "default": "general",
+            "title": "Type",
+            "type": "string"
           }
         },
         "required": [
@@ -563,6 +693,15 @@
           "name": {
             "minLength": 1,
             "title": "Name",
+            "type": "string"
+          },
+          "type": {
+            "default": "general",
+            "enum": [
+              "general",
+              "artist"
+            ],
+            "title": "Type",
             "type": "string"
           }
         },
@@ -3688,7 +3827,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BucketItemResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BucketItemResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ArtistExpansionResponse"
+                    }
+                  ],
+                  "title": "Response Add Item Api Buckets  Bucket Id  Items Post"
                 }
               }
             },

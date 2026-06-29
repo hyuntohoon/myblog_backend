@@ -66,6 +66,7 @@ class LibraryService:
     def list_to_listen(self, db: Session) -> List[AlbumToListenItem]:
         return (
             db.query(AlbumToListenItem)
+            .options(selectinload(AlbumToListenItem.album).selectinload(Album.artists))
             .order_by(AlbumToListenItem.position, AlbumToListenItem.added_at)
             .all()
         )
@@ -177,6 +178,7 @@ class LibraryService:
         Returns (album, last_played_at) pairs."""
         rows = (
             db.query(SpotifyRecentAlbum)
+            .options(selectinload(SpotifyRecentAlbum.album).selectinload(Album.artists))
             .order_by(SpotifyRecentAlbum.last_played_at.desc())
             .all()
         )
