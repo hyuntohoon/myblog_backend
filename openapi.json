@@ -1119,6 +1119,85 @@
         "title": "ListenedAlbumsResponse",
         "type": "object"
       },
+      "LyricsResponse": {
+        "properties": {
+          "availability": {
+            "enum": [
+              "ok",
+              "no_lyrics",
+              "unavailable"
+            ],
+            "title": "Availability",
+            "type": "string"
+          },
+          "normalizer_version": {
+            "default": 1,
+            "title": "Normalizer Version",
+            "type": "integer"
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/LyricsSegment"
+            },
+            "title": "Segments",
+            "type": "array"
+          },
+          "source_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "synced",
+                  "plain"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Kind"
+          },
+          "trackable": {
+            "default": false,
+            "title": "Trackable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "availability"
+        ],
+        "title": "LyricsResponse",
+        "type": "object"
+      },
+      "LyricsSegment": {
+        "properties": {
+          "i": {
+            "title": "I",
+            "type": "integer"
+          },
+          "start_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Ms"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "i",
+          "text"
+        ],
+        "title": "LyricsSegment",
+        "type": "object"
+      },
       "MetricsBatchRequest": {
         "properties": {
           "slugs": {
@@ -5444,6 +5523,54 @@
         "summary": "Delete To Listen",
         "tags": [
           "library"
+        ]
+      }
+    },
+    "/api/lyrics/{spotify_track_id}": {
+      "get": {
+        "description": "Normalized lyric segments for one catalog track (authenticated users only).\n\nUnknown spotify_track_id \u2192 404 (no catalog track). A known track without viewable\nlyrics is NOT a 404 \u2014 it returns availability \"no_lyrics\" / \"unavailable\" so the\nviewer can render the correct empty state.",
+        "operationId": "get_lyrics_api_lyrics__spotify_track_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "spotify_track_id",
+            "required": true,
+            "schema": {
+              "title": "Spotify Track Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LyricsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Lyrics",
+        "tags": [
+          "lyrics"
         ]
       }
     },

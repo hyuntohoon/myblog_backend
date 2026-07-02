@@ -941,3 +941,30 @@ class UpdateGenreRequest(BaseModel):
     label: Optional[str] = None
     definition_md: Optional[str] = None
     position: Optional[int] = None
+
+
+# ====== Lyrics (FEAT-lyrics-viewer Step 1) ======
+# Normalized payload spec pinned in ARCH-lyrics-normalization-model (2026-07-02).
+# JWT-gated /api/lyrics read ONLY — never referenced by any public/edge-cached response
+# (track_lyrics privacy bar: "never in any shared response").
+
+class LyricsSegment(BaseModel):
+    # Index-keyed (not id-keyed) so a future split/merge can rewrite the list without
+    # breaking the viewer; text=="" is the stanza-gap discriminator (no extra field);
+    # start_ms is optional-from-day-one so estimated timing lands as an additive upgrade.
+    i: int
+    text: str
+    start_ms: Optional[int] = None
+
+
+class LyricsResponse(BaseModel):
+    availability: Literal["ok", "no_lyrics", "unavailable"]
+    # Present iff availability == "ok".
+    source_kind: Optional[Literal["synced", "plain"]] = None
+    # True iff ≥1 non-gap segment carries start_ms — drives the viewer's optional
+    # one-shot initial focus; false → first-segment focus.
+    trackable: bool = False
+    # Cache-invalidation hook (mirrors matcher_version).
+    normalizer_version: int = 1
+    # [] unless availability == "ok"; file order preserved.
+    segments: List[LyricsSegment] = Field(default_factory=list)

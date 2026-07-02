@@ -7,6 +7,7 @@ from app.services.library_service import LibraryService
 from app.services.playback_service import PlaybackService
 from app.services.research_service import ResearchService
 from app.services.genre_service import GenreService
+from app.services.lyrics_service import LyricsService
 from app.repositories.post_repository import PostRepository
 from app.repositories.section_repository import SectionRepository
 from app.repositories.tag_repository import TagRepository
@@ -31,6 +32,10 @@ def get_library_service() -> LibraryService:
 
 def get_playback_service() -> PlaybackService:
     return PlaybackService()
+
+
+def get_lyrics_service() -> LyricsService:
+    return LyricsService()
 
 
 def get_research_service() -> ResearchService:
