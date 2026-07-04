@@ -15,15 +15,17 @@ public/edge-cached response.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from typing import List, Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from myblog_shared_db.models import Track, TrackLyrics
+from myblog_shared_db.models import Track, TrackLyrics, TrackLyricsTranslation
 
-from app.api.schemas import LyricsResponse, LyricsSegment
+from app.api.schemas import LyricsResponse, LyricsSegment, LyricsTranslationInfo
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,52 @@ _LRC_ID_TAG = re.compile(r"^\[[A-Za-z#][^\]]*\]\s*$")
 
 class LyricsTrackNotFoundError(Exception):
     """No catalog Track with that spotify_id — the route maps this to 404."""
+
+
+class LyricsNotTranslatableError(Exception):
+    """Track has no viewable lyrics (availability != "ok") — nothing to translate;
+    the route maps this to 409."""
+
+
+def compute_source_fingerprint(normalizer_version: int, segments: List[LyricsSegment]) -> str:
+    """sha256 over normalizer_version + every segment text (gaps included, file order).
+
+    The translate poller imports THIS function from the local backend checkout, so
+    translate-time and read-time fingerprints agree by construction. Staleness is
+    computed at read time by re-deriving this value — never stored (RFC target state).
+    """
+    h = hashlib.sha256()
+    h.update(str(normalizer_version).encode("utf-8"))
+    for seg in segments:
+        h.update(b"\x00")
+        h.update(seg.text.encode("utf-8"))
+    return h.hexdigest()
+
+
+def attach_translation(out: LyricsResponse, trow: Optional[TrackLyricsTranslation]) -> None:
+    """Additive translation view on an availability=="ok" payload.
+
+    text_ko is populated only on done + fingerprint match; any mismatch (re-matched
+    source, normalizer bump, missing stored segments) reads as "stale" with text_ko
+    omitted — the viewer then offers re-request instead of showing a misaligned
+    translation. Stored gap entries ("") stay omitted (text_ko=None).
+    """
+    if trow is None:
+        out.translation = LyricsTranslationInfo(status="none")
+        return
+    status = trow.status
+    if status == "done":
+        stored = trow.segments or []
+        current = compute_source_fingerprint(out.normalizer_version, out.segments)
+        if trow.source_fingerprint != current or not stored:
+            status = "stale"
+        else:
+            by_i = {s.get("i"): s.get("text_ko") for s in stored if isinstance(s, dict)}
+            for seg in out.segments:
+                ko = by_i.get(seg.i)
+                if ko:
+                    seg.text_ko = ko
+    out.translation = LyricsTranslationInfo(status=status, origin=trow.origin, lang=trow.lang)
 
 
 def _ts_to_ms(mm: str, ss: str, frac: Optional[str]) -> int:
@@ -162,11 +210,58 @@ class LyricsService:
         """Resolve the playback-side spotify_track_id → catalog Track server-side (reverse
         of PlaybackService.resolve_uri, one round trip), then normalize its lyrics row.
         Unknown spotify_id → LyricsTrackNotFoundError (404); known track without a
-        track_lyrics row → availability "unavailable" (a valid empty state, not a 404)."""
+        track_lyrics row → availability "unavailable" (a valid empty state, not a 404).
+        availability=="ok" payloads additionally carry the translation view (Step 2)."""
         track_id = db.query(Track.id).filter(Track.spotify_id == spotify_track_id).scalar()
         if track_id is None:
             raise LyricsTrackNotFoundError(spotify_track_id)
         row = (
             db.query(TrackLyrics).filter(TrackLyrics.track_id == track_id).one_or_none()
         )
-        return normalize_lyrics(row)
+        out = normalize_lyrics(row)
+        if out.availability != "ok":
+            return out
+        trow = (
+            db.query(TrackLyricsTranslation)
+            .filter(TrackLyricsTranslation.track_id == track_id)
+            .one_or_none()
+        )
+        attach_translation(out, trow)
+        return out
+
+    def request_translation(self, db: Session, *, spotify_track_id: str) -> LyricsTranslationInfo:
+        """Upsert status='requested' for one designated track (FEAT-lyrics-translation).
+
+        Idempotent while pending — a second POST on a 'requested' row is a no-op.
+        Allowed again on done/failed/stale (an explicit re-request may overwrite a
+        'manual' row; only the poller is barred from touching manual otherwise).
+        A track without viewable lyrics is rejected (LyricsNotTranslatableError → 409):
+        there is nothing for the poller to normalize or translate."""
+        track_id = db.query(Track.id).filter(Track.spotify_id == spotify_track_id).scalar()
+        if track_id is None:
+            raise LyricsTrackNotFoundError(spotify_track_id)
+        lrow = (
+            db.query(TrackLyrics).filter(TrackLyrics.track_id == track_id).one_or_none()
+        )
+        if normalize_lyrics(lrow).availability != "ok":
+            raise LyricsNotTranslatableError(spotify_track_id)
+        trow = (
+            db.query(TrackLyricsTranslation)
+            .filter(TrackLyricsTranslation.track_id == track_id)
+            .one_or_none()
+        )
+        if trow is not None and trow.status == "requested":
+            return LyricsTranslationInfo(status="requested")
+        if trow is None:
+            db.add(TrackLyricsTranslation(track_id=track_id, status="requested"))
+        else:
+            # Re-request: reset the claim gate and prior error; the poller overwrites
+            # segments/fingerprint on completion, so stale result data may stay behind
+            # the non-'done' status until then.
+            trow.status = "requested"
+            trow.claimed_at = None
+            trow.error = None
+            trow.requested_at = func.now()
+            trow.updated_at = func.now()
+        db.commit()
+        return LyricsTranslationInfo(status="requested")

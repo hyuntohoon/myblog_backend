@@ -955,6 +955,18 @@ class LyricsSegment(BaseModel):
     i: int
     text: str
     start_ms: Optional[int] = None
+    # Korean line (FEAT-lyrics-translation Step 2): populated ONLY when the track's
+    # translation is done AND its source_fingerprint matches the current normalization;
+    # a mismatch reads as translation.status == "stale" with text_ko omitted.
+    text_ko: Optional[str] = None
+
+
+class LyricsTranslationInfo(BaseModel):
+    # "none" = no request row yet; "stale" is computed at read time (stored fingerprint
+    # != current normalization), never stored — DB rows only hold requested|done|failed.
+    status: Literal["none", "requested", "done", "failed", "stale"]
+    origin: Optional[Literal["poller", "manual"]] = None
+    lang: Optional[str] = None
 
 
 class LyricsResponse(BaseModel):
@@ -968,3 +980,5 @@ class LyricsResponse(BaseModel):
     normalizer_version: int = 1
     # [] unless availability == "ok"; file order preserved.
     segments: List[LyricsSegment] = Field(default_factory=list)
+    # Present iff availability == "ok" (additive, FEAT-lyrics-translation Step 2).
+    translation: Optional[LyricsTranslationInfo] = None

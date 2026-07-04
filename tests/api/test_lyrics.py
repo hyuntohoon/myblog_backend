@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from app.api.schemas import LyricsResponse, LyricsSegment
+from app.api.schemas import LyricsResponse, LyricsSegment, LyricsTranslationInfo
 from app.di import get_lyrics_service
-from app.services.lyrics_service import LyricsService, LyricsTrackNotFoundError
+from app.services.lyrics_service import (
+    LyricsNotTranslatableError,
+    LyricsService,
+    LyricsTrackNotFoundError,
+)
 
 _SPOTIFY_ID = "3n3Ppam7vgaVa1iaRUc9Lp"
 
@@ -36,7 +40,8 @@ class TestLyricsRoute:
         body = resp.json()
         assert body["availability"] == "ok"
         assert body["trackable"] is True
-        assert body["segments"] == [{"i": 0, "text": "hello", "start_ms": 1200}]
+        assert body["segments"] == [
+            {"i": 0, "text": "hello", "start_ms": 1200, "text_ko": None}]
         # keyed by the playback-side spotify id, resolved server-side (RFC decision)
         assert svc.get_normalized.call_args.kwargs["spotify_track_id"] == _SPOTIFY_ID
         app.dependency_overrides.clear()
@@ -91,6 +96,64 @@ class TestLyricsRoute:
         app.dependency_overrides.clear()
 
 
+class TestTranslationRequestRoute:
+    def test_post_upserts_and_returns_requested(self, client, app):
+        svc = MagicMock()
+        svc.request_translation.return_value = LyricsTranslationInfo(status="requested")
+        _override(app, svc)
+        _override_db(app)
+
+        resp = client.post(f"/api/lyrics/{_SPOTIFY_ID}/translation-request")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "requested"
+        assert svc.request_translation.call_args.kwargs["spotify_track_id"] == _SPOTIFY_ID
+        app.dependency_overrides.clear()
+
+    def test_unknown_spotify_id_maps_to_404(self, client, app):
+        svc = MagicMock()
+        svc.request_translation.side_effect = LyricsTrackNotFoundError("nope")
+        _override(app, svc)
+        _override_db(app)
+
+        resp = client.post("/api/lyrics/nope/translation-request")
+
+        assert resp.status_code == 404
+        app.dependency_overrides.clear()
+
+    def test_untranslatable_track_maps_to_409(self, client, app):
+        # Known track but no viewable lyrics — nothing for the poller to translate.
+        svc = MagicMock()
+        svc.request_translation.side_effect = LyricsNotTranslatableError(_SPOTIFY_ID)
+        _override(app, svc)
+        _override_db(app)
+
+        resp = client.post(f"/api/lyrics/{_SPOTIFY_ID}/translation-request")
+
+        assert resp.status_code == 409
+        app.dependency_overrides.clear()
+
+    def test_requires_jwt_in_prod(self, client, app):
+        # Same belt-and-suspenders as the GET: translations inherit the corpus's
+        # owner-only privacy bar, and the request write is owner-triggered only.
+        import app.core.auth as auth_module
+
+        svc = MagicMock()
+        _override(app, svc)
+        _override_db(app)
+        fake_settings = MagicMock()
+        fake_settings.ENV = "prod"
+        fake_settings.COGNITO_USER_POOL_ID = "ap-northeast-2_TestPool"
+        fake_settings.COGNITO_REGION = "ap-northeast-2"
+
+        with patch.object(auth_module, "settings", fake_settings):
+            resp = client.post(f"/api/lyrics/{_SPOTIFY_ID}/translation-request")
+
+        assert resp.status_code == 401
+        svc.request_translation.assert_not_called()
+        app.dependency_overrides.clear()
+
+
 class TestLyricsPrivacyGate:
     def test_no_public_schema_references_lyrics(self, app):
         # Acceptance gate (FEAT-lyrics-viewer): lyric text and its presence stay out of
@@ -100,7 +163,7 @@ class TestLyricsPrivacyGate:
         spec = app.openapi()
 
         lyric_schemas = {n for n in spec["components"]["schemas"] if "lyric" in n.lower()}
-        assert lyric_schemas == {"LyricsResponse", "LyricsSegment"}
+        assert lyric_schemas == {"LyricsResponse", "LyricsSegment", "LyricsTranslationInfo"}
 
         import json
         for path, ops in spec["paths"].items():

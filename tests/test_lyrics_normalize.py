@@ -128,10 +128,11 @@ class TestNormalizeLyrics:
         ]
         shapes = [set(o.model_dump().keys()) for o in outs]
         assert shapes[0] == shapes[1] == shapes[2] == {
-            "availability", "source_kind", "trackable", "normalizer_version", "segments"}
+            "availability", "source_kind", "trackable", "normalizer_version", "segments",
+            "translation"}
         for o in outs:
             assert o.availability == "ok"
-            assert {"i", "text", "start_ms"} == set(o.segments[0].model_dump().keys())
+            assert {"i", "text", "start_ms", "text_ko"} == set(o.segments[0].model_dump().keys())
 
     def test_plain_disagreement_logged_synced_still_wins(self, caplog):
         import logging

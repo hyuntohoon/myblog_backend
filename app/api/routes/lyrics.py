@@ -18,11 +18,15 @@ from typing import Dict
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.schemas import LyricsResponse
+from app.api.schemas import LyricsResponse, LyricsTranslationInfo
 from app.core.auth import require_cognito_token
 from app.db.session import get_db
 from app.di import get_lyrics_service
-from app.services.lyrics_service import LyricsService, LyricsTrackNotFoundError
+from app.services.lyrics_service import (
+    LyricsNotTranslatableError,
+    LyricsService,
+    LyricsTrackNotFoundError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,3 +50,25 @@ def get_lyrics(
         return svc.get_normalized(db, spotify_track_id=spotify_track_id)
     except LyricsTrackNotFoundError:
         raise HTTPException(status_code=404, detail="No track with that spotify id")
+
+
+@router.post("/{spotify_track_id}/translation-request", response_model=LyricsTranslationInfo)
+def request_lyrics_translation(
+    spotify_track_id: str,
+    svc: LyricsService = Depends(get_lyrics_service),
+    db: Session = Depends(get_db),
+    claims: Dict = Depends(require_cognito_token),
+):
+    """Enqueue a Korean-translation request for one track (FEAT-lyrics-translation).
+
+    Upserts status='requested' — idempotent while pending, allowed again on
+    done/failed/stale. The local launchd poller claims the row; no LLM call happens
+    here (rule #9 spirit). Own explicit JWT route in infra/apigateway.tf like the GET —
+    the POST 404s at the edge until that route is applied.
+    """
+    try:
+        return svc.request_translation(db, spotify_track_id=spotify_track_id)
+    except LyricsTrackNotFoundError:
+        raise HTTPException(status_code=404, detail="No track with that spotify id")
+    except LyricsNotTranslatableError:
+        raise HTTPException(status_code=409, detail="Track has no translatable lyrics")
