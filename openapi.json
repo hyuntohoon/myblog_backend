@@ -1161,6 +1161,16 @@
             "default": false,
             "title": "Trackable",
             "type": "boolean"
+          },
+          "translation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LyricsTranslationInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1189,6 +1199,17 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "text_ko": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Ko"
           }
         },
         "required": [
@@ -1196,6 +1217,52 @@
           "text"
         ],
         "title": "LyricsSegment",
+        "type": "object"
+      },
+      "LyricsTranslationInfo": {
+        "properties": {
+          "lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lang"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "enum": [
+                  "poller",
+                  "manual"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
+          "status": {
+            "enum": [
+              "none",
+              "requested",
+              "done",
+              "failed",
+              "stale"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "LyricsTranslationInfo",
         "type": "object"
       },
       "MetricsBatchRequest": {
@@ -5569,6 +5636,54 @@
           }
         ],
         "summary": "Get Lyrics",
+        "tags": [
+          "lyrics"
+        ]
+      }
+    },
+    "/api/lyrics/{spotify_track_id}/translation-request": {
+      "post": {
+        "description": "Enqueue a Korean-translation request for one track (FEAT-lyrics-translation).\n\nUpserts status='requested' \u2014 idempotent while pending, allowed again on\ndone/failed/stale. The local launchd poller claims the row; no LLM call happens\nhere (rule #9 spirit). Own explicit JWT route in infra/apigateway.tf like the GET \u2014\nthe POST 404s at the edge until that route is applied.",
+        "operationId": "request_lyrics_translation_api_lyrics__spotify_track_id__translation_request_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "spotify_track_id",
+            "required": true,
+            "schema": {
+              "title": "Spotify Track Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LyricsTranslationInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Request Lyrics Translation",
         "tags": [
           "lyrics"
         ]
