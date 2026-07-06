@@ -48,7 +48,11 @@ async def edge_guard(request: Request, call_next):
         # Trusted CloudFront edge: every front request (incl. the public metrics
         # beacon and section list) reaches the backend through CloudFront, which
         # injects x-origin-verify == EDGE_SECRET. Trust that and pass through.
-        if request.headers.get("x-origin-verify") == settings.EDGE_SECRET:
+        # FIX-bug-audit-2026-07 WS-A: require EDGE_SECRET truthy first — if the
+        # SSM/secrets load failed, EDGE_SECRET is "" and a request carrying an
+        # empty (or absent-but-present) x-origin-verify header would compare equal
+        # and fail OPEN. Cognito misconfig already fails closed (503); match it.
+        if settings.EDGE_SECRET and request.headers.get("x-origin-verify") == settings.EDGE_SECRET:
             return await call_next(request)
 
         # No edge secret => a direct (raw invoke domain) request. It must carry a

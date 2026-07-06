@@ -103,6 +103,17 @@ def test_valid_edge_secret_passes_without_bearer(prod_main):
     assert r.status_code == 200
 
 
+def test_empty_edge_secret_does_not_fail_open(prod_main, monkeypatch):
+    # FIX-bug-audit-2026-07 WS-A: if the secrets load failed, EDGE_SECRET is "".
+    # A request carrying an empty x-origin-verify header used to compare equal
+    # ("" == "") and pass — fail OPEN. It must now be rejected (403) with no
+    # valid Bearer, matching the fail-closed posture of the Cognito path.
+    monkeypatch.setattr(prod_main.settings, "EDGE_SECRET", "")
+    with _client(prod_main) as c:
+        r = c.get("/api/posts?include_archived=true", headers={"x-origin-verify": ""})
+    assert r.status_code == 403
+
+
 # --- verify_token unit (shared validator) ---
 
 def _auth_settings(**kw):
