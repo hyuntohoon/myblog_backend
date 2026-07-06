@@ -270,32 +270,57 @@ class PostService:
         tag_objs = _MISSING if tags is _MISSING else self._resolve_tags(db, tags)
         genre_objs = _MISSING if genre_ids is _MISSING else self._resolve_genres(db, genre_ids)
 
+        # FIX-bug-audit-2026-07 WS-B: the whole edit is ONE transaction. Each field
+        # group used to `db.commit()` on its own, so a validation failure in a later
+        # group (e.g. an unlinked recommended track) returned 400 while earlier
+        # groups were already persisted — a half-applied edit the client thinks
+        # never happened. We flush() for intra-transaction visibility and commit
+        # exactly once at the end; any raise before that leaves the transaction
+        # uncommitted, and get_db's session.close() rolls it back atomically.
         if fields:
-            post = self.post_repo.update(db, post, **fields)
+            # Inline scalar update instead of post_repo.update() (which commits)
+            # so the scalar write joins the single transaction.
+            for k, v in fields.items():
+                setattr(post, k, v)
+            db.flush()
 
         if tag_objs is not _MISSING:
             post.tags = tag_objs
-            db.commit()
-            db.refresh(post)
+            db.flush()
 
         if genre_objs is not _MISSING:
             post.genres = genre_objs  # replace-set; [] = explicit clear
-            db.commit()
-            db.refresh(post)
+            db.flush()
 
         if album_ids is not _MISSING:
-            unique = list({aid for aid in (album_ids or []) if aid})
-            db.execute(
-                post_albums.delete().where(post_albums.c.post_id == post.id)
-            )
-            for aid in unique:
+            # Diff instead of delete-all/re-insert. post_recommended_tracks has
+            # FK (post_id, album_id) -> post_albums ON DELETE CASCADE, so deleting
+            # a post_albums row CASCADE-deletes its recommended-track picks and
+            # drops its is_classic flag. A partial PUT that sends album_ids but
+            # omits recommended_track_ids is a supported shape (exclude_unset) —
+            # delete-all wiped the picks + classics for the SURVIVING albums too
+            # (H3, silent data loss). Only touch albums that actually change:
+            # unchanged albums keep their picks and their is_classic.
+            desired = list({aid for aid in (album_ids or []) if aid})
+            current = {str(a.id) for a in post.albums}
+            desired_set = set(desired)
+            to_remove = current - desired_set
+            to_add = [aid for aid in desired if aid not in current]
+            if to_remove:
+                db.execute(
+                    post_albums.delete().where(
+                        post_albums.c.post_id == post.id,
+                        post_albums.c.album_id.in_(to_remove),
+                    )
+                )
+            for aid in to_add:
                 db.execute(
                     post_albums.insert().values(
                         post_id=post.id, album_id=aid, is_classic=False
                     )
                 )
-            db.commit()
-            db.refresh(post)
+            db.flush()
+            db.refresh(post)  # reload post.albums for the reads below
 
         if artist_ids is not _MISSING:
             unique = list({aid for aid in (artist_ids or []) if aid})
@@ -303,8 +328,7 @@ class PostService:
                 db.query(Artist).filter(Artist.id.in_(unique)).all() if unique else []
             )
             post.artists = artists
-            db.commit()
-            db.refresh(post)
+            db.flush()
 
         # FEAT-writer-lowfreq-redesign Step 5: same single-subject UPDATE
         # pattern as create(). Read the post's currently-linked albums after
@@ -315,8 +339,7 @@ class PostService:
                 db.query(Album).filter(Album.id == current_album_ids[0]).update(
                     {"best_new": bool(subject_best_new)}, synchronize_session=False
                 )
-                db.commit()
-                db.refresh(post)
+                db.flush()
 
         if recommended_track_ids is not _MISSING:
             # Replace pattern: clear existing rows, insert new picks.
@@ -343,9 +366,10 @@ class PostService:
                         track_id=track_id,
                     )
                 )
-            db.commit()
-            db.refresh(post)
+            db.flush()
 
+        db.commit()
+        db.refresh(post)
         return post
 
     def list_recommended_track_ids(self, db: Session, post_id: str) -> list[str]:

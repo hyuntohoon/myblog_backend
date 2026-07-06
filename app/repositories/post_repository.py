@@ -2,7 +2,7 @@
 from typing import List, Optional
 from datetime import date
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from myblog_shared_db.models import Post
 
@@ -11,7 +11,15 @@ class PostRepository:
     """posts 테이블 전용 리포지토리 (SQLAlchemy ORM 기반)."""
 
     def list_by_status(self, db: Session, status: Optional[str] = None) -> List[Post]:
-        q = db.query(Post).order_by(Post.posted_date.desc())
+        # FIX-bug-audit-2026-07 WS-B: eager-load section + tags. The list route
+        # reads p.section and p.tags for every row, which was a 2N+1 under
+        # lazy="select" (~80ms/query cross-region) — a few hundred posts risked
+        # a Lambda timeout as the archive grows.
+        q = (
+            db.query(Post)
+            .options(selectinload(Post.section), selectinload(Post.tags))
+            .order_by(Post.posted_date.desc())
+        )
         if status:
             q = q.filter(Post.status == status)
         return q.all()
