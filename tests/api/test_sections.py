@@ -73,11 +73,12 @@ class TestUnknownSectionRejected:
         post_repo = MagicMock()
         post = MagicMock()
         post_repo.get_by_id.return_value = post
-        post_repo.update.return_value = post
         svc = PostService(post_repo=post_repo, section_repo=section_repo)
 
         svc.update(MagicMock(), "uuid-1", category="")
 
         section_repo.get_by_name.assert_not_called()
-        # section_id forwarded as None to the repo update
-        assert post_repo.update.call_args.kwargs.get("section_id") is None
+        # FIX-bug-audit-2026-07 WS-B: scalar fields are now set inline (single
+        # transaction) instead of via the committing post_repo.update(), so
+        # assert the cleared value on the post itself.
+        assert post.section_id is None
