@@ -211,21 +211,24 @@ class LyricsService:
         of PlaybackService.resolve_uri, one round trip), then normalize its lyrics row.
         Unknown spotify_id → LyricsTrackNotFoundError (404); known track without a
         track_lyrics row → availability "unavailable" (a valid empty state, not a 404).
-        availability=="ok" payloads additionally carry the translation view (Step 2)."""
-        track_id = db.query(Track.id).filter(Track.spotify_id == spotify_track_id).scalar()
-        if track_id is None:
-            raise LyricsTrackNotFoundError(spotify_track_id)
-        row = (
-            db.query(TrackLyrics).filter(TrackLyrics.track_id == track_id).one_or_none()
+        availability=="ok" payloads additionally carry the translation view (Step 2).
+
+        Single round trip: Lambda (ap-northeast-2) → DB (ap-southeast-1) costs ~80ms
+        per query, so the former 3 sequential queries are collapsed into one OUTER
+        JOIN — track_id is unique in both child tables, so at most one row comes back."""
+        res = (
+            db.query(Track.id, TrackLyrics, TrackLyricsTranslation)
+            .outerjoin(TrackLyrics, TrackLyrics.track_id == Track.id)
+            .outerjoin(TrackLyricsTranslation, TrackLyricsTranslation.track_id == Track.id)
+            .filter(Track.spotify_id == spotify_track_id)
+            .one_or_none()
         )
+        if res is None:
+            raise LyricsTrackNotFoundError(spotify_track_id)
+        _track_id, row, trow = res
         out = normalize_lyrics(row)
         if out.availability != "ok":
             return out
-        trow = (
-            db.query(TrackLyricsTranslation)
-            .filter(TrackLyricsTranslation.track_id == track_id)
-            .one_or_none()
-        )
         attach_translation(out, trow)
         return out
 

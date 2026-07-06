@@ -184,16 +184,24 @@ class TestLyricsPrivacyGate:
 
 class TestGetNormalized:
     """LyricsService.get_normalized with a fake db — resolve + row-read wiring only
-    (normalize_lyrics itself is covered in tests/test_lyrics_normalize.py)."""
+    (normalize_lyrics itself is covered in tests/test_lyrics_normalize.py).
 
-    def _db(self, track_id, row):
+    get_normalized is a single OUTER-JOIN query (cross-region RTT): the mock returns
+    None for an unknown spotify_id, else one (track_id, lyrics_row, trans_row) row."""
+
+    def _db(self, joined_row):
         db = MagicMock()
-        db.query.return_value.filter.return_value.scalar.return_value = track_id
-        db.query.return_value.filter.return_value.one_or_none.return_value = row
+        (
+            db.query.return_value
+            .outerjoin.return_value
+            .outerjoin.return_value
+            .filter.return_value
+            .one_or_none.return_value
+        ) = joined_row
         return db
 
     def test_unknown_spotify_id_raises(self):
-        db = self._db(None, None)
+        db = self._db(None)
         try:
             LyricsService().get_normalized(db, spotify_track_id="zzz")
             assert False, "expected LyricsTrackNotFoundError"
@@ -201,7 +209,7 @@ class TestGetNormalized:
             pass
 
     def test_known_track_missing_row_is_unavailable(self):
-        db = self._db("11111111-1111-1111-1111-111111111111", None)
+        db = self._db(("11111111-1111-1111-1111-111111111111", None, None))
         out = LyricsService().get_normalized(db, spotify_track_id=_SPOTIFY_ID)
         assert out.availability == "unavailable"
         assert out.segments == []
