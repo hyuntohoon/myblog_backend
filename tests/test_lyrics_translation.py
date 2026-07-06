@@ -122,14 +122,20 @@ class TestAttachTranslation:
 
 
 class TestGetNormalizedTranslation:
-    """get_normalized wiring: the translation row is loaded only for ok payloads."""
+    """get_normalized wiring: the translation view is attached only to ok payloads.
+
+    get_normalized is a single OUTER-JOIN query (cross-region RTT): the mock returns
+    one (track_id, lyrics_row, trans_row) row instead of three sequential results."""
 
     def _db(self, track_id, lyrics_row, trans_row):
         db = MagicMock()
-        db.query.return_value.filter.return_value.scalar.return_value = track_id
-        db.query.return_value.filter.return_value.one_or_none.side_effect = [
-            lyrics_row, trans_row,
-        ]
+        (
+            db.query.return_value
+            .outerjoin.return_value
+            .outerjoin.return_value
+            .filter.return_value
+            .one_or_none.return_value
+        ) = (track_id, lyrics_row, trans_row)
         return db
 
     def test_ok_payload_carries_translation(self):
@@ -138,13 +144,14 @@ class TestGetNormalizedTranslation:
         assert out.availability == "ok"
         assert out.translation.status == "none"
 
-    def test_non_ok_payload_skips_translation_query(self):
-        db = self._db(_TRACK_ID, None, None)
+    def test_non_ok_payload_skips_translation_attach(self):
+        # even with a translation row joined in, a non-ok payload never carries it
+        db = self._db(_TRACK_ID, None, SimpleNamespace(status="done"))
         out = LyricsService().get_normalized(db, spotify_track_id="sid")
         assert out.availability == "unavailable"
         assert out.translation is None
-        # only the lyrics row was fetched — the side_effect list still holds the 2nd item
-        assert db.query.return_value.filter.return_value.one_or_none.call_count == 1
+        # single round trip: exactly one query executed
+        assert db.query.return_value.outerjoin.return_value.outerjoin.return_value.filter.return_value.one_or_none.call_count == 1
 
 
 class TestRequestTranslation:
