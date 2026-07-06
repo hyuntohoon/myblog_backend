@@ -7,6 +7,15 @@ on:
     branches: [main]
   workflow_dispatch: {}  # manual deploy of main HEAD (recovery if a push event fails to fire a run)
 
+# Least privilege: default GITHUB_TOKEN is too broad; this workflow only needs to read the repo.
+permissions:
+  contents: read
+
+# Serialize prod deploys so out-of-order pushes can't overwrite a newer Lambda with an older build.
+concurrency:
+  group: backend-deploy-prod
+  cancel-in-progress: false
+
 jobs:
   check:
     runs-on: ubuntu-latest
