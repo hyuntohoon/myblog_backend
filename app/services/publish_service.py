@@ -133,9 +133,11 @@ def github_delete_file(
     token: str,
 ) -> dict:
     """Delete a file from the content repo. **Idempotent**: if the file is
-    already absent (GET → 404), this is a no-op success — so un-publishing a
-    post that was never published (e.g. a draft) is safe. Raises RuntimeError
-    on any other GitHub error so the caller can surface a 502."""
+    already absent — detected at GET (→ 404) OR at DELETE (→ 404, when it
+    vanished between the two under a concurrent removal / read-after-write lag)
+    — this is a no-op success, so un-publishing a draft or the same post twice
+    in quick succession is safe. Raises RuntimeError on any other GitHub error
+    so the caller can surface a 502."""
     url = _contents_url(owner, repo, path)
     headers = _github_headers(token)
 
@@ -154,6 +156,15 @@ def github_delete_file(
         "branch": branch,
     }
     r = requests.delete(url, headers=headers, data=json.dumps(payload))
+    if r.status_code == 404:
+        # The file vanished between our GET (which resolved a sha) and this
+        # DELETE — a concurrent removal, or GitHub contents-API read-after-write
+        # lag surfacing a now-stale sha. Observed in prod: archiving then hard-
+        # deleting the same post removes its MDX twice in quick succession, and
+        # the second GET still saw the file (stale 200 + sha) while the DELETE
+        # found it already gone (404). The end state is exactly what we wanted —
+        # the file is absent — so this is an idempotent no-op success, not a 502.
+        return {"ok": True, "path": path, "deleted": False, "reason": "absent-on-delete"}
     if r.status_code != 200:
         raise RuntimeError(f"GitHub API error {r.status_code}: {r.text[:500]}")
     return {"ok": True, "path": path, "deleted": True}

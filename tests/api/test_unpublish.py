@@ -92,6 +92,32 @@ class TestGithubDeleteFile:
         assert sent["sha"] == "deadbeef"
         assert sent["branch"] == "main"
 
+    def test_delete_404_is_idempotent_noop(self):
+        """GET → 200 resolves a sha, but DELETE → 404: the file vanished between
+        the two (concurrent removal / GitHub read-after-write lag surfacing a
+        now-stale sha). The end state is absent — the goal — so this is a no-op
+        success, NOT a RuntimeError. Regression for the prod archive-then-hard-
+        delete race that surfaced as a 502."""
+        from app.services import publish_service
+
+        get_resp = MagicMock(status_code=200)
+        get_resp.json.return_value = {"sha": "deadbeef"}
+        del_resp = MagicMock(status_code=404, text='{"message":"Not Found"}')
+        with (
+            patch("app.services.publish_service.requests.get", return_value=get_resp),
+            patch("app.services.publish_service.requests.delete", return_value=del_resp) as mdel,
+        ):
+            out = publish_service.github_delete_file(
+                owner="o", repo="r", branch="main", path="content/blog/x/index.mdx", token="t"
+            )
+        assert out == {
+            "ok": True,
+            "path": "content/blog/x/index.mdx",
+            "deleted": False,
+            "reason": "absent-on-delete",
+        }
+        assert mdel.called  # a DELETE was attempted (unlike the GET-404 case)
+
     def test_raises_on_github_error(self):
         from app.services import publish_service
 
@@ -233,6 +259,26 @@ class TestDeleteUnpublishes:
         get_resp = MagicMock(status_code=200)
         get_resp.json.return_value = {"sha": "sha1"}
         del_resp = MagicMock(status_code=200)
+        with (
+            patch("app.services.publish_service.requests.get", return_value=get_resp),
+            patch("app.services.publish_service.requests.delete", return_value=del_resp) as mdel,
+        ):
+            resp = client.delete("/api/posts/post-1?hard=true")
+
+        assert resp.status_code == 204
+        assert mdel.called
+
+    def test_hard_delete_404_on_delete_is_idempotent_no_502(self, client, svc_override):
+        """The prod race: hard-deleting a post whose MDX was already removed
+        moments earlier (archive → hard). GET still sees the file (stale 200 +
+        sha) but DELETE → 404. The DB row is gone and the MDX is absent, so the
+        endpoint returns 204, NOT the old 502."""
+        svc_override.get_by_id.return_value = _make_post("archived")
+        svc_override.delete.return_value = True  # hard → truthy
+
+        get_resp = MagicMock(status_code=200)
+        get_resp.json.return_value = {"sha": "sha1"}
+        del_resp = MagicMock(status_code=404, text='{"message":"Not Found"}')
         with (
             patch("app.services.publish_service.requests.get", return_value=get_resp),
             patch("app.services.publish_service.requests.delete", return_value=del_resp) as mdel,
