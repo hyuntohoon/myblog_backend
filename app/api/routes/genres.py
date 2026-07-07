@@ -12,7 +12,7 @@ from app.api.schemas import (
     GenreTreeResponse,
     UpdateGenreRequest,
 )
-from app.core.auth import require_cognito_token
+from app.core.auth import require_owner
 from app.db.session import get_db
 from app.di import get_genre_service
 from app.services.genre_service import (
@@ -61,7 +61,7 @@ def create_genre(
     req: CreateGenreRequest,
     db: Session = Depends(get_db),
     svc: GenreService = Depends(get_genre_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     try:
         genre = svc.create(
@@ -87,7 +87,7 @@ def update_genre(
     req: UpdateGenreRequest,
     db: Session = Depends(get_db),
     svc: GenreService = Depends(get_genre_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     updates = req.model_dump(exclude_unset=True)
     try:

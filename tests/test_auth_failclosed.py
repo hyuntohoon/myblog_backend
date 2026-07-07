@@ -17,7 +17,12 @@ import app.core.auth as auth
 
 
 def _settings(**kw):
-    base = dict(ENV="prod", COGNITO_USER_POOL_ID="", COGNITO_REGION="ap-northeast-2")
+    base = dict(
+        ENV="prod",
+        COGNITO_USER_POOL_ID="",
+        COGNITO_REGION="ap-northeast-2",
+        OWNER_SUB="",
+    )
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -40,3 +45,33 @@ def test_prod_with_pool_id_requires_a_token(monkeypatch):
     with pytest.raises(HTTPException) as ei:
         auth.require_cognito_token(credentials=None)
     assert ei.value.status_code == 401
+
+
+# FEAT-multi-user-accounts 0c: require_owner gates single-owner routes once the
+# pool holds federated members. Must fail closed — a valid-but-non-owner token
+# (any signed-up member) must never reach the owner's editorial/buckets/library.
+
+
+def test_require_owner_local_env_bypasses(monkeypatch):
+    monkeypatch.setattr(auth, "settings", _settings(ENV="local", OWNER_SUB="owner-sub"))
+    assert auth.require_owner(claims={}) == {}
+
+
+def test_require_owner_503_when_owner_sub_unset_in_prod(monkeypatch):
+    # OWNER_SUB unset in prod is a misconfiguration — must 503, never fall open
+    monkeypatch.setattr(auth, "settings", _settings(OWNER_SUB=""))
+    with pytest.raises(HTTPException) as ei:
+        auth.require_owner(claims={"sub": "anyone"})
+    assert ei.value.status_code == 503
+
+
+def test_require_owner_403_for_non_owner_member(monkeypatch):
+    monkeypatch.setattr(auth, "settings", _settings(OWNER_SUB="owner-sub"))
+    with pytest.raises(HTTPException) as ei:
+        auth.require_owner(claims={"sub": "some-member-sub"})
+    assert ei.value.status_code == 403
+
+
+def test_require_owner_allows_the_owner(monkeypatch):
+    monkeypatch.setattr(auth, "settings", _settings(OWNER_SUB="owner-sub"))
+    assert auth.require_owner(claims={"sub": "owner-sub"}) == {"sub": "owner-sub"}

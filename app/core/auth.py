@@ -128,3 +128,38 @@ def require_cognito_token(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
 
     return verify_token(credentials.credentials)
+
+
+def require_owner(
+    claims: Dict[str, Any] = Depends(require_cognito_token),
+) -> Dict[str, Any]:
+    """Owner-only gate: the verified JWT `sub` must equal `OWNER_SUB`.
+
+    FEAT-multi-user-accounts 0c: enabling Cognito self-signup fills the pool with
+    federated members, so `require_cognito_token` alone (any valid pool token) no
+    longer implies the owner. Single-owner routes — editorial authoring/publish,
+    genre taxonomy, and the owner's buckets/library/playback (none per-user scoped
+    until Phase 2/3) — must additionally verify identity. Member-legitimate routes
+    (`/api/me`, `/api/lyrics`, music search) keep plain `require_cognito_token`.
+
+    Fail closed: local/dev keeps the `require_cognito_token` bypass (claims `{}`) so
+    local admin work is unblocked; in prod an unset `OWNER_SUB` is a
+    misconfiguration → 503 (never fall open); a non-owner token → 403.
+    """
+    if settings.ENV in ("local", "dev"):
+        return claims  # {} — mirrors the require_cognito_token local bypass
+
+    if not settings.OWNER_SUB:
+        logger.error(
+            "OWNER_SUB unset while ENV=%s — refusing to fail open",
+            settings.ENV,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Auth not configured",
+        )
+
+    if claims.get("sub") != settings.OWNER_SUB:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner only")
+
+    return claims

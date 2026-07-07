@@ -43,7 +43,7 @@ from app.api.schemas import (
     UnclassifiedBreakdown,
 )
 from app.clients.sqs_client import get_spotify_connection_status
-from app.core.auth import require_cognito_token
+from app.core.auth import require_owner
 from app.db.session import get_db
 from app.di import get_library_service, get_sqs_client
 from app.services.enqueue import safe_enqueue_catalog_sync
@@ -511,7 +511,7 @@ def classify_saved_tracks(
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
     sqs=Depends(get_sqs_client),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     # 분류하기 (owner action, JWT): enqueue the catalog-absent unclassified albums for
     # catalog sync (→ S1 genres → the track inherits a genre). Best-effort SQS only —
@@ -527,7 +527,7 @@ def classify_saved_tracks(
 @router.post("/saved-tracks/fill-genres", response_model=FillGenresResponse, status_code=202)
 def fill_saved_track_genres(
     db: Session = Depends(get_db),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     # 장르 채우기 (owner action, JWT): enqueue an on-demand genre-backfill request. A
     # local 5-min poller claims it and runs the EXISTING backfill_genres.py
@@ -559,7 +559,7 @@ def reorder_to_listen(
     req: ToListenReorderRequest,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     try:
         svc.reorder_to_listen(db, req.item_ids)
@@ -578,7 +578,7 @@ def add_to_listen(
     req: AddToListenRequest,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     try:
         item = svc.add_to_listen(db, album_id=req.album_id, note=req.note)
@@ -596,7 +596,7 @@ def delete_to_listen(
     item_id: str,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     if not svc.delete_to_listen(db, item_id):
         raise HTTPException(status_code=404, detail="Item not found")
@@ -608,7 +608,7 @@ def delete_to_listen(
 
 @router.post("/refresh-recent", response_model=RefreshRecentResponse, status_code=202)
 def refresh_recent(
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
     sqs=Depends(get_sqs_client),
 ):
     sqs.send_listening_refresh()

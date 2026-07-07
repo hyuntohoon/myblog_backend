@@ -16,7 +16,7 @@ from app.api.schemas import (
     ResearchStatusMapResponse,
     ResearchTriggerRequest,
 )
-from app.core.auth import require_cognito_token
+from app.core.auth import require_owner
 from app.db.session import get_db
 from app.di import get_research_service
 from app.services.research_service import (
@@ -84,7 +84,7 @@ def trigger_album_research(
     req: ResearchTriggerRequest,
     db: Session = Depends(get_db),
     svc: ResearchService = Depends(get_research_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     try:
         row = svc.trigger(db, album_id, mode=req.mode, instruction=req.instruction)

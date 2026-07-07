@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.schemas import PlaybackResolveResponse, SpotifyStreamingTokenResponse
-from app.core.auth import require_cognito_token, resolve_owner
+from app.core.auth import require_owner, resolve_owner
 from app.db.session import get_db
 from app.di import get_playback_service
 from app.services.playback_service import (
@@ -33,7 +33,7 @@ router = APIRouter()
 @router.get("/spotify-token", response_model=SpotifyStreamingTokenResponse)
 def spotify_token(
     svc: PlaybackService = Depends(get_playback_service),
-    claims: Dict = Depends(require_cognito_token),
+    claims: Dict = Depends(require_owner),
 ):
     owner = resolve_owner(claims)  # owner from verified sub, never the body (OQ11)
     try:
