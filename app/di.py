@@ -59,6 +59,12 @@ def get_post_service():
     return PostService(post_repo, section_repo, tag_repo)
 
 
+def get_user_service():
+    from app.services.user_service import UserService
+
+    return UserService()
+
+
 _metrics_repo: MetricsRepository = SqlMetricsRepository()
 
 

@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     COGNITO_REGION: str = "ap-northeast-2"
     COGNITO_USER_POOL_ID: str = ""
 
+    # FEAT-multi-user-accounts 0d: the owner's Cognito sub. DELETE /api/me
+    # refuses this sub (403) so the blog-admin identity can't self-delete via the
+    # member flow. Empty (guard off) until the owner sub lands in the Lambda env
+    # via Terraform — set it alongside the 0c infra step.
+    OWNER_SUB: str = ""
+
     # AWS / SQS — FEAT-member-dashboard Step 3 manual "지금 새로고침" trigger.
     # The backend only *produces* one message ({"job":"spotify_refresh"}); the
     # worker consumes it and does the Spotify read (rule #9 — never sync here).

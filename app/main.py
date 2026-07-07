@@ -88,6 +88,7 @@ from app.api.routes import research
 from app.api.routes import genres
 from app.api.routes import playback
 from app.api.routes import lyrics
+from app.api.routes import me
 from app.db.session import get_db
 
 app.include_router(sections.router,   prefix="/api/sections",      tags=["sections"])
@@ -101,6 +102,7 @@ app.include_router(research.router,   prefix="/api/research",      tags=["resear
 app.include_router(genres.router,     prefix="/api/genres",        tags=["genres"])
 app.include_router(playback.router,   prefix="/api/playback",      tags=["playback"])
 app.include_router(lyrics.router,     prefix="/api/lyrics",        tags=["lyrics"])
+app.include_router(me.router,         prefix="/api/me",            tags=["me"])
 
 
 # -----------------------------
