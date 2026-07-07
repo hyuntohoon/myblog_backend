@@ -339,6 +339,121 @@
         "title": "AlbumResearchResponse",
         "type": "object"
       },
+      "AlbumReviewAggregateResponse": {
+        "description": "Album-page block: live avg/count + the full public review list.",
+        "properties": {
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "average": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "reviews": {
+            "items": {
+              "$ref": "#/components/schemas/AlbumReviewResponse"
+            },
+            "title": "Reviews",
+            "type": "array"
+          }
+        },
+        "required": [
+          "album_id",
+          "count"
+        ],
+        "title": "AlbumReviewAggregateResponse",
+        "type": "object"
+      },
+      "AlbumReviewResponse": {
+        "properties": {
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "author": {
+            "$ref": "#/components/schemas/ReviewAuthor"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "rating": {
+            "title": "Rating",
+            "type": "number"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "album_id",
+          "author",
+          "rating",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AlbumReviewResponse",
+        "type": "object"
+      },
+      "AlbumReviewUpsertRequest": {
+        "properties": {
+          "comment": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "rating": {
+            "maximum": 5.0,
+            "minimum": 0.5,
+            "multipleOf": 0.5,
+            "title": "Rating",
+            "type": "number"
+          }
+        },
+        "required": [
+          "rating"
+        ],
+        "title": "AlbumReviewUpsertRequest",
+        "type": "object"
+      },
       "ArtistBrief": {
         "description": "FEAT-my-buckit-artist (V32): minimal artist display for an artist-kind membership row\n(Artist Buckit member) and for the expansion added/skipped lists. Member click-through\ntargets the existing /artist/[id] page (no new detail modal).",
         "properties": {
@@ -1316,6 +1431,165 @@
         "title": "MeResponse",
         "type": "object"
       },
+      "MemberListResponse": {
+        "description": "Handle index for the front's getStaticPaths (static profile prerender).",
+        "properties": {
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/MemberSummary"
+            },
+            "title": "Members",
+            "type": "array"
+          }
+        },
+        "title": "MemberListResponse",
+        "type": "object"
+      },
+      "MemberProfileResponse": {
+        "description": "Public profile at /members/{handle}: identity + newest-first review feed.",
+        "properties": {
+          "avatar_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Url"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "review_count": {
+            "title": "Review Count",
+            "type": "integer"
+          },
+          "reviews": {
+            "items": {
+              "$ref": "#/components/schemas/MemberReviewResponse"
+            },
+            "title": "Reviews",
+            "type": "array"
+          }
+        },
+        "required": [
+          "handle",
+          "display_name",
+          "created_at",
+          "review_count"
+        ],
+        "title": "MemberProfileResponse",
+        "type": "object"
+      },
+      "MemberReviewResponse": {
+        "description": "One row in a member's public profile feed \u2014 the review plus enough album\ncontext to render + link without a second fetch.",
+        "properties": {
+          "album_cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Cover Url"
+          },
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "album_title": {
+            "title": "Album Title",
+            "type": "string"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "rating": {
+            "title": "Rating",
+            "type": "number"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "album_id",
+          "album_title",
+          "rating",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MemberReviewResponse",
+        "type": "object"
+      },
+      "MemberSummary": {
+        "properties": {
+          "avatar_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Url"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "review_count": {
+            "title": "Review Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "handle",
+          "display_name",
+          "review_count"
+        ],
+        "title": "MemberSummary",
+        "type": "object"
+      },
       "MetricsBatchRequest": {
         "properties": {
           "slugs": {
@@ -2202,6 +2476,41 @@
           "today_kst"
         ],
         "title": "RetrospectiveResponse",
+        "type": "object"
+      },
+      "ReviewAuthor": {
+        "description": "The public reviewer identity embedded in an album's review list.",
+        "properties": {
+          "avatar_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Url"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "handle",
+          "display_name"
+        ],
+        "title": "ReviewAuthor",
         "type": "object"
       },
       "ReviewedAlbumResponse": {
@@ -5858,6 +6167,69 @@
         ]
       }
     },
+    "/api/members": {
+      "get": {
+        "operationId": "list_members_api_members_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Members",
+        "tags": [
+          "members"
+        ]
+      }
+    },
+    "/api/members/{handle}": {
+      "get": {
+        "operationId": "get_member_api_members__handle__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "handle",
+            "required": true,
+            "schema": {
+              "title": "Handle",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Member",
+        "tags": [
+          "members"
+        ]
+      }
+    },
     "/api/metrics/batch": {
       "post": {
         "operationId": "batch_metrics_api_metrics_batch_post",
@@ -6481,6 +6853,181 @@
         "summary": "Get Research Status Map",
         "tags": [
           "research"
+        ]
+      }
+    },
+    "/api/reviews/albums/{album_id}": {
+      "delete": {
+        "operationId": "delete_my_album_review_api_reviews_albums__album_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "album_id",
+            "required": true,
+            "schema": {
+              "title": "Album Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete My Album Review",
+        "tags": [
+          "reviews"
+        ]
+      },
+      "get": {
+        "operationId": "get_album_reviews_api_reviews_albums__album_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "album_id",
+            "required": true,
+            "schema": {
+              "title": "Album Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumReviewAggregateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Album Reviews",
+        "tags": [
+          "reviews"
+        ]
+      },
+      "put": {
+        "operationId": "put_album_review_api_reviews_albums__album_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "album_id",
+            "required": true,
+            "schema": {
+              "title": "Album Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlbumReviewUpsertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Put Album Review",
+        "tags": [
+          "reviews"
+        ]
+      }
+    },
+    "/api/reviews/{review_id}": {
+      "delete": {
+        "operationId": "owner_delete_review_api_reviews__review_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "title": "Review Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Owner Delete Review",
+        "tags": [
+          "reviews"
         ]
       }
     },
