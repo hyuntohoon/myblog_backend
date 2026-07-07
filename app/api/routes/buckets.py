@@ -30,7 +30,7 @@ from app.api.schemas import (
     UpdateBucketRequest,
 )
 from app.clients.sqs_client import get_spotify_connection_status
-from app.core.auth import require_cognito_token, resolve_owner
+from app.core.auth import require_owner, resolve_owner
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.di import (
@@ -201,7 +201,7 @@ def list_buckets(
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
     genre_svc: GenreService = Depends(get_genre_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     roots = svc.list_buckets(db)
     # Batch the already_reviewed + research-status + genre-label lookups across every
@@ -321,7 +321,7 @@ def spotify_library_sync(
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
     sqs=Depends(get_sqs_client),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     # Get-or-create the special bucket so the worker always has a destination, then
     # enqueue the async job. Rule #9: this only ENQUEUES — never calls Spotify; the
@@ -342,7 +342,7 @@ def create_bucket(
     req: CreateBucketRequest,
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     try:
         bucket = svc.create_bucket(db, name=req.name, color=req.color, type=req.type)
@@ -370,7 +370,7 @@ def update_bucket(
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
     genre_svc: GenreService = Depends(get_genre_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     updates = req.model_dump(exclude_unset=True)
     try:
@@ -423,7 +423,7 @@ def delete_bucket(
     bucket_id: str,
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     if not svc.delete_bucket(db, bucket_id):
         raise HTTPException(status_code=404, detail="Bucket not found")
@@ -439,7 +439,7 @@ def reorder(
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     try:
         svc.reorder(db, [b.model_dump() for b in req.buckets])
@@ -475,7 +475,7 @@ def move_bucket(
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
     genre_svc: GenreService = Depends(get_genre_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     try:
         svc.move_bucket(db, bucket_id, parent_id=req.parent_id, position=req.position)
@@ -505,7 +505,7 @@ def add_item(
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
     genre_svc: GenreService = Depends(get_genre_service),
-    claims: Dict = Depends(require_cognito_token),
+    claims: Dict = Depends(require_owner),
 ):
     # FEAT-pocket-buckit Step 3 (OQ11): the drop endpoint reads the owner from the verified
     # JWT `sub`, never the request body (single-owner today; the public-page sign-in handoff
@@ -598,7 +598,7 @@ def update_item(
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
     genre_svc: GenreService = Depends(get_genre_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     updates = req.model_dump(exclude_unset=True)
     try:
@@ -635,7 +635,7 @@ def delete_item(
     item_id: str,
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     if not svc.delete_item(db, bucket_id, item_id):
         raise HTTPException(status_code=404, detail="Item not found")

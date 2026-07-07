@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core.auth import require_cognito_token
+from app.core.auth import require_owner
 from app.core.config import settings
 from app.db.session import get_db
 from app.services.content_sync import derive_subgenres, derive_subject_meta
@@ -46,7 +46,7 @@ class CreatePostReq(BaseModel):
 def create_post(
     req: CreatePostReq,
     db: Session = Depends(get_db),
-    _claims: Dict[str, Any] = Depends(require_cognito_token),
+    _claims: Dict[str, Any] = Depends(require_owner),
 ):
     owner = settings.GITHUB_REPO_OWNER
     repo = settings.GITHUB_REPO_NAME

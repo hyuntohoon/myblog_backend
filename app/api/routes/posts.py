@@ -14,7 +14,7 @@ from app.api.schemas import (
     WritePostRequest,
     WritePostResponse,
 )
-from app.core.auth import require_cognito_token
+from app.core.auth import require_owner
 from app.db.session import get_db
 from app.di import get_post_service
 from app.services import content_sync
@@ -31,7 +31,7 @@ def list_posts(
     include_archived: bool = Query(default=False),
     db: Session = Depends(get_db),
     svc: PostService = Depends(get_post_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     posts = svc.list(db, status=status, include_archived=include_archived)
     items = [
@@ -61,7 +61,7 @@ def create_post(
     req: WritePostRequest,
     db: Session = Depends(get_db),
     svc: PostService = Depends(get_post_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     try:
         section_name = (req.category or "").strip() or None
@@ -102,7 +102,7 @@ def get_post(
     post_id: str,
     db: Session = Depends(get_db),
     svc: PostService = Depends(get_post_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     post = svc.get_by_id(db, post_id)
     if post is None:
@@ -139,7 +139,7 @@ def update_post(
     req: UpdatePostRequest,
     db: Session = Depends(get_db),
     svc: PostService = Depends(get_post_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     updates = req.model_dump(exclude_unset=True)
     try:
@@ -165,7 +165,7 @@ def delete_post(
     hard: bool = Query(default=False),
     db: Session = Depends(get_db),
     svc: PostService = Depends(get_post_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     # Capture the content coordinates before a hard delete removes the row —
     # un-publishing the static MDX needs slug + posted_date.
@@ -203,7 +203,7 @@ def restore_post(
     post_id: str,
     db: Session = Depends(get_db),
     svc: PostService = Depends(get_post_service),
-    _claims: Dict = Depends(require_cognito_token),
+    _claims: Dict = Depends(require_owner),
 ):
     post = svc.restore(db, post_id)
     if post is None:
