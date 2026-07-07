@@ -65,6 +65,12 @@ def get_user_service():
     return UserService()
 
 
+def get_review_service():
+    from app.services.review_service import ReviewService
+
+    return ReviewService()
+
+
 _metrics_repo: MetricsRepository = SqlMetricsRepository()
 
 

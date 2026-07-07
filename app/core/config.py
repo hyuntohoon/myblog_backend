@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # via Terraform — set it alongside the 0c infra step.
     OWNER_SUB: str = ""
 
+    # FEAT-multi-user-accounts Phase 1: anti-abuse floor for public album reviews.
+    # A member may CREATE at most this many reviews per rolling 24h window (edits
+    # to an existing review don't count). Generous enough to be invisible to real
+    # use (Gate G1 needs only ~10 total) while stopping scripted mass-rating.
+    REVIEW_DAILY_CAP: int = 50
+
     # AWS / SQS — FEAT-member-dashboard Step 3 manual "지금 새로고침" trigger.
     # The backend only *produces* one message ({"job":"spotify_refresh"}); the
     # worker consumes it and does the Spotify read (rule #9 — never sync here).

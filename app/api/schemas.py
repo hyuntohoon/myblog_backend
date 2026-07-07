@@ -1005,3 +1005,82 @@ class UpdateMeRequest(BaseModel):
         default=None, pattern=r"^[a-z0-9][a-z0-9_-]{1,28}[a-z0-9]$"
     )
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+
+
+# ====== Album reviews (FEAT-multi-user-accounts Phase 1) ======
+# RYM-style public reviews: one rating (+ optional comment) per member per album.
+# Aggregates (avg/count) are computed live at read time (OQ2). All reads public.
+
+# Comment length ceiling — a lightweight review, not an essay (the owner's
+# long-form editorial stays on the GitHub-MDX path).
+REVIEW_COMMENT_MAX = 4000
+
+
+class AlbumReviewUpsertRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    # Mirrors ck_album_reviews_rating_halfstep (V38): 0.5–5.0 in half-steps, so a
+    # bad rating 422s at the edge instead of surfacing as a CHECK-violation 500.
+    rating: float = Field(..., ge=0.5, le=5.0, multiple_of=0.5)
+    comment: Optional[str] = Field(default=None, max_length=REVIEW_COMMENT_MAX)
+
+
+class ReviewAuthor(BaseModel):
+    """The public reviewer identity embedded in an album's review list."""
+    id: str
+    handle: str
+    display_name: str
+    avatar_url: Optional[str] = None
+
+
+class AlbumReviewResponse(BaseModel):
+    id: str
+    album_id: str
+    author: ReviewAuthor
+    rating: float
+    comment: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AlbumReviewAggregateResponse(BaseModel):
+    """Album-page block: live avg/count + the full public review list."""
+    album_id: str
+    average: Optional[float] = None  # None when count == 0
+    count: int
+    reviews: List[AlbumReviewResponse] = Field(default_factory=list)
+
+
+class MemberReviewResponse(BaseModel):
+    """One row in a member's public profile feed — the review plus enough album
+    context to render + link without a second fetch."""
+    id: str
+    album_id: str
+    album_title: str
+    album_cover_url: Optional[str] = None
+    rating: float
+    comment: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MemberProfileResponse(BaseModel):
+    """Public profile at /members/{handle}: identity + newest-first review feed."""
+    handle: str
+    display_name: str
+    avatar_url: Optional[str] = None
+    created_at: datetime
+    review_count: int
+    reviews: List[MemberReviewResponse] = Field(default_factory=list)
+
+
+class MemberSummary(BaseModel):
+    handle: str
+    display_name: str
+    avatar_url: Optional[str] = None
+    review_count: int
+
+
+class MemberListResponse(BaseModel):
+    """Handle index for the front's getStaticPaths (static profile prerender)."""
+    members: List[MemberSummary] = Field(default_factory=list)
