@@ -982,3 +982,26 @@ class LyricsResponse(BaseModel):
     segments: List[LyricsSegment] = Field(default_factory=list)
     # Present iff availability == "ok" (additive, FEAT-lyrics-translation Step 2).
     translation: Optional[LyricsTranslationInfo] = None
+
+
+# ====== Me (FEAT-multi-user-accounts Phase 0 / 0d) ======
+
+class MeResponse(BaseModel):
+    id: str
+    email: Optional[str] = None
+    handle: str
+    display_name: str
+    avatar_url: Optional[str] = None
+    created_at: datetime
+
+
+class UpdateMeRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    # Mirrors ck_users_handle_format (V36) so a bad handle 422s at the edge
+    # instead of surfacing as a CHECK-violation 500. None = field not updated
+    # (neither column is nullable, so an explicit null is treated as omitted).
+    handle: Optional[str] = Field(
+        default=None, pattern=r"^[a-z0-9][a-z0-9_-]{1,28}[a-z0-9]$"
+    )
+    display_name: Optional[str] = Field(default=None, min_length=1, max_length=80)
