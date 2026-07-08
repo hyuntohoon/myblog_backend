@@ -995,6 +995,31 @@ class MeResponse(BaseModel):
     created_at: datetime
 
 
+# ── FEAT-multi-user Phase 3a — listening/AI integrations (Last.fm this step) ──
+class IntegrationResponse(BaseModel):
+    provider: str
+    username: Optional[str] = None
+    status: str
+    last_synced_at: Optional[datetime] = None
+
+
+class IntegrationsResponse(BaseModel):
+    integrations: list[IntegrationResponse]
+
+
+class ConnectLastfmRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+
+
+class LastfmNowPlayingResponse(BaseModel):
+    is_playing: bool
+    artist: Optional[str] = None
+    track: Optional[str] = None
+    album: Optional[str] = None
+    image_url: Optional[str] = None
+    played_at: Optional[datetime] = None
+
+
 class UpdateMeRequest(BaseModel):
     model_config = {"extra": "ignore"}
 

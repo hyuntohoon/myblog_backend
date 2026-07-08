@@ -792,6 +792,21 @@
         "title": "ClassifyResponse",
         "type": "object"
       },
+      "ConnectLastfmRequest": {
+        "properties": {
+          "username": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username"
+        ],
+        "title": "ConnectLastfmRequest",
+        "type": "object"
+      },
       "CreateBucketRequest": {
         "properties": {
           "color": {
@@ -1180,6 +1195,132 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "IntegrationResponse": {
+        "properties": {
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "required": [
+          "provider",
+          "status"
+        ],
+        "title": "IntegrationResponse",
+        "type": "object"
+      },
+      "IntegrationsResponse": {
+        "properties": {
+          "integrations": {
+            "items": {
+              "$ref": "#/components/schemas/IntegrationResponse"
+            },
+            "title": "Integrations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "integrations"
+        ],
+        "title": "IntegrationsResponse",
+        "type": "object"
+      },
+      "LastfmNowPlayingResponse": {
+        "properties": {
+          "album": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album"
+          },
+          "artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "is_playing": {
+            "title": "Is Playing",
+            "type": "boolean"
+          },
+          "played_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Played At"
+          },
+          "track": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track"
+          }
+        },
+        "required": [
+          "is_playing"
+        ],
+        "title": "LastfmNowPlayingResponse",
         "type": "object"
       },
       "ListenedAlbumItem": {
@@ -4710,6 +4851,121 @@
         "summary": "Update Genre",
         "tags": [
           "genres"
+        ]
+      }
+    },
+    "/api/integrations": {
+      "get": {
+        "operationId": "list_integrations_api_integrations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrationsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Integrations",
+        "tags": [
+          "integrations"
+        ]
+      }
+    },
+    "/api/integrations/lastfm": {
+      "delete": {
+        "operationId": "disconnect_lastfm_api_integrations_lastfm_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Disconnect Lastfm",
+        "tags": [
+          "integrations"
+        ]
+      },
+      "put": {
+        "operationId": "connect_lastfm_api_integrations_lastfm_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectLastfmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Connect Lastfm",
+        "tags": [
+          "integrations"
+        ]
+      }
+    },
+    "/api/integrations/lastfm/now-playing": {
+      "get": {
+        "operationId": "lastfm_now_playing_api_integrations_lastfm_now_playing_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LastfmNowPlayingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Lastfm Now Playing",
+        "tags": [
+          "integrations"
         ]
       }
     },
