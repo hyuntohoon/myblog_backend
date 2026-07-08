@@ -1,6 +1,7 @@
 # app/api/routes/buckets.py
 import logging
-from typing import Dict, Union
+import uuid
+from typing import Union
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.exc import IntegrityError
@@ -29,8 +30,8 @@ from app.api.schemas import (
     UpdateBucketItemRequest,
     UpdateBucketRequest,
 )
+from app.api.routes.me import provisioned_member_id, provisioned_owner_id
 from app.clients.sqs_client import get_spotify_connection_status
-from app.core.auth import require_owner, resolve_owner
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.di import (
@@ -189,11 +190,11 @@ def _bucket_response(
     )
 
 
-# ── owner's full board (Cognito JWT) ─────────────────────────────────────────────
-# FEAT-public-bucket-multiuser Scope A / A5: this returns the owner's ENTIRE bucket
-# tree incl. private/workflow crates + the spotify_library bucket, so it is now
-# Cognito-gated (was edge_guard-only — every front caller already sends Bearer via
-# apiFetch). Unauthenticated read of public shelves lives at GET /public below.
+# ── the caller's full board (Cognito JWT, per-user) ──────────────────────────────
+# FEAT-multi-user Phase 2: returns the AUTHENTICATED MEMBER's ENTIRE bucket tree
+# incl. their private/workflow crates + (for the owner) the spotify_library bucket,
+# scoped to their user_id. Was require_owner (single-user); now any member gets
+# their own board. Unauthenticated read of public shelves lives at GET /public below.
 
 @router.get("", response_model=BucketsResponse)
 def list_buckets(
@@ -201,9 +202,9 @@ def list_buckets(
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
     genre_svc: GenreService = Depends(get_genre_service),
-    _claims: Dict = Depends(require_owner),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
-    roots = svc.list_buckets(db)
+    roots = svc.list_buckets(db, member_id)
     # Batch the already_reviewed + research-status + genre-label lookups across every
     # album in the whole tree (one query each), then serialize roots recursively.
     # Skip non-album rows (album_id NULL) — they carry no album to look up.
@@ -321,13 +322,14 @@ def spotify_library_sync(
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
     sqs=Depends(get_sqs_client),
-    _claims: Dict = Depends(require_owner),
+    owner_id: uuid.UUID = Depends(provisioned_owner_id),
 ):
     # Get-or-create the special bucket so the worker always has a destination, then
     # enqueue the async job. Rule #9: this only ENQUEUES — never calls Spotify; the
     # worker does the reads/diffs/writes. Server-side debounce makes a rapid re-tap
-    # a no-op (status="debounced") without hitting the queue again.
-    svc.get_or_create_spotify_library_bucket(db)
+    # a no-op (status="debounced") without hitting the queue again. The bucket carries
+    # user_id = owner (Spotify lane owner-only until Phase 3b).
+    svc.get_or_create_spotify_library_bucket(db, owner_id)
     if svc.library_sync_debounced(db):
         logger.info("spotify library sync debounced (recent sync within window)")
         return SpotifyLibrarySyncResponse(status="debounced")
@@ -342,10 +344,10 @@ def create_bucket(
     req: CreateBucketRequest,
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
-    _claims: Dict = Depends(require_owner),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
     try:
-        bucket = svc.create_bucket(db, name=req.name, color=req.color, type=req.type)
+        bucket = svc.create_bucket(db, member_id, name=req.name, color=req.color, type=req.type)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return BucketResponse(
@@ -370,11 +372,11 @@ def update_bucket(
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
     genre_svc: GenreService = Depends(get_genre_service),
-    _claims: Dict = Depends(require_owner),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
     updates = req.model_dump(exclude_unset=True)
     try:
-        bucket = svc.update_bucket(db, bucket_id, **updates)
+        bucket = svc.update_bucket(db, member_id, bucket_id, **updates)
     except BucketNotFoundError:
         raise HTTPException(status_code=404, detail="Bucket not found")
     except BucketTypeError as e:
@@ -423,9 +425,9 @@ def delete_bucket(
     bucket_id: str,
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
-    _claims: Dict = Depends(require_owner),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
-    if not svc.delete_bucket(db, bucket_id):
+    if not svc.delete_bucket(db, member_id, bucket_id):
         raise HTTPException(status_code=404, detail="Bucket not found")
     return Response(status_code=204)
 
@@ -439,10 +441,10 @@ def reorder(
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
-    _claims: Dict = Depends(require_owner),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
     try:
-        svc.reorder(db, [b.model_dump() for b in req.buckets])
+        svc.reorder(db, member_id, [b.model_dump() for b in req.buckets])
     except BucketNotFoundError:
         raise HTTPException(status_code=404, detail="Bucket not found")
     except ItemNotFoundError:
@@ -457,7 +459,7 @@ def reorder(
     # Enqueue each touched 'all' bucket's note-less items here too (dedup-gated, so
     # already-noted/queued albums and pure within-bucket reorders are no-ops).
     for b in req.buckets:
-        bucket = svc.get_bucket(db, b.id)
+        bucket = svc.get_bucket(db, b.id, member_id)
         if bucket is not None and bucket.research_mode == "all":
             _safe_enqueue_bucket(db, research_svc, bucket)
     return Response(status_code=204)
@@ -475,17 +477,19 @@ def move_bucket(
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
     genre_svc: GenreService = Depends(get_genre_service),
-    _claims: Dict = Depends(require_owner),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
     try:
-        svc.move_bucket(db, bucket_id, parent_id=req.parent_id, position=req.position)
+        svc.move_bucket(
+            db, bucket_id, parent_id=req.parent_id, position=req.position, user_id=member_id
+        )
     except BucketNotFoundError:
         raise HTTPException(status_code=404, detail="Bucket not found")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     # Return the full updated nested tree (same shape as GET /api/buckets).
     return list_buckets(
-        db=db, svc=svc, research_svc=research_svc, genre_svc=genre_svc
+        db=db, svc=svc, research_svc=research_svc, genre_svc=genre_svc, member_id=member_id
     )
 
 
@@ -505,13 +509,11 @@ def add_item(
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
     genre_svc: GenreService = Depends(get_genre_service),
-    claims: Dict = Depends(require_owner),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
-    # FEAT-pocket-buckit Step 3 (OQ11): the drop endpoint reads the owner from the verified
-    # JWT `sub`, never the request body (single-owner today; the public-page sign-in handoff
-    # in Step 5 replays its pending intent against this route). No owner_id is stored in v1
-    # (OQ12) — this establishes the first-`sub`-consumer pattern + the local/dev fallback.
-    _owner = resolve_owner(claims)
+    # FEAT-multi-user Phase 2: the drop endpoint scopes to the authenticated member;
+    # the item lands in the member's own (owned) bucket. The public-page sign-in
+    # handoff (Step 5) replays its pending intent against this route after login.
 
     # FEAT-my-buckit-artist (V32): a source_* artist add EXPANDS the source (featuring track /
     # compilation album) into its credited artists. The source row is never stored; the result
@@ -522,6 +524,7 @@ def add_item(
         try:
             added, skipped = svc.expand_artist_source(
                 db,
+                member_id,
                 bucket_id,
                 source_album_id=req.source_album_id,
                 source_track_id=req.source_track_id,
@@ -543,6 +546,7 @@ def add_item(
     try:
         item = svc.add_item(
             db,
+            member_id,
             bucket_id,
             item_type=req.item_type,
             album_id=req.album_id,
@@ -581,7 +585,7 @@ def add_item(
     # Auto-research: an album added to an 'all'-mode bucket is enqueued (dedup-gated). Album
     # rows only — a non-album row has no album to research.
     if item.album_id is not None:
-        bucket = svc.get_bucket(db, bucket_id)
+        bucket = svc.get_bucket(db, bucket_id, member_id)
         if bucket is not None and bucket.research_mode == "all":
             _safe_enqueue_album(db, research_svc, item.album_id)
     return resp
@@ -598,11 +602,11 @@ def update_item(
     svc: BucketService = Depends(get_bucket_service),
     research_svc: ResearchService = Depends(get_research_service),
     genre_svc: GenreService = Depends(get_genre_service),
-    _claims: Dict = Depends(require_owner),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
     updates = req.model_dump(exclude_unset=True)
     try:
-        item = svc.update_item(db, bucket_id, item_id, **updates)
+        item = svc.update_item(db, member_id, bucket_id, item_id, **updates)
     except ItemNotFoundError:
         raise HTTPException(status_code=404, detail="Item not found")
     # Non-album-tolerant (FEAT-pocket-buckit Step 3): update_item has NO item_type gate
@@ -623,7 +627,7 @@ def update_item(
     # enqueues that album (dedup-gated). Unchecking/other updates trigger nothing. Album
     # rows only — a non-album row has no album to research.
     if updates.get("research_selected") is True and item.album_id is not None:
-        bucket = svc.get_bucket(db, bucket_id)
+        bucket = svc.get_bucket(db, bucket_id, member_id)
         if bucket is not None and bucket.research_mode == "selected":
             _safe_enqueue_album(db, research_svc, item.album_id)
     return resp
@@ -635,8 +639,8 @@ def delete_item(
     item_id: str,
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
-    _claims: Dict = Depends(require_owner),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
-    if not svc.delete_item(db, bucket_id, item_id):
+    if not svc.delete_item(db, member_id, bucket_id, item_id):
         raise HTTPException(status_code=404, detail="Item not found")
     return Response(status_code=204)

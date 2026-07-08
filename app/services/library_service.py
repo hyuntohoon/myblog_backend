@@ -57,16 +57,19 @@ class LibraryService:
         (post_albums ⋈ posts where status='published'), grouped by album.
     "최근 들은 앨범" (Spotify cache) is Step 3, not here.
 
-    Single user → no user_id / ownership checks. Commit per mutation (mirrors
-    BucketService).
+    FEAT-multi-user Phase 2: the to-listen queue is scoped per user_id (the acting
+    member, provisioned at the route). Commit per mutation (mirrors BucketService).
     """
 
     # ── to-listen: reads ────────────────────────────────────────────────────────
 
-    def list_to_listen(self, db: Session) -> List[AlbumToListenItem]:
+    def list_to_listen(
+        self, db: Session, user_id: uuid.UUID
+    ) -> List[AlbumToListenItem]:
         return (
             db.query(AlbumToListenItem)
             .options(selectinload(AlbumToListenItem.album).selectinload(Album.artists))
+            .filter(AlbumToListenItem.user_id == user_id)
             .order_by(AlbumToListenItem.position, AlbumToListenItem.added_at)
             .all()
         )
@@ -74,37 +77,46 @@ class LibraryService:
     # ── to-listen: mutations ──────────────────────────────────────────────────────
 
     def add_to_listen(
-        self, db: Session, *, album_id: str, note: Optional[str] = None
+        self, db: Session, user_id: uuid.UUID, *, album_id: str, note: Optional[str] = None
     ) -> AlbumToListenItem:
-        """Append an album to the end of the queue. Album must exist; an album
-        already queued raises DuplicateItemError (UNIQUE album_id)."""
+        """Append an album to the end of the member's queue. Album must exist; an
+        album already in THIS member's queue raises DuplicateItemError
+        (UNIQUE(user_id, album_id))."""
         album = db.query(Album).filter(Album.id == album_id).first()
         if album is None:
             raise AlbumNotFoundError(album_id)
 
         exists = (
             db.query(AlbumToListenItem.id)
-            .filter(AlbumToListenItem.album_id == album_id)
+            .filter(
+                AlbumToListenItem.album_id == album_id,
+                AlbumToListenItem.user_id == user_id,
+            )
             .first()
         )
         if exists is not None:
             raise DuplicateItemError(album_id)
 
         next_pos = db.execute(
-            select(func.coalesce(func.max(AlbumToListenItem.position), -1))
+            select(func.coalesce(func.max(AlbumToListenItem.position), -1)).where(
+                AlbumToListenItem.user_id == user_id
+            )
         ).scalar_one()
         item = AlbumToListenItem(
-            album_id=album_id, note=note, position=int(next_pos) + 1
+            user_id=user_id, album_id=album_id, note=note, position=int(next_pos) + 1
         )
         db.add(item)
         db.commit()
         db.refresh(item)
         return item
 
-    def delete_to_listen(self, db: Session, item_id: str) -> bool:
+    def delete_to_listen(self, db: Session, user_id: uuid.UUID, item_id: str) -> bool:
         item = (
             db.query(AlbumToListenItem)
-            .filter(AlbumToListenItem.id == item_id)
+            .filter(
+                AlbumToListenItem.id == item_id,
+                AlbumToListenItem.user_id == user_id,
+            )
             .first()
         )
         if item is None:
@@ -113,14 +125,19 @@ class LibraryService:
         db.commit()
         return True
 
-    def reorder_to_listen(self, db: Session, item_ids: List[str]) -> None:
+    def reorder_to_listen(
+        self, db: Session, user_id: uuid.UUID, item_ids: List[str]
+    ) -> None:
         """Rewrite queue positions 0..n from the given top→bottom order. Same
-        idempotent mechanism as bucket reorder; an unknown id raises
-        ItemNotFoundError."""
+        idempotent mechanism as bucket reorder; an id not in THIS member's queue
+        raises ItemNotFoundError."""
         items_by_id = {
             str(it.id): it
             for it in db.query(AlbumToListenItem)
-            .filter(AlbumToListenItem.id.in_(item_ids))
+            .filter(
+                AlbumToListenItem.id.in_(item_ids),
+                AlbumToListenItem.user_id == user_id,
+            )
             .all()
         }
         unknown = [iid for iid in item_ids if str(iid) not in items_by_id]

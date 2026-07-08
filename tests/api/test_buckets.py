@@ -964,7 +964,7 @@ class TestReorder:
         )
 
         assert resp.status_code == 204
-        payload = svc.reorder.call_args.args[1]
+        payload = svc.reorder.call_args.args[2]  # (db, member_id, payload)
         assert payload == [{"id": "bk-1", "item_ids": ["it-2", "it-1"]}]
         app.dependency_overrides.clear()
 
@@ -1099,8 +1099,8 @@ class TestMoveBucket:
 
         assert resp.status_code == 200
         # Route forwarded parent_id + position to the service.
-        kwargs = svc.move_bucket.call_args.kwargs
-        assert kwargs == {"parent_id": "bk-1", "position": 0}
+        kwargs = svc.move_bucket.call_args.kwargs  # also carries user_id (V40)
+        assert kwargs["parent_id"] == "bk-1" and kwargs["position"] == 0
         # Returns the full nested tree.
         data = resp.json()
         assert [b["id"] for b in data["buckets"]] == ["bk-1"]
@@ -1118,8 +1118,8 @@ class TestMoveBucket:
         )
 
         assert resp.status_code == 200
-        kwargs = svc.move_bucket.call_args.kwargs
-        assert kwargs == {"parent_id": None, "position": 1}
+        kwargs = svc.move_bucket.call_args.kwargs  # also carries user_id (V40)
+        assert kwargs["parent_id"] is None and kwargs["position"] == 1
         app.dependency_overrides.clear()
 
     def test_move_cycle_returns_400(self, client, app):

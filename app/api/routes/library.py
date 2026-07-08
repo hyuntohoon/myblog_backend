@@ -1,5 +1,6 @@
 # app/api/routes/library.py
 import logging
+import uuid
 from datetime import datetime
 from typing import Dict, Literal, Optional
 
@@ -42,6 +43,7 @@ from app.api.schemas import (
     ToListenResponse,
     UnclassifiedBreakdown,
 )
+from app.api.routes.me import provisioned_member_id
 from app.clients.sqs_client import get_spotify_connection_status
 from app.core.auth import require_owner
 from app.db.session import get_db
@@ -85,12 +87,15 @@ def _to_listen_response(item) -> ToListenItemResponse:
 
 # ── reads (edge_guard only — no JWT; covered by GET /api/{proxy+}) ──────────────
 
+# FEAT-multi-user Phase 2: the to-listen queue is per-user, so this read is now
+# member-scoped (require_cognito_token via provisioned_member_id) — was edge_guard.
 @router.get("/to-listen", response_model=ToListenResponse)
 def list_to_listen(
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
-    items = svc.list_to_listen(db)
+    items = svc.list_to_listen(db, member_id)
     return ToListenResponse(items=[_to_listen_response(it) for it in items])
 
 
@@ -559,10 +564,10 @@ def reorder_to_listen(
     req: ToListenReorderRequest,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
-    _claims: Dict = Depends(require_owner),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
     try:
-        svc.reorder_to_listen(db, req.item_ids)
+        svc.reorder_to_listen(db, member_id, req.item_ids)
     except ItemNotFoundError:
         raise HTTPException(status_code=404, detail="Item not found")
     return Response(status_code=204)
@@ -578,10 +583,10 @@ def add_to_listen(
     req: AddToListenRequest,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
-    _claims: Dict = Depends(require_owner),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
     try:
-        item = svc.add_to_listen(db, album_id=req.album_id, note=req.note)
+        item = svc.add_to_listen(db, member_id, album_id=req.album_id, note=req.note)
     except AlbumNotFoundError:
         raise HTTPException(status_code=404, detail="Album not found")
     except DuplicateItemError:
@@ -596,9 +601,9 @@ def delete_to_listen(
     item_id: str,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
-    _claims: Dict = Depends(require_owner),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
-    if not svc.delete_to_listen(db, item_id):
+    if not svc.delete_to_listen(db, member_id, item_id):
         raise HTTPException(status_code=404, detail="Item not found")
     return Response(status_code=204)
 

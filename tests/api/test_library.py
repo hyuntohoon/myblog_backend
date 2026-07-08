@@ -154,7 +154,7 @@ class TestReorderToListen:
         )
 
         assert resp.status_code == 204
-        assert svc.reorder_to_listen.call_args.args[1] == ["it-2", "it-1"]
+        assert svc.reorder_to_listen.call_args.args[2] == ["it-2", "it-1"]  # (db, member_id, ids)
         app.dependency_overrides.clear()
 
     def test_reorder_unknown_item_returns_404(self, client, app):
