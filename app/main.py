@@ -91,6 +91,7 @@ from app.api.routes import lyrics
 from app.api.routes import me
 from app.api.routes import reviews
 from app.api.routes import members
+from app.api.routes import integrations
 from app.db.session import get_db
 
 app.include_router(sections.router,   prefix="/api/sections",      tags=["sections"])
@@ -107,6 +108,7 @@ app.include_router(lyrics.router,     prefix="/api/lyrics",        tags=["lyrics
 app.include_router(me.router,         prefix="/api/me",            tags=["me"])
 app.include_router(reviews.router,    prefix="/api/reviews",       tags=["reviews"])
 app.include_router(members.router,    prefix="/api/members",       tags=["members"])
+app.include_router(integrations.router, prefix="/api/integrations",  tags=["integrations"])
 
 
 # -----------------------------

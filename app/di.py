@@ -65,6 +65,12 @@ def get_user_service():
     return UserService()
 
 
+def get_integration_service():
+    from app.services.integration_service import IntegrationService
+
+    return IntegrationService()
+
+
 def get_review_service():
     from app.services.review_service import ReviewService
 
