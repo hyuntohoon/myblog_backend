@@ -69,18 +69,39 @@ def svc():
     return LibraryService()
 
 
+@pytest.fixture
+def user_id(db):
+    # FEAT-multi-user Phase 2: the FK target for album_to_listen_items.user_id.
+    # Inserted inside the test's outer transaction (db.flush, NOT commit) so it
+    # rolls back on teardown. Distinct uuid+handle from the bucket file so a
+    # combined run can't collide on the unique handle.
+    import uuid as _uuid
+
+    uid = _uuid.UUID("00000000-0000-0000-0000-0000000000b2")
+    db.execute(
+        text(
+            "INSERT INTO users (id, handle, display_name) VALUES (:id, :h, :d) "
+            "ON CONFLICT (id) DO NOTHING"
+        ),
+        {"id": str(uid), "h": "test-librarysvc", "d": "Test LibrarySvc"},
+    )
+    db.flush()
+    return uid
+
+
 class TestToListen:
-    def test_add_appends_dense_positions(self, db, svc, album_ids):
+    def test_add_appends_dense_positions(self, db, svc, album_ids, user_id):
         for aid in album_ids[:3]:
-            svc.add_to_listen(db, album_id=aid)
-        items = svc.list_to_listen(db)
+            svc.add_to_listen(db, user_id, album_id=aid)
+        items = svc.list_to_listen(db, user_id)
         mine = [i for i in items if str(i.album_id) in album_ids[:3]]
         assert [i.position for i in mine] == [0, 1, 2]
 
-    def test_duplicate_album_blocked(self, db, svc, album_ids):
-        svc.add_to_listen(db, album_id=album_ids[0])
+    def test_duplicate_album_blocked(self, db, svc, album_ids, user_id):
+        # SAME user_id so the per-user UNIQUE(user_id, album_id) dedup fires.
+        svc.add_to_listen(db, user_id, album_id=album_ids[0])
         with pytest.raises(DuplicateItemError):
-            svc.add_to_listen(db, album_id=album_ids[0])
+            svc.add_to_listen(db, user_id, album_id=album_ids[0])
         rows = db.execute(
             select(AlbumToListenItem).where(
                 AlbumToListenItem.album_id == album_ids[0]
@@ -88,29 +109,31 @@ class TestToListen:
         ).all()
         assert len(rows) == 1
 
-    def test_missing_album_raises(self, db, svc):
+    def test_missing_album_raises(self, db, svc, user_id):
         with pytest.raises(AlbumNotFoundError):
             svc.add_to_listen(
-                db, album_id="00000000-0000-0000-0000-000000000000"
+                db, user_id, album_id="00000000-0000-0000-0000-000000000000"
             )
 
-    def test_reorder_rewrites_positions(self, db, svc, album_ids):
-        items = [svc.add_to_listen(db, album_id=a) for a in album_ids[:3]]
+    def test_reorder_rewrites_positions(self, db, svc, album_ids, user_id):
+        items = [svc.add_to_listen(db, user_id, album_id=a) for a in album_ids[:3]]
         new_order = [str(items[2].id), str(items[0].id), str(items[1].id)]
-        svc.reorder_to_listen(db, new_order)
-        by_id = {str(i.id): i.position for i in svc.list_to_listen(db)}
+        svc.reorder_to_listen(db, user_id, new_order)
+        by_id = {str(i.id): i.position for i in svc.list_to_listen(db, user_id)}
         assert by_id[new_order[0]] == 0
         assert by_id[new_order[1]] == 1
         assert by_id[new_order[2]] == 2
 
-    def test_reorder_unknown_item_raises(self, db, svc):
+    def test_reorder_unknown_item_raises(self, db, svc, user_id):
         with pytest.raises(ItemNotFoundError):
-            svc.reorder_to_listen(db, ["00000000-0000-0000-0000-000000000000"])
+            svc.reorder_to_listen(
+                db, user_id, ["00000000-0000-0000-0000-000000000000"]
+            )
 
-    def test_delete_removes_row(self, db, svc, album_ids):
-        item = svc.add_to_listen(db, album_id=album_ids[0])
-        assert svc.delete_to_listen(db, str(item.id)) is True
-        assert svc.delete_to_listen(db, str(item.id)) is False
+    def test_delete_removes_row(self, db, svc, album_ids, user_id):
+        item = svc.add_to_listen(db, user_id, album_id=album_ids[0])
+        assert svc.delete_to_listen(db, user_id, str(item.id)) is True
+        assert svc.delete_to_listen(db, user_id, str(item.id)) is False
 
 
 class TestRecentlyListened:

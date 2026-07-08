@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas import MeResponse, UpdateMeRequest
 from app.clients.cognito_client import CognitoDeleteError, delete_cognito_user
-from app.core.auth import require_cognito_token
+from app.core.auth import require_cognito_token, require_owner
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.di import get_user_service
@@ -40,6 +40,34 @@ def _member_id(claims: Dict[str, Any] | None) -> uuid.UUID:
         return uuid.UUID(sub)
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid token subject")
+
+
+def provisioned_member_id(
+    claims: Dict[str, Any] = Depends(require_cognito_token),
+    db: Session = Depends(get_db),
+    svc: UserService = Depends(get_user_service),
+) -> uuid.UUID:
+    """The acting member's id, guaranteeing their users row exists (lazy-provision
+    on first authed call — a member's first bucket / to-listen write can be their
+    first authed action, mirroring reviews). FEAT-multi-user Phase 2: scoped
+    per-user routes depend on this instead of require_owner."""
+    member_id = _member_id(claims)
+    svc.get_or_create(db, member_id, claims)
+    return member_id
+
+
+def provisioned_owner_id(
+    claims: Dict[str, Any] = Depends(require_owner),
+    db: Session = Depends(get_db),
+    svc: UserService = Depends(get_user_service),
+) -> uuid.UUID:
+    """The owner's member id (require_owner), guaranteeing the owner users row
+    exists. For owner-only per-user infrastructure (the spotify_library bucket,
+    which carries user_id = owner in Phase 2 — the Spotify lane is owner-only until
+    Phase 3b)."""
+    owner_id = _member_id(claims)
+    svc.get_or_create(db, owner_id, claims)
+    return owner_id
 
 
 def _me_response(user) -> MeResponse:

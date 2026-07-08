@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -13,6 +14,8 @@ from app.services.bucket_service import (
 )
 
 TODAY = date(2026, 6, 3)
+# FEAT-multi-user Phase 2: add_item is now user-scoped; the mock ignores the value.
+UID = uuid.UUID(int=1)
 
 
 class TestAddItemBranching:
@@ -37,7 +40,7 @@ class TestAddItemBranching:
         svc = BucketService()
         db = self._db([SimpleNamespace(id="bk-1"), None])
         with pytest.raises(AlbumNotFoundError):
-            svc.add_item(db, "bk-1", item_type="album", album_id="alb-x")
+            svc.add_item(db, UID, "bk-1",item_type="album", album_id="alb-x")
 
     def test_track_missing_raises_track_not_found(self):
         from app.services.bucket_service import TrackNotFoundError
@@ -45,12 +48,12 @@ class TestAddItemBranching:
         svc = BucketService()
         db = self._db([SimpleNamespace(id="bk-1"), None], existing=[])
         with pytest.raises(TrackNotFoundError):
-            svc.add_item(db, "bk-1", item_type="track", track_id="trk-x")
+            svc.add_item(db, UID, "bk-1",item_type="track", track_id="trk-x")
 
     def test_track_inserts_typed_fields(self):
         svc = BucketService()
         db = self._db([SimpleNamespace(id="bk-1"), SimpleNamespace(id="trk-1")], existing=[])
-        item = svc.add_item(db, "bk-1", item_type="track", track_id="trk-1")
+        item = svc.add_item(db, UID, "bk-1",item_type="track", track_id="trk-1")
         assert item.item_type == "track"
         assert str(item.track_id) == "trk-1"
         assert item.album_id is None
@@ -63,14 +66,14 @@ class TestAddItemBranching:
         existing = [SimpleNamespace(item_type="track", track_id="trk-1", album_id=None, position=0)]
         db = self._db([SimpleNamespace(id="bk-1"), SimpleNamespace(id="trk-1")], existing=existing)
         with pytest.raises(DuplicateItemError):
-            svc.add_item(db, "bk-1", item_type="track", track_id="trk-1")
+            svc.add_item(db, UID, "bk-1",item_type="track", track_id="trk-1")
 
     def test_playback_allows_duplicate(self):
         # playback (queue) allows duplicate tracks (D8) — a dup does NOT raise.
         svc = BucketService()
         existing = [SimpleNamespace(item_type="playback", track_id="trk-1", album_id=None, position=0)]
         db = self._db([SimpleNamespace(id="bk-1"), SimpleNamespace(id="trk-1")], existing=existing)
-        item = svc.add_item(db, "bk-1", item_type="playback", track_id="trk-1")
+        item = svc.add_item(db, UID, "bk-1",item_type="playback", track_id="trk-1")
         assert item.item_type == "playback"
         assert str(item.track_id) == "trk-1"
 
@@ -80,7 +83,7 @@ class TestAddItemBranching:
         svc = BucketService()
         db = self._db([SimpleNamespace(id="bk-1"), None], existing=[])
         with pytest.raises(ReviewTargetNotFoundError):
-            svc.add_item(db, "bk-1", item_type="review", review_target_id="p-x")
+            svc.add_item(db, UID, "bk-1",item_type="review", review_target_id="p-x")
 
     def test_snapshot_writes_membership_and_append_only_side_row(self):
         from myblog_shared_db.models import BucketItemSnapshot, ReviewBucketItem
@@ -92,7 +95,7 @@ class TestAddItemBranching:
             frozen={"top": 1}, metric="plays", range_from=None, range_to=None,
             unit="count", total=10.0, unresolved=0, unclassified=0, source_album_ids=[],
         )
-        item = svc.add_item(db, "bk-1", item_type="snapshot", snapshot=snap)
+        item = svc.add_item(db, UID, "bk-1",item_type="snapshot", snapshot=snap)
         assert item.item_type == "snapshot"
         assert item.album_id is None and item.track_id is None
         added = [type(c.args[0]) for c in db.add.call_args_list]

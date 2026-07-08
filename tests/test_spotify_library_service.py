@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -9,6 +10,9 @@ from app.services.bucket_service import (
     SPOTIFY_LIBRARY_BUCKET_NAME,
     BucketService,
 )
+
+# FEAT-multi-user Phase 2: the spotify_library bucket is owner-scoped; mock ignores value.
+OWNER_ID = uuid.UUID(int=1)
 
 
 class TestLibrarySyncDebounce:
@@ -52,7 +56,7 @@ class TestGetOrCreateLibraryBucket:
         existing = MagicMock()
         db.query.return_value.filter.return_value.first.return_value = existing
 
-        result = svc.get_or_create_spotify_library_bucket(db)
+        result = svc.get_or_create_spotify_library_bucket(db, OWNER_ID)
 
         assert result is existing
         db.add.assert_not_called()
@@ -65,7 +69,7 @@ class TestGetOrCreateLibraryBucket:
         # max(position) lookup → -1 so the new bucket lands at position 0.
         db.execute.return_value.scalar_one.return_value = -1
 
-        result = svc.get_or_create_spotify_library_bucket(db)
+        result = svc.get_or_create_spotify_library_bucket(db, OWNER_ID)
 
         # A new ReviewBucket was added/committed with the special kind + name.
         db.add.assert_called_once()

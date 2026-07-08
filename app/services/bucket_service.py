@@ -18,6 +18,7 @@ from myblog_shared_db.models import (
     ReviewBucketItem,
     SpotifyLibraryAlbum,
     Track,
+    User,
     post_albums_table as post_albums,
 )
 
@@ -92,8 +93,11 @@ LIBRARY_SYNC_DEBOUNCE_SECONDS = 30
 class BucketService:
     """Review-queue kanban: user-created buckets holding queued albums.
 
-    Single user → no user_id / ownership checks. Transaction boundary lives in
-    the service (commit once per mutation), mirroring PostService.
+    FEAT-multi-user Phase 2: every private read/write is scoped to a user_id (the
+    acting member, provisioned at the route). Ownership is enforced by scoping the
+    bucket/item lookups — a member can only see/mutate their own buckets. The
+    public viewer (list_public_buckets) stays cross-user. Transaction boundary
+    lives in the service (commit once per mutation), mirroring PostService.
     """
 
     # ── recommendation scoring ────────────────────────────────────────────────
@@ -129,7 +133,7 @@ class BucketService:
 
     # ── reads ─────────────────────────────────────────────────────────────────
 
-    def list_buckets(self, db: Session) -> List[ReviewBucket]:
+    def list_buckets(self, db: Session, user_id: uuid.UUID) -> List[ReviewBucket]:
         """Nested tree of buckets. Returns only ROOT buckets (parent_id IS NULL);
         each node carries its descendants on a transient ``children_nodes`` list
         (recursive), every sibling level ordered by (position, created_at). Items
@@ -154,6 +158,7 @@ class BucketService:
                 # SELECT, same idiom — avoids a lazy item.artist per Artist Buckit member).
                 selectinload(ReviewBucket.items).selectinload(ReviewBucketItem.artist),
             )
+            .filter(ReviewBucket.user_id == user_id)
             .order_by(ReviewBucket.position, ReviewBucket.created_at)
             .all()
         )
@@ -204,6 +209,7 @@ class BucketService:
         bucket_id: str,
         parent_id: Optional[str],
         position: int,
+        user_id: uuid.UUID,
     ) -> ReviewBucket:
         """Reparent ``bucket_id`` under ``parent_id`` (None => root) at ``position``.
 
@@ -213,12 +219,12 @@ class BucketService:
         After reparenting, siblings sharing the new parent_id are renumbered so
         the moved bucket lands at ``position`` and positions are contiguous 0..n.
         """
-        bucket = self.get_bucket(db, bucket_id)
+        bucket = self.get_bucket(db, bucket_id, user_id)
         if bucket is None:
             raise BucketNotFoundError(bucket_id)
 
         if parent_id is not None:
-            parent = self.get_bucket(db, parent_id)
+            parent = self.get_bucket(db, parent_id, user_id)
             if parent is None:
                 raise BucketNotFoundError(parent_id)
             if str(parent_id) == str(bucket_id):
@@ -245,6 +251,7 @@ class BucketService:
                 if new_parent is None
                 else ReviewBucket.parent_id == parent_id
             )
+            .filter(ReviewBucket.user_id == user_id)
             .order_by(ReviewBucket.position, ReviewBucket.created_at)
             .all()
         )
@@ -266,6 +273,7 @@ class BucketService:
                     if old_parent is None
                     else ReviewBucket.parent_id == old_parent_id
                 )
+                .filter(ReviewBucket.user_id == user_id)
                 .order_by(ReviewBucket.position, ReviewBucket.created_at)
                 .all()
             )
@@ -294,6 +302,7 @@ class BucketService:
     def create_bucket(
         self,
         db: Session,
+        user_id: uuid.UUID,
         *,
         name: str,
         color: Optional[str] = None,
@@ -309,20 +318,32 @@ class BucketService:
         if type not in ("general", "artist"):
             raise ValueError("type must be general|artist")
         next_pos = db.execute(
-            select(func.coalesce(func.max(ReviewBucket.position), -1))
+            select(func.coalesce(func.max(ReviewBucket.position), -1)).where(
+                ReviewBucket.user_id == user_id
+            )
         ).scalar_one()
-        bucket = ReviewBucket(name=name, color=color, type=type, position=int(next_pos) + 1)
+        bucket = ReviewBucket(
+            user_id=user_id, name=name, color=color, type=type, position=int(next_pos) + 1
+        )
         db.add(bucket)
         db.commit()
         db.refresh(bucket)
         return bucket
 
-    def get_bucket(self, db: Session, bucket_id: str) -> Optional[ReviewBucket]:
-        return db.query(ReviewBucket).filter(ReviewBucket.id == bucket_id).first()
+    def get_bucket(
+        self, db: Session, bucket_id: str, user_id: Optional[uuid.UUID] = None
+    ) -> Optional[ReviewBucket]:
+        # Single .filter(*conds) (not chained) so the ownership scope adds no extra
+        # query-chain hop — keeps the mock-based unit tests' one-filter wiring valid.
+        conds = [ReviewBucket.id == bucket_id]
+        if user_id is not None:
+            conds.append(ReviewBucket.user_id == user_id)
+        return db.query(ReviewBucket).filter(*conds).first()
 
     def update_bucket(
         self,
         db: Session,
+        user_id: uuid.UUID,
         bucket_id: str,
         *,
         name: Optional[str] = None,
@@ -333,7 +354,7 @@ class BucketService:
         is_public: Optional[bool] = None,
         type: Any = _UNSET,
     ) -> ReviewBucket:
-        bucket = self.get_bucket(db, bucket_id)
+        bucket = self.get_bucket(db, bucket_id, user_id)
         if bucket is None:
             raise BucketNotFoundError(bucket_id)
         # FEAT-my-buckit-artist (V32): bucket type is set once at create and immutable in v1.
@@ -399,8 +420,8 @@ class BucketService:
             .all()
         )
 
-    def delete_bucket(self, db: Session, bucket_id: str) -> bool:
-        bucket = self.get_bucket(db, bucket_id)
+    def delete_bucket(self, db: Session, user_id: uuid.UUID, bucket_id: str) -> bool:
+        bucket = self.get_bucket(db, bucket_id, user_id)
         if bucket is None:
             return False
         db.delete(bucket)  # items cascade (FK ondelete + relationship cascade)
@@ -412,6 +433,7 @@ class BucketService:
     def add_item(
         self,
         db: Session,
+        user_id: uuid.UUID,
         bucket_id: str,
         *,
         item_type: str = "album",
@@ -446,7 +468,7 @@ class BucketService:
         Raises BucketNotFoundError / AlbumNotFoundError / TrackNotFoundError /
         ReviewTargetNotFoundError / ArtistNotFoundError / BucketTypeError / DuplicateItemError,
         mapped to HTTP by the route."""
-        bucket = self.get_bucket(db, bucket_id)
+        bucket = self.get_bucket(db, bucket_id, user_id)
         if bucket is None:
             raise BucketNotFoundError(bucket_id)
 
@@ -634,6 +656,7 @@ class BucketService:
     def expand_artist_source(
         self,
         db: Session,
+        user_id: uuid.UUID,
         bucket_id: str,
         *,
         source_album_id: Optional[str] = None,
@@ -650,7 +673,7 @@ class BucketService:
 
         Every produced row is an artist row, so the artist-only type gate is satisfied on both
         General and Artist buckets (expansion is valid on either)."""
-        bucket = self.get_bucket(db, bucket_id)
+        bucket = self.get_bucket(db, bucket_id, user_id)
         if bucket is None:
             raise BucketNotFoundError(bucket_id)
         # Exactly one source. The request validator guarantees this; guard direct callers.
@@ -753,6 +776,7 @@ class BucketService:
     def update_item(
         self,
         db: Session,
+        user_id: uuid.UUID,
         bucket_id: str,
         item_id: str,
         *,
@@ -762,6 +786,10 @@ class BucketService:
         research_selected: Optional[bool] = None,
         prep_tonight: Optional[bool] = None,
     ) -> ReviewBucketItem:
+        # Ownership: a member can only touch items in their own bucket. A miss →
+        # 404 (never reveal another member's item exists).
+        if self.get_bucket(db, bucket_id, user_id) is None:
+            raise ItemNotFoundError(item_id)
         item = (
             db.query(ReviewBucketItem)
             .filter(
@@ -788,7 +816,11 @@ class BucketService:
         db.refresh(item)
         return item
 
-    def delete_item(self, db: Session, bucket_id: str, item_id: str) -> bool:
+    def delete_item(
+        self, db: Session, user_id: uuid.UUID, bucket_id: str, item_id: str
+    ) -> bool:
+        if self.get_bucket(db, bucket_id, user_id) is None:
+            return False
         item = (
             db.query(ReviewBucketItem)
             .filter(
@@ -805,7 +837,7 @@ class BucketService:
 
     # ── drag-and-drop persistence ───────────────────────────────────────────────
 
-    def reorder(self, db: Session, buckets: List[dict]) -> None:
+    def reorder(self, db: Session, user_id: uuid.UUID, buckets: List[dict]) -> None:
         """Idempotently re-apply a drag result.
 
         Payload: ``[{id, item_ids:[...]}, ...]`` — for each listed bucket, the
@@ -819,6 +851,7 @@ class BucketService:
             str(bid): btype
             for bid, btype in db.query(ReviewBucket.id, ReviewBucket.type)
             .filter(ReviewBucket.id.in_(bucket_ids))
+            .filter(ReviewBucket.user_id == user_id)
             .all()
         }
         missing = [bid for bid in bucket_ids if str(bid) not in bucket_type_by_id]
@@ -827,10 +860,14 @@ class BucketService:
 
         # Collect every referenced item id and load in one query.
         all_item_ids = [iid for b in buckets for iid in b.get("item_ids", [])]
+        # Scope items to the caller's buckets (join) so a reorder can't drag another
+        # member's item into one of my buckets by referencing its id.
         items_by_id = {
             str(it.id): it
             for it in db.query(ReviewBucketItem)
+            .join(ReviewBucket, ReviewBucketItem.bucket_id == ReviewBucket.id)
             .filter(ReviewBucketItem.id.in_(all_item_ids))
+            .filter(ReviewBucket.user_id == user_id)
             .all()
         }
         unknown = [iid for iid in all_item_ids if str(iid) not in items_by_id]
@@ -864,21 +901,30 @@ class BucketService:
     # albums. Get-or-create is the BACKEND's job (the worker creates none). The POST
     # endpoint only enqueues an async job — Spotify is never touched here (rule #9).
 
-    def get_or_create_spotify_library_bucket(self, db: Session) -> ReviewBucket:
-        """Return the single kind='spotify_library' bucket, creating it (as a root
+    def get_or_create_spotify_library_bucket(
+        self, db: Session, owner_id: uuid.UUID
+    ) -> ReviewBucket:
+        """Return the owner's kind='spotify_library' bucket, creating it (as a root
         column appended after existing buckets) if it does not exist yet. The DB
-        partial-unique index guarantees at most one such bucket."""
+        partial-unique index (V40: per-user) guarantees at most one per user; the
+        Spotify lane is owner-only until Phase 3b, so owner_id is always the owner."""
         bucket = (
             db.query(ReviewBucket)
-            .filter(ReviewBucket.kind == SPOTIFY_LIBRARY_BUCKET_KIND)
+            .filter(
+                ReviewBucket.kind == SPOTIFY_LIBRARY_BUCKET_KIND,
+                ReviewBucket.user_id == owner_id,
+            )
             .first()
         )
         if bucket is not None:
             return bucket
         next_pos = db.execute(
-            select(func.coalesce(func.max(ReviewBucket.position), -1))
+            select(func.coalesce(func.max(ReviewBucket.position), -1)).where(
+                ReviewBucket.user_id == owner_id
+            )
         ).scalar_one()
         bucket = ReviewBucket(
+            user_id=owner_id,
             name=SPOTIFY_LIBRARY_BUCKET_NAME,
             kind=SPOTIFY_LIBRARY_BUCKET_KIND,
             position=int(next_pos) + 1,
@@ -889,11 +935,14 @@ class BucketService:
         except IntegrityError:
             # Two concurrent POSTs both passed the .first() guard and raced to
             # insert; the partial-unique index idx_review_buckets_single_spotify_library
-            # rejects the loser. Roll back and return the winner's row.
+            # (per-user) rejects the loser. Roll back and return the winner's row.
             db.rollback()
             return (
                 db.query(ReviewBucket)
-                .filter(ReviewBucket.kind == SPOTIFY_LIBRARY_BUCKET_KIND)
+                .filter(
+                    ReviewBucket.kind == SPOTIFY_LIBRARY_BUCKET_KIND,
+                    ReviewBucket.user_id == owner_id,
+                )
                 .one()
             )
         db.refresh(bucket)
