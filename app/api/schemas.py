@@ -943,6 +943,39 @@ class UpdateGenreRequest(BaseModel):
     position: Optional[int] = None
 
 
+# ====== Today's pick (FEAT-today-buckit Step 4) ======
+# Owner-curated "song of the day" store. GETs are public (edge_guard catch-all,
+# self-contained via the denormalized display cols); PUT/DELETE are owner-only
+# (require_owner). `pick_date` is server-pinned to today on upsert, so it is
+# absent from the request and present on the response. cover_url is nullable
+# (album art may be missing from Spotify); the rest are NOT NULL (V39 schema).
+
+class DailyPickItem(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: str
+    pick_date: date
+    track_id: str
+    album_id: str
+    title: str
+    artist: str
+    cover_url: Optional[str] = None
+    spotify_track_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class UpsertTodaysPickRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    track_id: UUID
+    album_id: UUID
+    title: str = Field(min_length=1)
+    artist: str = Field(min_length=1)
+    cover_url: Optional[str] = None
+    spotify_track_id: str = Field(min_length=1)
+
+
 # ====== Lyrics (FEAT-lyrics-viewer Step 1) ======
 # Normalized payload spec pinned in ARCH-lyrics-normalization-model (2026-07-02).
 # JWT-gated /api/lyrics read ONLY — never referenced by any public/edge-cached response
