@@ -1007,6 +1007,73 @@
         "title": "CreatePostReq",
         "type": "object"
       },
+      "DailyPickItem": {
+        "properties": {
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "artist": {
+            "title": "Artist",
+            "type": "string"
+          },
+          "cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Url"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "pick_date": {
+            "format": "date",
+            "title": "Pick Date",
+            "type": "string"
+          },
+          "spotify_track_id": {
+            "title": "Spotify Track Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "track_id": {
+            "title": "Track Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "pick_date",
+          "track_id",
+          "album_id",
+          "title",
+          "artist",
+          "spotify_track_id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "DailyPickItem",
+        "type": "object"
+      },
       "DistItem": {
         "properties": {
           "count": {
@@ -3997,6 +4064,55 @@
           }
         },
         "title": "UpdatePostRequest",
+        "type": "object"
+      },
+      "UpsertTodaysPickRequest": {
+        "properties": {
+          "album_id": {
+            "format": "uuid",
+            "title": "Album Id",
+            "type": "string"
+          },
+          "artist": {
+            "minLength": 1,
+            "title": "Artist",
+            "type": "string"
+          },
+          "cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Url"
+          },
+          "spotify_track_id": {
+            "minLength": 1,
+            "title": "Spotify Track Id",
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "track_id": {
+            "format": "uuid",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "track_id",
+          "album_id",
+          "title",
+          "artist",
+          "spotify_track_id"
+        ],
+        "title": "UpsertTodaysPickRequest",
         "type": "object"
       },
       "ValidationError": {
@@ -7331,6 +7447,170 @@
         "summary": "List Tags",
         "tags": [
           "tags"
+        ]
+      }
+    },
+    "/api/todays-pick": {
+      "delete": {
+        "description": "Clear today's pick (\"unpost today\"). 204 if a pick was removed; 404 if\nnothing was posted today (re-PUT is the normal path to replace a pick).",
+        "operationId": "delete_todays_pick_api_todays_pick_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Todays Pick",
+        "tags": [
+          "todays-pick"
+        ]
+      },
+      "get": {
+        "description": "Today's pick, or null on a no-pick day (home tile hides on null).",
+        "operationId": "get_todays_pick_api_todays_pick_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DailyPickItem"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Get Todays Pick Api Todays Pick Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Todays Pick",
+        "tags": [
+          "todays-pick"
+        ]
+      },
+      "put": {
+        "description": "Set today's pick. Upserts on pick_date = today; re-POST overwrites. The\nserver pins pick_date to today \u2014 the body carries the track's ids + display.",
+        "operationId": "put_todays_pick_api_todays_pick_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertTodaysPickRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyPickItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Put Todays Pick",
+        "tags": [
+          "todays-pick"
+        ]
+      }
+    },
+    "/api/todays-pick/history": {
+      "get": {
+        "description": "Date-desc history of past picks. `before` pages older entries.",
+        "operationId": "get_todays_pick_history_api_todays_pick_history_get",
+        "parameters": [
+          {
+            "description": "max picks to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "description": "max picks to return",
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "exclusive upper bound (ISO date) for paging older picks",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "exclusive upper bound (ISO date) for paging older picks",
+              "title": "Before"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DailyPickItem"
+                  },
+                  "title": "Response Get Todays Pick History Api Todays Pick History Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Todays Pick History",
+        "tags": [
+          "todays-pick"
         ]
       }
     },
