@@ -6607,6 +6607,49 @@
         ]
       }
     },
+    "/api/members/{handle}/now-playing": {
+      "get": {
+        "description": "The member's public now-playing. Reads only the worker-written\nlastfm_recent_tracks cache (rule #9 \u2014 never a synchronous Last.fm call).\n404 for an unknown handle; is_playing=false covers both 'not connected'\nand 'nothing playing' so a member's integration status stays private \u2014\nthe profile page hides the section unless is_playing is true.",
+        "operationId": "member_now_playing_api_members__handle__now_playing_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "handle",
+            "required": true,
+            "schema": {
+              "title": "Handle",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LastfmNowPlayingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Member Now Playing",
+        "tags": [
+          "members"
+        ]
+      }
+    },
     "/api/metrics/batch": {
       "post": {
         "operationId": "batch_metrics_api_metrics_batch_post",

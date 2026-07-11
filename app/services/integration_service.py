@@ -11,8 +11,9 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from myblog_shared_db.models import LastfmRecentTrack, UserIntegration
+from myblog_shared_db.models import LastfmRecentTrack, User, UserIntegration
 
+from app.services.review_service import MemberNotFoundError
 from app.services.user_service import UserService
 
 LASTFM_PROVIDER = "lastfm"
@@ -93,3 +94,16 @@ class IntegrationService:
                 LastfmRecentTrack.is_now_playing.is_(True),
             )
         )
+
+    def public_now_playing(
+        self, db: Session, handle: str
+    ) -> Optional[LastfmRecentTrack]:
+        """Handle-scoped public read of a member's now-playing row. Raises
+        MemberNotFoundError for an unknown handle (route maps to 404); a member
+        without a Last.fm integration and one with nothing playing are both
+        plain None — the public profile hides the section either way, and not
+        distinguishing them keeps integration status private."""
+        user = db.scalar(select(User).where(User.handle == handle.lower()))
+        if user is None:
+            raise MemberNotFoundError(handle)
+        return self.lastfm_now_playing(db, user.id)
