@@ -1,19 +1,23 @@
 # app/api/routes/integrations.py
-# FEAT-multi-user-accounts Phase 3a — the member's listening/AI integrations.
+# FEAT-multi-user-accounts Phase 3a/3b — the member's listening/AI integrations.
 #   GET    /api/integrations                    — list the caller's integrations
 #                                                 (rides the edge_guard GET catch-all).
 #   PUT    /api/integrations/lastfm             — connect/replace Last.fm username (JWT route).
 #   DELETE /api/integrations/lastfm             — disconnect Last.fm (JWT route).
 #   GET    /api/integrations/lastfm/now-playing — the caller's Last.fm now-playing.
+#   PUT    /api/integrations/spotify            — 3b-c: server-side code exchange,
+#                                                 KMS-enveloped refresh-token custody (JWT route).
+#   DELETE /api/integrations/spotify            — disconnect Spotify (JWT route).
 import logging
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.api.routes.me import _member_id
 from app.api.schemas import (
     ConnectLastfmRequest,
+    ConnectSpotifyRequest,
     IntegrationResponse,
     IntegrationsResponse,
     LastfmNowPlayingResponse,
@@ -21,7 +25,14 @@ from app.api.schemas import (
 from app.core.auth import require_cognito_token
 from app.db.session import get_db
 from app.di import get_integration_service
-from app.services.integration_service import LASTFM_PROVIDER, IntegrationService
+from app.services.integration_service import (
+    LASTFM_PROVIDER,
+    SPOTIFY_PROVIDER,
+    IntegrationService,
+    SpotifyCodeRejectedError,
+    SpotifyConnectNotConfiguredError,
+    SpotifyProviderError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +76,43 @@ def disconnect_lastfm(
     svc: IntegrationService = Depends(get_integration_service),
 ):
     svc.disconnect(db, _member_id(claims), LASTFM_PROVIDER)
+    return Response(status_code=204)
+
+
+@router.put("/spotify", response_model=IntegrationResponse)
+def connect_spotify(
+    payload: ConnectSpotifyRequest,
+    claims: Dict[str, Any] = Depends(require_cognito_token),
+    db: Session = Depends(get_db),
+    svc: IntegrationService = Depends(get_integration_service),
+):
+    """FEAT-multi-user 3b-c: exchange the callback `?code` server-side and store
+    the KMS-enveloped refresh token. Rule #9: a member-initiated mutation against
+    the Spotify AUTH host (the playback-mint exception) — no sync content call.
+    Fail-closed: missing KMS key / app creds ⇒ 503 before any outbound call."""
+    try:
+        row = svc.connect_spotify(db, _member_id(claims), claims, payload.code)
+    except SpotifyConnectNotConfiguredError:
+        raise HTTPException(
+            status_code=503, detail="Spotify member connect not configured"
+        )
+    except SpotifyCodeRejectedError:
+        raise HTTPException(
+            status_code=400,
+            detail="Spotify rejected the authorization code (expired or already used)",
+        )
+    except SpotifyProviderError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return _integration_response(row)
+
+
+@router.delete("/spotify", status_code=204)
+def disconnect_spotify(
+    claims: Dict[str, Any] = Depends(require_cognito_token),
+    db: Session = Depends(get_db),
+    svc: IntegrationService = Depends(get_integration_service),
+):
+    svc.disconnect(db, _member_id(claims), SPOTIFY_PROVIDER)
     return Response(status_code=204)
 
 

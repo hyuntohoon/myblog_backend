@@ -73,6 +73,20 @@ class Settings(BaseSettings):
     SPOTIFY_CLIENT_SECRET: str = ""
     SPOTIFY_STREAMING_REFRESH_TOKEN: str = ""
 
+    # FEAT-multi-user-accounts 3b-c: member Spotify connect (server-side code
+    # exchange). The front callback page captures `?code` and PUTs it authed; the
+    # exchange posts this exact redirect_uri (must match the Spotify dashboard
+    # registration byte-for-byte or the exchange 400s).
+    SPOTIFY_MEMBER_REDIRECT_URI: str = (
+        "https://www.ratemymusic.blog/settings/spotify/callback"
+    )
+    # KMS key (key id / ARN / alias, e.g. 'alias/myblog-user-tokens') that envelopes
+    # member Spotify refresh tokens stored in user_integrations.payload. EMPTY ⇒ the
+    # connect endpoint 503s fail-closed BEFORE any Spotify call — plaintext is never
+    # stored and the one-time code is not burned (3a LASTFM_API_KEY dormant
+    # precedent; the 3b-a CMK awaits the owner's terraform apply).
+    USER_TOKENS_KMS_KEY_ID: str = ""
+
     # FEAT-spotify-library-sync: read-only MIRROR of the worker's write gate, used
     # only to drive the /profile UI banner ("검토 모드: Spotify에 실제 반영 안 됨").
     # The backend NEVER writes to Spotify (rule #9) — the worker reads its OWN copy

@@ -1,22 +1,52 @@
 # app/services/integration_service.py
-# FEAT-multi-user-accounts Phase 3a — listening/AI integrations (Last.fm this step).
+# FEAT-multi-user-accounts Phase 3a/3b — listening/AI integrations.
 # user_integrations is the single connect store (V41); Last.fm uses username-only
-# (public reads, no OAuth). Mirrors ReviewService: holds a UserService so connecting
-# can be a member's first-ever authed action (lazy-provision).
+# (public reads, no OAuth); Spotify (3b-c) stores a KMS-enveloped refresh token in
+# `payload`. Mirrors ReviewService: holds a UserService so connecting can be a
+# member's first-ever authed action (lazy-provision).
 from __future__ import annotations
 
+import base64
+import json
+import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from myblog_shared_db.models import LastfmRecentTrack, User, UserIntegration
 
+from app.core.config import settings
 from app.services.review_service import MemberNotFoundError
 from app.services.user_service import UserService
 
+logger = logging.getLogger(__name__)
+
 LASTFM_PROVIDER = "lastfm"
+SPOTIFY_PROVIDER = "spotify"
+
+# accounts.spotify.com is the AUTH host (code/token exchange), NOT the Web API
+# content host — the rule-#9-blessed exception (same constant as PlaybackService).
+_SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
+
+
+class SpotifyConnectNotConfiguredError(Exception):
+    """KMS key id or Spotify app creds not provisioned — the route maps this to
+    503 fail-closed. Expected until the 3b-a CMK is terraform-applied. Raised
+    BEFORE any outbound call so the member's one-time code is not burned, and
+    BEFORE any DB write so plaintext is never stored."""
+
+
+class SpotifyCodeRejectedError(Exception):
+    """Spotify 4xx'd the authorization-code exchange (bad/expired/reused code or
+    redirect_uri mismatch) — the route maps this to 400."""
+
+
+class SpotifyProviderError(Exception):
+    """Spotify auth endpoint unreachable / 5xx / malformed response — 502."""
 
 
 class IntegrationService:
@@ -63,6 +93,135 @@ class IntegrationService:
             db.add(row)
         else:
             row.username = username
+            row.status = "connected"
+        db.commit()
+        db.refresh(row)
+        return row
+
+    # ── Spotify (3b-c): server-side code exchange + KMS token custody ──
+
+    def _spotify_app_creds(self) -> tuple[str, str]:
+        """(client_id, client_secret) — env/settings override first (local/test
+        determinism), then the myblog/spotify secret (SSM preferred; reuses
+        PlaybackService's reader). Either missing ⇒ fail-closed, no exchange."""
+        cid = settings.SPOTIFY_CLIENT_ID
+        csec = settings.SPOTIFY_CLIENT_SECRET
+        if cid and csec:
+            return cid, csec
+        from app.services.playback_service import PlaybackService
+
+        payload = PlaybackService()._read_spotify_secret()
+        return (
+            cid or payload.get("client_id", ""),
+            csec or payload.get("client_secret", ""),
+        )
+
+    def _kms_encrypt(self, plaintext: str) -> str:
+        """KMS-encrypt → base64 ciphertext. ANY failure (key not yet applied,
+        AccessDenied, network) ⇒ SpotifyConnectNotConfiguredError (503) — never
+        store plaintext, never silently skip encryption. The error is logged
+        without the plaintext or the ciphertext."""
+        try:
+            import boto3
+
+            kms = boto3.client("kms", region_name=settings.AWS_DEFAULT_REGION)
+            blob = kms.encrypt(
+                KeyId=settings.USER_TOKENS_KMS_KEY_ID,
+                Plaintext=plaintext.encode("utf-8"),
+            )["CiphertextBlob"]
+            return base64.b64encode(blob).decode("ascii")
+        except Exception as e:
+            logger.error("KMS encrypt for spotify connect failed: %s", type(e).__name__)
+            raise SpotifyConnectNotConfiguredError()
+
+    def connect_spotify(
+        self,
+        db: Session,
+        member_id: uuid.UUID,
+        claims: Optional[Dict[str, Any]],
+        code: str,
+        client: Optional[httpx.Client] = None,
+    ) -> UserIntegration:
+        """Exchange the member's authorization code server-side, KMS-encrypt the
+        refresh token, upsert the provider='spotify' row. Rule #9: this is a
+        member-initiated MUTATION against the Spotify *auth* host (the blessed
+        playback-mint exception), never a content call on a read path.
+
+        Fail-closed order: config gates FIRST (503 before any outbound call —
+        the one-time code survives a dormant deploy), then the exchange, then
+        KMS, and only then the DB write. Tokens are never logged or returned;
+        `payload` holds {v, ciphertext (b64 KMS envelope of the refresh token),
+        scope, expires_in, obtained_at} — ciphertext only for the token itself.
+        """
+        if not settings.USER_TOKENS_KMS_KEY_ID:
+            raise SpotifyConnectNotConfiguredError()
+        client_id, client_secret = self._spotify_app_creds()
+        if not client_id or not client_secret:
+            raise SpotifyConnectNotConfiguredError()
+
+        data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": settings.SPOTIFY_MEMBER_REDIRECT_URI,
+        }
+        owns_client = client is None
+        client = client or httpx.Client(timeout=10)
+        try:
+            resp = client.post(
+                _SPOTIFY_TOKEN_URL, data=data, auth=(client_id, client_secret)
+            )
+        except httpx.HTTPError as e:
+            raise SpotifyProviderError(f"Spotify token endpoint unreachable: {e}")
+        finally:
+            if owns_client:
+                client.close()
+
+        if 400 <= resp.status_code < 500:
+            # invalid_grant / redirect_uri mismatch — logged WITHOUT the body
+            # (Spotify error bodies are safe, but stay conservative).
+            logger.warning(
+                "Spotify code exchange rejected: status=%s", resp.status_code
+            )
+            raise SpotifyCodeRejectedError()
+        if resp.status_code != 200:
+            logger.warning("Spotify code exchange failed: status=%s", resp.status_code)
+            raise SpotifyProviderError("Spotify token exchange failed")
+        try:
+            body = resp.json()
+        except ValueError:
+            raise SpotifyProviderError("Spotify token response was not valid JSON")
+        refresh_token = body.get("refresh_token")
+        if not refresh_token:
+            raise SpotifyProviderError("Spotify token response missing refresh_token")
+
+        ciphertext = self._kms_encrypt(refresh_token)
+        payload = json.dumps(
+            {
+                "v": 1,
+                "ciphertext": ciphertext,
+                "scope": body.get("scope", ""),
+                "expires_in": int(body.get("expires_in", 3600)),
+                "obtained_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+        user = self._users.get_or_create(db, member_id, claims)
+        row = db.scalar(
+            select(UserIntegration).where(
+                UserIntegration.user_id == user.id,
+                UserIntegration.provider == SPOTIFY_PROVIDER,
+            )
+        )
+        if row is None:
+            row = UserIntegration(
+                user_id=user.id,
+                provider=SPOTIFY_PROVIDER,
+                payload=payload,
+                status="connected",
+            )
+            db.add(row)
+        else:
+            row.payload = payload
             row.status = "connected"
         db.commit()
         db.refresh(row)
