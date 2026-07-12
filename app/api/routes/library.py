@@ -319,8 +319,13 @@ def play_events_artist_distribution(
 
 
 # ── 분석 버킷: lifetime stream-history top tracks/artists (FEAT-listening-history-import) ──
-# Ungated count/time rankings over the imported Spotify streaming history. edge_guard-only
-# reads (no JWT), like the other library reads. `metric` flips the front Count↔Time axis;
+# Ungated count/time rankings over the imported Spotify streaming history.
+# FEAT-multi-user Phase 3 (library user-scope): every stream-history read is
+# member-scoped (require_cognito_token via provisioned_member_id — was edge_guard)
+# and returns ONLY the requesting member's imported history (strict user_id
+# equality; the owner-poller live tail rides along for the owner only). GETs ride
+# the API GW GET catch-all — the JWT is checked here at the Lambda, so no
+# apigateway.tf change. `metric` flips the front Count↔Time axis;
 # Literal makes FastAPI 422 on a bad value and self-documents in the contract.
 # FEAT-analysis-explore: optional `from`/`to` (raw ISO timestamps; half-open [from, to))
 # scope every panel to a time window. Omitted = lifetime+live (current behavior). `from`
@@ -350,9 +355,10 @@ def stream_history_top_tracks(
     to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
     limit = max(1, min(limit, 100))
-    return _stream_rank_response(svc.stream_history_top_tracks(db, metric=metric, limit=limit, frm=from_, to=to))
+    return _stream_rank_response(svc.stream_history_top_tracks(db, user_id=member_id, metric=metric, limit=limit, frm=from_, to=to))
 
 
 @router.get("/stream-history/top-artists", response_model=StreamRankResponse)
@@ -363,13 +369,15 @@ def stream_history_top_artists(
     to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
     limit = max(1, min(limit, 100))
-    return _stream_rank_response(svc.stream_history_top_artists(db, metric=metric, limit=limit, frm=from_, to=to))
+    return _stream_rank_response(svc.stream_history_top_artists(db, user_id=member_id, metric=metric, limit=limit, frm=from_, to=to))
 
 
 # ── 분석 버킷: GATED lifetime panels — album / genre / era / retrospective (Step 5) ──
-# edge_guard reads. All need the catalog FK; the gate PASSED at 99.7% (Step 3), so they
+# Member-scoped JWT reads (see the Phase 3 note above). All need the catalog FK; the
+# gate PASSED at 99.7% (Step 3), so they
 # ship with the residual 미분류 carried as the `unclassified`/`unresolved` honesty caption.
 
 def _stream_album_rank_response(d) -> StreamAlbumRankResponse:
@@ -394,8 +402,9 @@ def stream_history_genre_distribution(
     to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
-    return _stream_rank_response(svc.stream_history_genre_distribution(db, metric=metric, frm=from_, to=to))
+    return _stream_rank_response(svc.stream_history_genre_distribution(db, user_id=member_id, metric=metric, frm=from_, to=to))
 
 
 @router.get("/stream-history/era-distribution", response_model=StreamRankResponse)
@@ -405,8 +414,9 @@ def stream_history_era_distribution(
     to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
-    return _stream_rank_response(svc.stream_history_era_distribution(db, metric=metric, frm=from_, to=to))
+    return _stream_rank_response(svc.stream_history_era_distribution(db, user_id=member_id, metric=metric, frm=from_, to=to))
 
 
 @router.get("/stream-history/top-albums", response_model=StreamAlbumRankResponse)
@@ -417,9 +427,10 @@ def stream_history_top_albums(
     to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
     limit = max(1, min(limit, 100))
-    return _stream_album_rank_response(svc.stream_history_top_albums(db, metric=metric, limit=limit, frm=from_, to=to))
+    return _stream_album_rank_response(svc.stream_history_top_albums(db, user_id=member_id, metric=metric, limit=limit, frm=from_, to=to))
 
 
 @router.get("/stream-history/retrospective", response_model=RetrospectiveResponse)
@@ -429,9 +440,10 @@ def stream_history_retrospective(
     to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
     limit = max(1, min(limit, 100))
-    d = svc.stream_history_retrospective(db, limit=limit, frm=from_, to=to)
+    d = svc.stream_history_retrospective(db, user_id=member_id, limit=limit, frm=from_, to=to)
     return RetrospectiveResponse(
         per_year=[RetroYearStat(**y) for y in d["per_year"]],
         on_this_day=[
@@ -453,7 +465,7 @@ def stream_history_retrospective(
 
 
 # ── 분석 버킷: item drill-down + listening clock (FEAT-analysis-explore) ──────────────
-# edge_guard reads (no JWT), like the rest of the analysis source. Both honour the same
+# Member-scoped JWT reads (see the Phase 3 note above). Both honour the same
 # optional [from, to) range. The drill-down keys an entity (artist | catalog album | track);
 # `type` is a Literal so FastAPI 422s a bad value. The clock returns a KST hour×weekday matrix.
 
@@ -466,9 +478,10 @@ def stream_history_item(
     to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
     try:
-        d = svc.stream_history_item_detail(db, type_=type, id_=id, metric=metric, frm=from_, to=to)
+        d = svc.stream_history_item_detail(db, user_id=member_id, type_=type, id_=id, metric=metric, frm=from_, to=to)
     except AlbumNotFoundError:
         raise HTTPException(status_code=404, detail="Album not found")
     return StreamItemDetailResponse(
@@ -499,8 +512,9 @@ def stream_history_clock(
     to: Optional[datetime] = _TO,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
-    d = svc.stream_history_clock(db, metric=metric, frm=from_, to=to)
+    d = svc.stream_history_clock(db, user_id=member_id, metric=metric, frm=from_, to=to)
     return StreamClockResponse(
         cells=[StreamClockCell(**c) for c in d["cells"]],
         unit=d["unit"],

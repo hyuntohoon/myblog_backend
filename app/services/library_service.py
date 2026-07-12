@@ -28,6 +28,7 @@ from myblog_shared_db.models import (
     track_artists_table,
 )
 
+from app.core.config import get_settings
 from app.services.distribution import (
     expand_credits,
     rank_counts,
@@ -536,8 +537,21 @@ class LibraryService:
     # rowset. The live tail is id-only, so its denormalized shape is reconstructed from
     # the catalog and its ms_played is ESTIMATED as track length (no ms in the poller).
 
+    def _include_live_tail(self, user_id: uuid.UUID) -> bool:
+        """FEAT-multi-user Phase 3 (library user-scope): the live tail
+        (spotify_track_play_events) is the OWNER's recently-played poller cache —
+        it carries no user_id, so it may only ever augment the owner's own view.
+        local/dev include it (mirrors the auth-guard bypass); in prod an unset
+        OWNER_SUB fails CLOSED (no live tail for anyone — never leak owner plays
+        into a member's analysis)."""
+        settings = get_settings()
+        if settings.ENV in ("local", "dev"):
+            return True
+        return bool(settings.OWNER_SUB) and str(user_id) == settings.OWNER_SUB
+
     def _unified_events(
         self,
+        user_id: uuid.UUID,
         frm: Optional[datetime] = None,
         to: Optional[datetime] = None,
     ):
@@ -547,18 +561,26 @@ class LibraryService:
         skip/ms display filter (the poller has neither) — a row is a recently-played
         appearance. Aggregate over the returned subquery.
 
+        FEAT-multi-user Phase 3 (library user-scope): the import leg is scoped by
+        STRICT `user_id` equality (NULL rows are invisible to everyone — prod is
+        fully owner-backfilled per V46, so the owner sees exactly the pre-scope
+        rowset and a member sees only their own imports). The live tail is
+        owner-gated (see _include_live_tail). `as_of` is the requester's OWN
+        import horizon, so a member with no import never inherits the owner's
+        union boundary (no rows → as_of NULL → live leg empty regardless).
+
         FEAT-analysis-explore: an optional half-open time window [frm, to) on the per-play
         `event_ts` (import → SSH.ts, live → TPE.played_at), applied to BOTH legs so every
         downstream aggregation re-scopes to the range. `frm` inclusive, `to` exclusive
-        (front maps presets → raw timestamps). `as_of` stays the GLOBAL import horizon
-        (max ts over the whole import, NOT the ranged subset) so the import/live union
+        (front maps presets → raw timestamps). `as_of` stays the requester's import horizon
+        (max ts over their whole import, NOT the ranged subset) so the import/live union
         boundary is invariant under the range — a range entirely ≤ as_of is import-only,
         a range including now still pulls the live tail."""
         SSH = SpotifyStreamHistory
         TPE = SpotifyTrackPlayEvent
-        as_of = select(func.max(SSH.ts)).scalar_subquery()
+        as_of = select(func.max(SSH.ts)).where(SSH.user_id == user_id).scalar_subquery()
 
-        imp_where = [self._stream_display_filter()]
+        imp_where = [SSH.user_id == user_id, self._stream_display_filter()]
         if frm is not None:
             imp_where.append(SSH.ts >= frm)
         if to is not None:
@@ -572,6 +594,10 @@ class LibraryService:
             SSH.ts.label("event_ts"),
             literal("import").label("src"),
         ).where(and_(*imp_where))
+
+        if not self._include_live_tail(user_id):
+            # Members get the import leg only — the live poller cache is owner data.
+            return imp.subquery("ev")
 
         # Live tail: title from the catalog, the album's first artist as album-artist
         # parity, ms ESTIMATED = duration_sec × 1000 (owner decision; overcounts skips /
@@ -608,14 +634,16 @@ class LibraryService:
     def _stream_totals(
         self,
         db: Session,
+        user_id: uuid.UUID,
         frm: Optional[datetime] = None,
         to: Optional[datetime] = None,
     ) -> Dict:
         """Population denominator + the import horizon + the live-tail count, scoped to
-        the [frm, to) range when given. `total_streams`/`total_ms`/`live_streams` re-scope
-        to the range (so the hero reflects it); `as_of` stays the GLOBAL import horizon
-        (the boundary + staleness marker), independent of the range."""
-        ev = self._unified_events(frm, to)
+        the requesting user and the [frm, to) range when given. `total_streams`/
+        `total_ms`/`live_streams` re-scope to the range (so the hero reflects it);
+        `as_of` stays the requester's import horizon (the boundary + staleness
+        marker), independent of the range."""
+        ev = self._unified_events(user_id, frm, to)
         row = db.execute(
             select(
                 func.count().label("n"),
@@ -623,7 +651,11 @@ class LibraryService:
                 func.count().filter(ev.c.src == "live").label("live_n"),
             ).select_from(ev)
         ).one()
-        as_of = db.execute(select(func.max(SpotifyStreamHistory.ts))).scalar()
+        as_of = db.execute(
+            select(func.max(SpotifyStreamHistory.ts)).where(
+                SpotifyStreamHistory.user_id == user_id
+            )
+        ).scalar()
         return {
             "total_streams": int(row.n),
             "total_ms": int(row.ms),
@@ -632,12 +664,12 @@ class LibraryService:
         }
 
     def stream_history_top_tracks(
-        self, db: Session, *, metric: str = "count", limit: int = 15,
+        self, db: Session, *, user_id: uuid.UUID, metric: str = "count", limit: int = 15,
         frm: Optional[datetime] = None, to: Optional[datetime] = None,
     ) -> Dict:
         # Identity = the track URI (import: real; live: 'spotify:track:'||id); displayed
         # name = the denormalized/reconstructed track_name/artist_name.
-        ev = self._unified_events(frm, to)
+        ev = self._unified_events(user_id, frm, to)
         plays = func.count().label("plays")
         ms = func.sum(ev.c.ms_played).label("ms")
         primary = ms.desc() if metric == "time" else plays.desc()
@@ -663,15 +695,15 @@ class LibraryService:
             }
             for r in rows
         ]
-        return {"items": items, "unit": "ms" if metric == "time" else "count", **self._stream_totals(db, frm, to)}
+        return {"items": items, "unit": "ms" if metric == "time" else "count", **self._stream_totals(db, user_id, frm, to)}
 
     def stream_history_top_artists(
-        self, db: Session, *, metric: str = "count", limit: int = 15,
+        self, db: Session, *, user_id: uuid.UUID, metric: str = "count", limit: int = 15,
         frm: Optional[datetime] = None, to: Optional[datetime] = None,
     ) -> Dict:
         # Artist ranking over the denormalized/reconstructed album-artist name (no
         # per-artist credit split — that needs the catalog FK). Null-artist rows drop out.
-        ev = self._unified_events(frm, to)
+        ev = self._unified_events(user_id, frm, to)
         plays = func.count().label("plays")
         ms = func.sum(ev.c.ms_played).label("ms")
         primary = ms.desc() if metric == "time" else plays.desc()
@@ -684,7 +716,7 @@ class LibraryService:
         ).all()
         value = (lambda r: int(r.ms)) if metric == "time" else (lambda r: int(r.plays))
         items = [{"label": r.artist_name, "value": value(r)} for r in rows]
-        return {"items": items, "unit": "ms" if metric == "time" else "count", **self._stream_totals(db, frm, to)}
+        return {"items": items, "unit": "ms" if metric == "time" else "count", **self._stream_totals(db, user_id, frm, to)}
 
     # ── 분석 버킷: GATED lifetime panels (FEAT-listening-history-import Step 5) ──────────
     # Album / genre / era / retrospective over the lifetime stream history. GATED on the
@@ -699,6 +731,7 @@ class LibraryService:
     def _stream_album_weights(
         self,
         db: Session,
+        user_id: uuid.UUID,
         metric: str,
         frm: Optional[datetime] = None,
         to: Optional[datetime] = None,
@@ -706,7 +739,7 @@ class LibraryService:
         """[(album_id, weight)] over the unified import+live events WITH a catalog album
         (weight = plays or ms per metric) + the unresolved (no album_id) weight, scoped to
         the [frm, to) range when given."""
-        ev = self._unified_events(frm, to)
+        ev = self._unified_events(user_id, frm, to)
         plays = func.count().label("plays")
         ms = func.sum(ev.c.ms_played).label("ms")
         rows = db.execute(
@@ -725,10 +758,10 @@ class LibraryService:
         return weights, int(unres.m if metric == "time" else unres.c)
 
     def stream_history_genre_distribution(
-        self, db: Session, *, metric: str = "count",
+        self, db: Session, *, user_id: uuid.UUID, metric: str = "count",
         frm: Optional[datetime] = None, to: Optional[datetime] = None,
     ) -> Dict:
-        weights, unres = self._stream_album_weights(db, metric, frm, to)
+        weights, unres = self._stream_album_weights(db, user_id, metric, frm, to)
         album_genre = self._album_primary_genre_map(db, {aid for aid, _ in weights})
         labels = [album_genre.get(str(aid)) for aid, _ in weights]  # None = ungenred
         items, unclassified = rank_counts(labels, [w for _, w in weights])
@@ -736,14 +769,14 @@ class LibraryService:
             "items": [{"label": label, "value": count} for label, count in items],
             "unit": "ms" if metric == "time" else "count",
             "unclassified": unclassified + unres,  # ungenred + uncatalogued
-            **self._stream_totals(db, frm, to),
+            **self._stream_totals(db, user_id, frm, to),
         }
 
     def stream_history_era_distribution(
-        self, db: Session, *, metric: str = "count",
+        self, db: Session, *, user_id: uuid.UUID, metric: str = "count",
         frm: Optional[datetime] = None, to: Optional[datetime] = None,
     ) -> Dict:
-        weights, unres = self._stream_album_weights(db, metric, frm, to)
+        weights, unres = self._stream_album_weights(db, user_id, metric, frm, to)
         ids = {aid for aid, _ in weights}
         release = (
             {aid: rd for aid, rd in db.execute(
@@ -761,14 +794,14 @@ class LibraryService:
             "items": [{"label": label, "value": count} for label, count in items],
             "unit": "ms" if metric == "time" else "count",
             "unclassified": unclassified + unres,  # no-release + uncatalogued
-            **self._stream_totals(db, frm, to),
+            **self._stream_totals(db, user_id, frm, to),
         }
 
     def stream_history_top_albums(
-        self, db: Session, *, metric: str = "count", limit: int = 15,
+        self, db: Session, *, user_id: uuid.UUID, metric: str = "count", limit: int = 15,
         frm: Optional[datetime] = None, to: Optional[datetime] = None,
     ) -> Dict:
-        ev = self._unified_events(frm, to)
+        ev = self._unified_events(user_id, frm, to)
         plays = func.count().label("plays")
         ms = func.sum(ev.c.ms_played).label("ms")
         primary = ms.desc() if metric == "time" else plays.desc()
@@ -801,14 +834,14 @@ class LibraryService:
             "items": items,
             "unit": "ms" if metric == "time" else "count",
             "unresolved": int(unres.m if metric == "time" else unres.c),
-            **self._stream_totals(db, frm, to),
+            **self._stream_totals(db, user_id, frm, to),
         }
 
     def stream_history_retrospective(
-        self, db: Session, *, limit: int = 20,
+        self, db: Session, *, user_id: uuid.UUID, limit: int = 20,
         frm: Optional[datetime] = None, to: Optional[datetime] = None,
     ) -> Dict:
-        ev = self._unified_events(frm, to)
+        ev = self._unified_events(user_id, frm, to)
         kst = func.timezone("Asia/Seoul", ev.c.event_ts)
         now_kst = func.timezone("Asia/Seoul", func.now())
         yr = func.extract("year", kst)
@@ -862,7 +895,7 @@ class LibraryService:
             for r in otd_rows
         ]
         today_kst = db.execute(select(func.to_char(now_kst, "MM-DD"))).scalar()
-        totals = self._stream_totals(db, frm, to)
+        totals = self._stream_totals(db, user_id, frm, to)
         return {
             "per_year": per_year,
             "on_this_day": on_this_day,
@@ -880,7 +913,7 @@ class LibraryService:
     # of the source carries.
 
     def stream_history_item_detail(
-        self, db: Session, *, type_: str, id_: str, metric: str = "count",
+        self, db: Session, *, user_id: uuid.UUID, type_: str, id_: str, metric: str = "count",
         frm: Optional[datetime] = None, to: Optional[datetime] = None, top_limit: int = 10,
     ) -> Dict:
         """One entity's stats over the (optionally ranged) union: count, listening time,
@@ -888,7 +921,7 @@ class LibraryService:
         `id_` is the URI (track), the artist_name (artist), or the catalog album_id (album).
         An album id absent from the catalog raises AlbumNotFoundError (→ 404); an entity
         with no plays in range returns a zero detail (not an error)."""
-        ev = self._unified_events(frm, to)
+        ev = self._unified_events(user_id, frm, to)
         album_uuid = None
         if type_ == "track":
             ent = ev.c.uri == id_
@@ -978,7 +1011,11 @@ class LibraryService:
                 for r in al if r.album_id in al_albums
             ]
 
-        as_of = db.execute(select(func.max(SpotifyStreamHistory.ts))).scalar()
+        as_of = db.execute(
+            select(func.max(SpotifyStreamHistory.ts)).where(
+                SpotifyStreamHistory.user_id == user_id
+            )
+        ).scalar()
         return {
             "type": type_,
             "id": id_,
@@ -997,13 +1034,13 @@ class LibraryService:
         }
 
     def stream_history_clock(
-        self, db: Session, *, metric: str = "count",
+        self, db: Session, *, user_id: uuid.UUID, metric: str = "count",
         frm: Optional[datetime] = None, to: Optional[datetime] = None,
     ) -> Dict:
         """Hour-of-day × weekday matrix over the (optionally ranged) union, in Asia/Seoul.
         Returns only the non-empty cells (≤168). `weekday` = Postgres extract(dow): 0=Sun
         … 6=Sat. `metric` selects whether the front colours by plays or ms (both shipped)."""
-        ev = self._unified_events(frm, to)
+        ev = self._unified_events(user_id, frm, to)
         kst = func.timezone("Asia/Seoul", ev.c.event_ts)
         dow = func.extract("dow", kst)
         hour = func.extract("hour", kst)
@@ -1020,7 +1057,7 @@ class LibraryService:
         return {
             "cells": cells,
             "unit": "ms" if metric == "time" else "count",
-            **self._stream_totals(db, frm, to),
+            **self._stream_totals(db, user_id, frm, to),
         }
 
     # ── 분석 버킷: 분류하기 targets ───────────────────────────────────────────────────

@@ -261,30 +261,33 @@ class TestRecentTracks:
 # all timestamps sit well below the real as_of, so they land in the import leg and never
 # shift as_of (the union boundary stays the real import horizon).
 
-def _seed_stream(db, *, ts, uri, artist, ms=200_000):
+def _seed_stream(db, *, ts, uri, artist, ms=200_000, user_id=None):
+    # FEAT-multi-user Phase 3 (library user-scope): rows are owned; user_id=None
+    # seeds a legacy NULL row (invisible to EVERY member under strict equality).
     db.execute(
         text(
             "INSERT INTO spotify_stream_history "
-            "(ts, ms_played, spotify_track_uri, track_name, artist_name, skipped) "
-            "VALUES (:ts, :ms, :uri, 'ITEST track', :artist, false)"
+            "(ts, ms_played, spotify_track_uri, track_name, artist_name, skipped, user_id) "
+            "VALUES (:ts, :ms, :uri, 'ITEST track', :artist, false, :uid)"
         ),
-        {"ts": ts, "ms": ms, "uri": uri, "artist": artist},
+        {"ts": ts, "ms": ms, "uri": uri, "artist": artist,
+         "uid": str(user_id) if user_id else None},
     )
 
 
 class TestStreamHistoryRange:
-    def test_half_open_range_boundary(self, db, svc):
+    def test_half_open_range_boundary(self, db, svc, user_id):
         run = uuid.uuid4().hex[:8]
         artist = f"ITEST_RANGE_{run}"
         r1 = datetime(2024, 3, 1, tzinfo=timezone.utc)
         r2 = datetime(2024, 9, 1, tzinfo=timezone.utc)
         r3 = datetime(2025, 3, 1, tzinfo=timezone.utc)
-        _seed_stream(db, ts=r1, uri=f"spotify:track:itest_{run}_1", artist=artist)
-        _seed_stream(db, ts=r2, uri=f"spotify:track:itest_{run}_2", artist=artist)
-        _seed_stream(db, ts=r3, uri=f"spotify:track:itest_{run}_3", artist=artist)
+        _seed_stream(db, ts=r1, uri=f"spotify:track:itest_{run}_1", artist=artist, user_id=user_id)
+        _seed_stream(db, ts=r2, uri=f"spotify:track:itest_{run}_2", artist=artist, user_id=user_id)
+        _seed_stream(db, ts=r3, uri=f"spotify:track:itest_{run}_3", artist=artist, user_id=user_id)
 
         # whole history → all 3; KST per-year 2024:2 + 2025:1; first/last = the extremes
-        full = svc.stream_history_item_detail(db, type_="artist", id_=artist)
+        full = svc.stream_history_item_detail(db, user_id=user_id, type_="artist", id_=artist)
         assert full["count"] == 3
         assert full["time_ms"] == 600_000
         assert full["first_listen"] == r1 and full["last_listen"] == r3
@@ -292,7 +295,7 @@ class TestStreamHistoryRange:
 
         # [2024-01-01, 2025-01-01) → only the two 2024 rows
         y2024 = svc.stream_history_item_detail(
-            db, type_="artist", id_=artist,
+            db, user_id=user_id, type_="artist", id_=artist,
             frm=datetime(2024, 1, 1, tzinfo=timezone.utc),
             to=datetime(2025, 1, 1, tzinfo=timezone.utc),
         )
@@ -301,36 +304,46 @@ class TestStreamHistoryRange:
 
         # `to` is EXCLUSIVE — a row exactly at `to` drops out
         excl = svc.stream_history_item_detail(
-            db, type_="artist", id_=artist,
+            db, user_id=user_id, type_="artist", id_=artist,
             frm=datetime(2024, 1, 1, tzinfo=timezone.utc), to=r2,
         )
         assert excl["count"] == 1
 
         # `from` is INCLUSIVE — a row exactly at `from` stays in
-        incl = svc.stream_history_item_detail(db, type_="artist", id_=artist, frm=r2)
+        incl = svc.stream_history_item_detail(
+            db, user_id=user_id, type_="artist", id_=artist, frm=r2
+        )
         assert incl["count"] == 2  # r2 (at from) + r3
 
-    def test_clock_covers_same_population_as_totals(self, db, svc):
+    def test_clock_covers_same_population_as_totals(self, db, svc, user_id):
         # Every event lands in exactly ONE hour×weekday cell, so the clock's play-sum
         # equals total_streams over the SAME range — a union double-count would break this.
+        run = uuid.uuid4().hex[:8]
+        _seed_stream(db, ts=datetime(2024, 1, 5, 9, 0, tzinfo=timezone.utc),
+                     uri=f"spotify:track:itest_{run}_c1", artist=f"ITEST_CLK_{run}",
+                     user_id=user_id)
+        _seed_stream(db, ts=datetime(2024, 1, 20, 22, 0, tzinfo=timezone.utc),
+                     uri=f"spotify:track:itest_{run}_c2", artist=f"ITEST_CLK_{run}",
+                     user_id=user_id)
         frm = datetime(2024, 1, 1, tzinfo=timezone.utc)
         to = datetime(2024, 2, 1, tzinfo=timezone.utc)
-        clock = svc.stream_history_clock(db, frm=frm, to=to)
+        clock = svc.stream_history_clock(db, user_id=user_id, frm=frm, to=to)
+        assert clock["total_streams"] == 2
         assert sum(c["plays"] for c in clock["cells"]) == clock["total_streams"]
         # cells are valid KST coordinates
         for c in clock["cells"]:
             assert 0 <= c["weekday"] <= 6 and 0 <= c["hour"] <= 23
 
-    def test_window_excluding_seed_is_empty(self, db, svc):
+    def test_window_excluding_seed_is_empty(self, db, svc, user_id):
         run = uuid.uuid4().hex[:8]
         artist = f"ITEST_WIN_{run}"
         _seed_stream(
             db, ts=datetime(2013, 7, 1, 12, 0, tzinfo=timezone.utc),
-            uri=f"spotify:track:itest_{run}_a", artist=artist,
+            uri=f"spotify:track:itest_{run}_a", artist=artist, user_id=user_id,
         )
         # a window entirely before the seed → the entity has zero plays in range
         before = svc.stream_history_item_detail(
-            db, type_="artist", id_=artist,
+            db, user_id=user_id, type_="artist", id_=artist,
             frm=datetime(2012, 1, 1, tzinfo=timezone.utc),
             to=datetime(2013, 1, 1, tzinfo=timezone.utc),
         )
@@ -338,11 +351,72 @@ class TestStreamHistoryRange:
         assert before["first_listen"] is None and before["per_year"] == []
         assert before["top_tracks"] == [] and before["top_albums"] == []
 
-    def test_as_of_invariant_under_range(self, db, svc):
-        # as_of is the GLOBAL import horizon (max ts), never the ranged subset.
-        unranged = svc._stream_totals(db)
+    def test_as_of_invariant_under_range(self, db, svc, user_id):
+        # as_of is the requester's import horizon (max ts of THEIR rows), never the
+        # ranged subset.
+        run = uuid.uuid4().hex[:8]
+        _seed_stream(db, ts=datetime(2024, 3, 1, tzinfo=timezone.utc),
+                     uri=f"spotify:track:itest_{run}_h1", artist=f"ITEST_ASOF_{run}",
+                     user_id=user_id)
+        _seed_stream(db, ts=datetime(2025, 3, 1, tzinfo=timezone.utc),
+                     uri=f"spotify:track:itest_{run}_h2", artist=f"ITEST_ASOF_{run}",
+                     user_id=user_id)
+        unranged = svc._stream_totals(db, user_id)
         ranged = svc._stream_totals(
-            db, datetime(2024, 1, 1, tzinfo=timezone.utc),
+            db, user_id, datetime(2024, 1, 1, tzinfo=timezone.utc),
             datetime(2024, 6, 1, tzinfo=timezone.utc),
         )
+        assert unranged["as_of"] == datetime(2025, 3, 1, tzinfo=timezone.utc)
         assert ranged["as_of"] == unranged["as_of"]
+
+
+# ── FEAT-multi-user Phase 3: library user-scope (V46 user_id) ────────────────────────
+# Strict-equality isolation over spotify_stream_history.user_id: a member only ever
+# aggregates their OWN imported rows; legacy NULL rows are invisible to everyone.
+# (Prod is fully owner-backfilled per V46, so the owner keeps the exact pre-scope
+# rowset — asserted here by seeding under one user and reading as another.)
+
+class TestStreamHistoryUserScope:
+    @pytest.fixture
+    def other_user_id(self, db):
+        import uuid as _uuid
+
+        uid = _uuid.UUID("00000000-0000-0000-0000-0000000000b3")
+        db.execute(
+            text(
+                "INSERT INTO users (id, handle, display_name) VALUES (:id, :h, :d) "
+                "ON CONFLICT (id) DO NOTHING"
+            ),
+            {"id": str(uid), "h": "test-librarysvc-b", "d": "Test LibrarySvc B"},
+        )
+        db.flush()
+        return uid
+
+    def test_other_member_sees_zero_rows(self, db, svc, user_id, other_user_id):
+        run = uuid.uuid4().hex[:8]
+        artist = f"ITEST_SCOPE_{run}"
+        ts = datetime(2024, 5, 1, tzinfo=timezone.utc)
+        _seed_stream(db, ts=ts, uri=f"spotify:track:itest_{run}_s1", artist=artist,
+                     user_id=user_id)
+
+        # the owning user sees their row …
+        mine = svc.stream_history_item_detail(db, user_id=user_id, type_="artist", id_=artist)
+        assert mine["count"] == 1
+        # … a DIFFERENT member sees nothing of it: entity empty, totals 0, as_of None
+        theirs = svc.stream_history_item_detail(
+            db, user_id=other_user_id, type_="artist", id_=artist
+        )
+        assert theirs["count"] == 0 and theirs["per_year"] == []
+        totals = svc._stream_totals(db, other_user_id)
+        assert totals["total_streams"] == 0 and totals["total_ms"] == 0
+        assert totals["as_of"] is None and totals["live_streams"] == 0
+
+    def test_null_user_rows_invisible_to_members(self, db, svc, user_id):
+        # Legacy/unowned NULL rows never leak into a member's view (strict equality,
+        # not IS NOT DISTINCT FROM).
+        run = uuid.uuid4().hex[:8]
+        artist = f"ITEST_NULL_{run}"
+        _seed_stream(db, ts=datetime(2024, 6, 1, tzinfo=timezone.utc),
+                     uri=f"spotify:track:itest_{run}_n1", artist=artist, user_id=None)
+        got = svc.stream_history_item_detail(db, user_id=user_id, type_="artist", id_=artist)
+        assert got["count"] == 0

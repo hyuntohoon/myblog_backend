@@ -5638,6 +5638,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Stream History Clock",
         "tags": [
           "library"
@@ -5723,6 +5728,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Stream History Era Distribution",
         "tags": [
           "library"
@@ -5808,6 +5818,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Stream History Genre Distribution",
         "tags": [
           "library"
@@ -5916,6 +5931,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Stream History Item",
         "tags": [
           "library"
@@ -5997,6 +6017,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Stream History Retrospective",
         "tags": [
           "library"
@@ -6092,6 +6117,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Stream History Top Albums",
         "tags": [
           "library"
@@ -6187,6 +6217,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Stream History Top Artists",
         "tags": [
           "library"
@@ -6282,6 +6317,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Stream History Top Tracks",
         "tags": [
           "library"
