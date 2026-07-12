@@ -1044,6 +1044,14 @@ class ConnectLastfmRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
 
 
+class ConnectSpotifyRequest(BaseModel):
+    # FEAT-multi-user 3b-c: the one-time authorization code captured by the front
+    # callback page (?code=...). Exchanged server-side; never stored or logged.
+    # NOTE: IntegrationResponse deliberately has NO payload field — the KMS
+    # ciphertext must never serialize out of the API.
+    code: str = Field(min_length=1, max_length=2048)
+
+
 class LastfmNowPlayingResponse(BaseModel):
     is_playing: bool
     artist: Optional[str] = None

@@ -807,6 +807,21 @@
         "title": "ConnectLastfmRequest",
         "type": "object"
       },
+      "ConnectSpotifyRequest": {
+        "properties": {
+          "code": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "ConnectSpotifyRequest",
+        "type": "object"
+      },
       "CreateBucketRequest": {
         "properties": {
           "color": {
@@ -5080,6 +5095,70 @@
           }
         ],
         "summary": "Lastfm Now Playing",
+        "tags": [
+          "integrations"
+        ]
+      }
+    },
+    "/api/integrations/spotify": {
+      "delete": {
+        "operationId": "disconnect_spotify_api_integrations_spotify_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Disconnect Spotify",
+        "tags": [
+          "integrations"
+        ]
+      },
+      "put": {
+        "description": "FEAT-multi-user 3b-c: exchange the callback `?code` server-side and store\nthe KMS-enveloped refresh token. Rule #9: a member-initiated mutation against\nthe Spotify AUTH host (the playback-mint exception) \u2014 no sync content call.\nFail-closed: missing KMS key / app creds \u21d2 503 before any outbound call.",
+        "operationId": "connect_spotify_api_integrations_spotify_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectSpotifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Connect Spotify",
         "tags": [
           "integrations"
         ]
