@@ -3,10 +3,14 @@
 Spotify Extended Streaming History; the `unit` field names the Count↔Time axis."""
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.di import get_library_service
+from app.services.user_service import LOCAL_DEV_USER_ID
 
 
 def _override(app, svc):
@@ -41,9 +45,11 @@ class TestStreamHistoryTopTracks:
         assert body["total_streams"] == 4500
         assert body["items"][0]["value"] == 53
         assert body["items"][0]["spotify_track_uri"] == "spotify:track:aaa"
-        # default metric=count, default limit=15, no range
+        # default metric=count, default limit=15, no range; user_id = the acting
+        # member (local env → the all-zeros dev id)
         _, kwargs = svc.stream_history_top_tracks.call_args
-        assert kwargs == {"metric": "count", "limit": 15, "frm": None, "to": None}
+        assert kwargs == {"user_id": LOCAL_DEV_USER_ID, "metric": "count",
+                          "limit": 15, "frm": None, "to": None}
 
     def test_live_streams_passes_through(self, client, app):
         # FEAT-listening-live-merge: the live-tail count rides through to the contract.
@@ -76,7 +82,8 @@ class TestStreamHistoryTopTracks:
         assert resp.status_code == 200
         assert resp.json()["unit"] == "ms"
         _, kwargs = svc.stream_history_top_tracks.call_args
-        assert kwargs == {"metric": "time", "limit": 5, "frm": None, "to": None}
+        assert kwargs == {"user_id": LOCAL_DEV_USER_ID, "metric": "time",
+                          "limit": 5, "frm": None, "to": None}
 
     def test_bad_metric_is_422(self, client, app):
         svc = MagicMock()
@@ -143,7 +150,8 @@ class TestStreamHistoryGenreEra:
         assert body["unclassified"] == 120
         assert body["items"][0]["label"] == "Hip-Hop"
         _, kwargs = svc.stream_history_genre_distribution.call_args
-        assert kwargs == {"metric": "count", "frm": None, "to": None}
+        assert kwargs == {"user_id": LOCAL_DEV_USER_ID, "metric": "count",
+                          "frm": None, "to": None}
 
     def test_era_distribution_time_metric(self, client, app):
         svc = MagicMock()
@@ -315,8 +323,8 @@ class TestStreamHistoryItem:
         assert body["per_year"][0]["year"] == 2021
         assert body["top_tracks"][0]["spotify_track_uri"] == "spotify:track:aaa"
         _, kwargs = svc.stream_history_item_detail.call_args
-        assert kwargs == {"type_": "artist", "id_": "Kid Milli",
-                          "metric": "count", "frm": None, "to": None}
+        assert kwargs == {"user_id": LOCAL_DEV_USER_ID, "type_": "artist",
+                          "id_": "Kid Milli", "metric": "count", "frm": None, "to": None}
 
     def test_album_detail_builds_brief(self, client, app):
         from datetime import date
@@ -392,7 +400,8 @@ class TestStreamHistoryClock:
         assert body["unit"] == "count" and body["live_streams"] == 37
         assert body["cells"][0] == {"weekday": 1, "hour": 9, "plays": 40, "ms_played": 8_000_000}
         _, kwargs = svc.stream_history_clock.call_args
-        assert kwargs == {"metric": "count", "frm": None, "to": None}
+        assert kwargs == {"user_id": LOCAL_DEV_USER_ID, "metric": "count",
+                          "frm": None, "to": None}
 
     def test_clock_bad_metric_422(self, client, app):
         svc = MagicMock()
@@ -400,3 +409,52 @@ class TestStreamHistoryClock:
         resp = client.get("/api/library/stream-history/clock?metric=bogus")
         assert resp.status_code == 422
         svc.stream_history_clock.assert_not_called()
+
+
+# ── FEAT-multi-user Phase 3: library user-scope ─────────────────────────────────────
+# Every stream-history read forwards the ACTING member's UUID (JWT sub) as user_id —
+# no endpoint may reach the service unscoped. The SQL-side isolation (a member's
+# query only sees their own rows) is covered by the real-engine integration tests.
+
+_RANK = {"items": [], "unit": "count", "total_streams": 0, "total_ms": 0, "as_of": None}
+_ALBUM_RANK = {**_RANK, "unresolved": 0}
+_RETRO = {"per_year": [], "on_this_day": [], "today_kst": "01-01", "as_of": None}
+_ITEM = {
+    "type": "artist", "id": "X", "label": "X", "artist": None, "unit": "count",
+    "count": 0, "time_ms": 0, "first_listen": None, "last_listen": None,
+    "per_year": [], "top_tracks": [], "top_albums": [], "as_of": None, "live_streams": 0,
+}
+_CLOCK = {**_RANK, "cells": []}
+
+_SCOPED_ROUTES = [
+    ("stream_history_top_tracks", "/api/library/stream-history/top-tracks", _RANK),
+    ("stream_history_top_artists", "/api/library/stream-history/top-artists", _RANK),
+    ("stream_history_genre_distribution", "/api/library/stream-history/genre-distribution", _RANK),
+    ("stream_history_era_distribution", "/api/library/stream-history/era-distribution", _RANK),
+    ("stream_history_top_albums", "/api/library/stream-history/top-albums", _ALBUM_RANK),
+    ("stream_history_retrospective", "/api/library/stream-history/retrospective", _RETRO),
+    ("stream_history_item_detail", "/api/library/stream-history/item?type=artist&id=X", _ITEM),
+    ("stream_history_clock", "/api/library/stream-history/clock", _CLOCK),
+]
+
+
+class TestStreamHistoryMemberScope:
+    @pytest.mark.parametrize("method,url,ret", _SCOPED_ROUTES,
+                             ids=[m for m, _, _ in _SCOPED_ROUTES])
+    def test_member_sub_threads_to_service(self, client, app, method, url, ret):
+        # A real member JWT sub (≠ owner, ≠ local dev id) must arrive at the service
+        # as user_id — the reviews `_member_id` pattern.
+        from app.core.auth import require_cognito_token
+
+        member = uuid.uuid4()
+        svc = MagicMock()
+        getattr(svc, method).return_value = dict(ret)
+        _override(app, svc)
+        app.dependency_overrides[require_cognito_token] = lambda: {"sub": str(member)}
+
+        resp = client.get(url)
+
+        assert resp.status_code == 200
+        _, kwargs = getattr(svc, method).call_args
+        assert kwargs["user_id"] == member
+        app.dependency_overrides.clear()
