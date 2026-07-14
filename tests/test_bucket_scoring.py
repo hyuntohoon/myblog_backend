@@ -10,6 +10,8 @@ import pytest
 from app.services.bucket_service import (
     W_POPULARITY,
     W_RECENCY,
+    BucketItemRateLimitError,
+    BucketRateLimitError,
     BucketService,
 )
 
@@ -101,6 +103,66 @@ class TestAddItemBranching:
         added = [type(c.args[0]) for c in db.add.call_args_list]
         assert ReviewBucketItem in added and BucketItemSnapshot in added
         assert db.flush.called and db.commit.called
+
+    def test_daily_cap_blocks_single_row_before_insert(self):
+        svc = BucketService()
+        db = self._db(
+            [SimpleNamespace(id="bk-1"), SimpleNamespace(id="trk-1")], existing=[]
+        )
+        db.scalar.return_value = 500
+
+        with pytest.raises(BucketItemRateLimitError):
+            svc.add_item(
+                db,
+                UID,
+                "bk-1",
+                item_type="track",
+                track_id="trk-1",
+                daily_cap=500,
+            )
+
+        db.add.assert_not_called()
+        db.commit.assert_not_called()
+
+
+class TestCreationRateLimits:
+    def test_bucket_daily_cap_blocks_before_insert(self):
+        svc = BucketService()
+        db = MagicMock()
+        db.scalar.return_value = 30
+
+        with pytest.raises(BucketRateLimitError):
+            svc.create_bucket(db, UID, name="overflow", daily_cap=30)
+
+        db.add.assert_not_called()
+        db.commit.assert_not_called()
+
+    def test_artist_expansion_counts_all_rows_before_first_insert(self):
+        svc = BucketService()
+        svc.get_bucket = MagicMock(return_value=SimpleNamespace(id="bk-1"))
+        db = MagicMock()
+        artists = [
+            SimpleNamespace(id="art-1", name="A"),
+            SimpleNamespace(id="art-2", name="B"),
+        ]
+        db.query.return_value.options.return_value.filter.return_value.first.return_value = (
+            SimpleNamespace(artists=artists)
+        )
+        db.query.return_value.filter.return_value.order_by.return_value.all.return_value = []
+        db.scalar.return_value = 499
+
+        with pytest.raises(BucketItemRateLimitError):
+            svc.expand_artist_source(
+                db,
+                UID,
+                "bk-1",
+                source_album_id="alb-comp",
+                daily_cap=500,
+            )
+
+        db.add.assert_not_called()
+        db.flush.assert_not_called()
+        db.commit.assert_not_called()
 
 
 def _album(release_date=None, popularity=None):

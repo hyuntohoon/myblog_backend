@@ -45,6 +45,8 @@ from app.services.bucket_service import (
     AlbumNotFoundError,
     ArtistNotFoundError,
     BucketNotFoundError,
+    BucketItemRateLimitError,
+    BucketRateLimitError,
     BucketService,
     BucketTypeError,
     DuplicateItemError,
@@ -354,7 +356,19 @@ def create_bucket(
     member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
     try:
-        bucket = svc.create_bucket(db, member_id, name=req.name, color=req.color, type=req.type)
+        bucket = svc.create_bucket(
+            db,
+            member_id,
+            name=req.name,
+            color=req.color,
+            type=req.type,
+            daily_cap=get_settings().BUCKET_DAILY_CAP,
+        )
+    except BucketRateLimitError:
+        raise HTTPException(
+            status_code=429,
+            detail="Daily bucket creation limit reached — try again later",
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return BucketResponse(
@@ -535,6 +549,7 @@ def add_item(
                 bucket_id,
                 source_album_id=req.source_album_id,
                 source_track_id=req.source_track_id,
+                daily_cap=get_settings().BUCKET_ITEM_DAILY_CAP,
             )
         except BucketNotFoundError:
             raise HTTPException(status_code=404, detail="Bucket not found")
@@ -542,6 +557,11 @@ def add_item(
             raise HTTPException(status_code=404, detail="Album not found")
         except TrackNotFoundError:
             raise HTTPException(status_code=404, detail="Track not found")
+        except BucketItemRateLimitError:
+            raise HTTPException(
+                status_code=429,
+                detail="Daily bucket item limit reached — try again later",
+            )
         response.status_code = 201 if added else 200
         return ArtistExpansionResponse(
             expansion=BucketItemExpansion(
@@ -562,6 +582,7 @@ def add_item(
             artist_id=req.artist_id,
             note=req.note,
             snapshot=req.snapshot,
+            daily_cap=get_settings().BUCKET_ITEM_DAILY_CAP,
         )
     except BucketNotFoundError:
         raise HTTPException(status_code=404, detail="Bucket not found")
@@ -577,6 +598,11 @@ def add_item(
         raise HTTPException(status_code=404, detail="Artist not found")
     except DuplicateItemError:
         raise HTTPException(status_code=409, detail="Item already in this bucket")
+    except BucketItemRateLimitError:
+        raise HTTPException(
+            status_code=429,
+            detail="Daily bucket item limit reached — try again later",
+        )
     # Album-only enrichments — skip for non-album rows (album_id NULL) so the UUID-typed
     # .in_() lookups never receive a "None" string (the same guard as list_buckets/update_item).
     album_ids = [str(item.album_id)] if item.album_id is not None else []

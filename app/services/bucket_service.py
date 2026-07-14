@@ -5,7 +5,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, List, Optional, Sequence, Tuple
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -71,6 +71,14 @@ class BucketTypeError(Exception):
     """Raised when a write violates a bucket's type discriminator — e.g. a non-artist item
     dropped on an Artist bucket, or an attempt to change a bucket's immutable type. Route maps
     to 400. FEAT-my-buckit-artist (V32)."""
+
+
+class BucketRateLimitError(Exception):
+    """Per-member daily bucket create cap hit. Route maps to 429."""
+
+
+class BucketItemRateLimitError(Exception):
+    """Per-member daily bucket-item create cap hit. Route maps to 429."""
 
 
 # Auto-recommendation: initial position is seeded from a weighted blend of two
@@ -307,6 +315,7 @@ class BucketService:
         name: str,
         color: Optional[str] = None,
         type: str = "general",
+        daily_cap: Optional[int] = None,
     ) -> ReviewBucket:
         name = (name or "").strip()
         if not name:
@@ -317,6 +326,17 @@ class BucketService:
         # callers (the request Literal already gates the route).
         if type not in ("general", "artist"):
             raise ValueError("type must be general|artist")
+        if daily_cap is not None:
+            recent = db.scalar(
+                select(func.count())
+                .select_from(ReviewBucket)
+                .where(
+                    ReviewBucket.user_id == user_id,
+                    ReviewBucket.created_at >= func.now() - text("interval '24 hours'"),
+                )
+            )
+            if recent is not None and recent >= daily_cap:
+                raise BucketRateLimitError(f"{recent}/{daily_cap} in 24h")
         next_pos = db.execute(
             select(func.coalesce(func.max(ReviewBucket.position), -1)).where(
                 ReviewBucket.user_id == user_id
@@ -454,6 +474,7 @@ class BucketService:
         note: Optional[str] = None,
         snapshot: Optional[Any] = None,
         today: Optional[date] = None,
+        daily_cap: Optional[int] = None,
     ) -> ReviewBucketItem:
         """Add a typed membership to a bucket. FEAT-pocket-buckit: the STEP-2 relax (V30/V31)
         is live, so every kind is writable:
@@ -490,26 +511,64 @@ class BucketService:
             )
 
         if item_type == "album":
-            return self._add_album_item(db, bucket, album_id=album_id, note=note, today=today)
+            return self._add_album_item(
+                db,
+                bucket,
+                user_id=user_id,
+                album_id=album_id,
+                note=note,
+                today=today,
+                daily_cap=daily_cap,
+            )
         return self._add_typed_item(
             db,
             bucket,
+            user_id=user_id,
             item_type=item_type,
             track_id=track_id,
             review_target_id=review_target_id,
             artist_id=artist_id,
             note=note,
             snapshot=snapshot,
+            daily_cap=daily_cap,
         )
+
+    @staticmethod
+    def _check_item_rate_limit(
+        db: Session,
+        user_id: uuid.UUID,
+        daily_cap: Optional[int],
+        *,
+        rows_to_create: int = 1,
+    ) -> None:
+        """Reject a write that would put the member over the rolling-24h row cap."""
+        if daily_cap is None or rows_to_create <= 0:
+            return
+        recent = db.scalar(
+            select(func.count())
+            .select_from(ReviewBucketItem)
+            .join(ReviewBucket, ReviewBucketItem.bucket_id == ReviewBucket.id)
+            .where(
+                ReviewBucket.user_id == user_id,
+                ReviewBucketItem.added_at >= func.now() - text("interval '24 hours'"),
+            )
+        )
+        recent_count = int(recent or 0)
+        if recent_count + rows_to_create > daily_cap:
+            raise BucketItemRateLimitError(
+                f"{recent_count}+{rows_to_create}/{daily_cap} in 24h"
+            )
 
     def _add_album_item(
         self,
         db: Session,
         bucket: ReviewBucket,
         *,
+        user_id: uuid.UUID,
         album_id: Optional[str],
         note: Optional[str],
         today: Optional[date],
+        daily_cap: Optional[int],
     ) -> ReviewBucketItem:
         """The original album path: Album lookup + score seeding + per-kind dedup. Inserts the
         newcomer above existing items whose live score is lower, renumbering 0..n."""
@@ -549,6 +608,8 @@ class BucketService:
             else:
                 break
 
+        self._check_item_rate_limit(db, user_id, daily_cap)
+
         item = ReviewBucketItem(
             bucket_id=bucket.id,
             album_id=album_id,
@@ -577,12 +638,14 @@ class BucketService:
         db: Session,
         bucket: ReviewBucket,
         *,
+        user_id: uuid.UUID,
         item_type: str,
         track_id: Optional[str],
         review_target_id: Optional[str],
         note: Optional[str],
         snapshot: Optional[Any],
         artist_id: Optional[str] = None,
+        daily_cap: Optional[int] = None,
     ) -> ReviewBucketItem:
         """Non-album kinds (track/review/playback/snapshot/artist). Appended at the end (no
         album score); per-kind dedup matches the V30/V32 partial-uniques; snapshot additionally
@@ -644,6 +707,7 @@ class BucketService:
         else:
             raise ValueError(f"unsupported item_type: {item_type}")
 
+        self._check_item_rate_limit(db, user_id, daily_cap)
         item = ReviewBucketItem(**kwargs)
         db.add(item)
         try:
@@ -671,6 +735,7 @@ class BucketService:
         *,
         source_album_id: Optional[str] = None,
         source_track_id: Optional[str] = None,
+        daily_cap: Optional[int] = None,
     ) -> Tuple[List[Artist], List[Artist]]:
         """FEAT-my-buckit-artist (V32): expand a featuring track / compilation album into its
         credited artists, adding each NOT-already-present one as an artist member. The SOURCE
@@ -734,6 +799,13 @@ class BucketService:
             if it.item_type == "artist" and it.artist_id is not None
         }
         next_pos = max((it.position for it in existing), default=-1) + 1
+
+        rows_to_create = sum(
+            1 for a in credited if str(a.id) not in present_artist_ids
+        )
+        self._check_item_rate_limit(
+            db, user_id, daily_cap, rows_to_create=rows_to_create
+        )
 
         added: List[Artist] = []
         skipped: List[Artist] = []

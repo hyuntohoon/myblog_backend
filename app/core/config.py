@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     # to an existing review don't count). Generous enough to be invisible to real
     # use (Gate G1 needs only ~10 total) while stopping scripted mass-rating.
     REVIEW_DAILY_CAP: int = 50
+    # Same rolling-24h anti-abuse pattern extended to the other member-writable
+    # creates (2026-07-14). Items count ROWS (artist source-expansion adds its
+    # whole batch), checked before insert. Integrations connects are NOT capped:
+    # user_integrations upserts one row per (user_id, provider), so there is no
+    # attempt trail to count without a schema change.
+    BUCKET_DAILY_CAP: int = 30
+    BUCKET_ITEM_DAILY_CAP: int = 500
 
     # AWS / SQS — FEAT-member-dashboard Step 3 manual "지금 새로고침" trigger.
     # The backend only *produces* one message ({"job":"spotify_refresh"}); the

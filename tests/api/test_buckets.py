@@ -458,6 +458,21 @@ class TestCreateBucket:
         assert svc.create_bucket.call_args.kwargs["type"] == "artist"
         app.dependency_overrides.clear()
 
+    def test_daily_cap_maps_to_429(self, client, app):
+        from app.services.bucket_service import BucketRateLimitError
+
+        svc = MagicMock()
+        svc.create_bucket.side_effect = BucketRateLimitError("30/30 in 24h")
+        _override(app, svc)
+
+        resp = client.post("/api/buckets", json={"name": "too many"})
+
+        assert resp.status_code == 429
+        assert resp.json()["detail"] == (
+            "Daily bucket creation limit reached — try again later"
+        )
+        app.dependency_overrides.clear()
+
     def test_create_bad_type_rejected_by_schema_422(self, client, app):
         # The Literal on CreateBucketRequest rejects an out-of-enum type before the service.
         svc = MagicMock()
@@ -634,6 +649,21 @@ class TestAddItem:
         resp = client.post("/api/buckets/bk-x/items", json={"album_id": "alb-1"})
 
         assert resp.status_code == 404
+        app.dependency_overrides.clear()
+
+    def test_daily_cap_maps_to_429(self, client, app):
+        from app.services.bucket_service import BucketItemRateLimitError
+
+        svc = MagicMock()
+        svc.add_item.side_effect = BucketItemRateLimitError("500+1/500 in 24h")
+        _override(app, svc)
+
+        resp = client.post("/api/buckets/bk-1/items", json={"album_id": "alb-1"})
+
+        assert resp.status_code == 429
+        assert resp.json()["detail"] == (
+            "Daily bucket item limit reached — try again later"
+        )
         app.dependency_overrides.clear()
 
     def test_add_missing_album_returns_404(self, client, app):
@@ -866,6 +896,26 @@ class TestAddArtistItem:
         body = resp.json()
         assert body["expansion"]["added"] == []
         assert svc.expand_artist_source.call_args.kwargs["source_track_id"] == "trk-va"
+        app.dependency_overrides.clear()
+
+    def test_source_expansion_daily_cap_maps_to_429(self, client, app):
+        from app.services.bucket_service import BucketItemRateLimitError
+
+        svc = MagicMock()
+        svc.expand_artist_source.side_effect = BucketItemRateLimitError(
+            "499+2/500 in 24h"
+        )
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets/bk-art/items",
+            json={"item_type": "artist", "source_album_id": "alb-comp"},
+        )
+
+        assert resp.status_code == 429
+        assert resp.json()["detail"] == (
+            "Daily bucket item limit reached — try again later"
+        )
         app.dependency_overrides.clear()
 
     def test_expansion_missing_source_album_returns_404(self, client, app):
