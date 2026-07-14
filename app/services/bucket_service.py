@@ -395,17 +395,27 @@ class BucketService:
         db.refresh(bucket)
         return bucket
 
-    def list_public_buckets(self, db: Session) -> List[ReviewBucket]:
-        """Flat, position-ordered list of buckets the owner has published
-        (is_public=true) AND that are normal review columns (kind='review').
+    def list_public_buckets(self, db: Session) -> List[Tuple[ReviewBucket, User]]:
+        """Flat, position-ordered list of every member's published buckets
+        (is_public=true) that are normal review columns (kind='review'), each
+        paired with its owning user for public attribution.
+
+        Post-P2 (FEAT-multi-user-accounts) buckets are per-user and ANY member
+        can publish one via PATCH is_public — the public read therefore carries
+        the owner so a member's shelf can never appear as anonymous, seemingly
+        owner-curated content on /collection (the pre-P2 query had no user
+        dimension at all).
 
         Deliberately FLAT (no nesting): exposing the parent/child tree would leak
         the existence/structure of private buckets via a published child. Each
         published bucket is a standalone public 'shelf'. The route projects these
-        through the whitelisted Public* schemas (no private item fields).
+        through the whitelisted Public* schemas (no private item fields; the owner
+        is projected as handle/display_name only — both already public via
+        /api/members).
         """
         return (
-            db.query(ReviewBucket)
+            db.query(ReviewBucket, User)
+            .join(User, User.id == ReviewBucket.user_id)
             .options(
                 selectinload(ReviewBucket.items)
                 .selectinload(ReviewBucketItem.album)

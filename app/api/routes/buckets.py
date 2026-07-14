@@ -21,6 +21,7 @@ from app.api.schemas import (
     PublicAlbumBrief,
     PublicBucket,
     PublicBucketItem,
+    PublicBucketOwner,
     PublicBucketsResponse,
     ReorderRequest,
     SpotifyLibraryAlbumState,
@@ -238,11 +239,11 @@ def list_public_buckets(
     svc: BucketService = Depends(get_bucket_service),
     genre_svc: GenreService = Depends(get_genre_service),
 ):
-    buckets = svc.list_public_buckets(db)
+    rows = svc.list_public_buckets(db)
     # The public viewer projects album shelves only; a non-album row (album_id NULL, post
     # STEP-2) is simply not shown rather than 500ing the unauthenticated viewer.
     all_album_ids = [
-        str(it.album_id) for b in buckets for it in b.items if it.album_id is not None
+        str(it.album_id) for b, _ in rows for it in b.items if it.album_id is not None
     ]
     reviewed = svc.reviewed_album_ids(db, all_album_ids)
     genres = genre_svc.labels_map(db, all_album_ids)
@@ -253,6 +254,12 @@ def list_public_buckets(
                 name=b.name,
                 position=b.position,
                 color=b.color,
+                # Attribution: post-P2 any member can publish a bucket — the public
+                # viewer must say whose shelf this is (never anonymous).
+                owner=PublicBucketOwner(
+                    handle=owner.handle,
+                    display_name=owner.display_name,
+                ),
                 items=[
                     PublicBucketItem(
                         album_id=str(it.album_id),
@@ -271,7 +278,7 @@ def list_public_buckets(
                     if it.album_id is not None
                 ],
             )
-            for b in buckets
+            for b, owner in rows
         ]
     )
 

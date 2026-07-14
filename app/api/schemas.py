@@ -411,11 +411,20 @@ class PublicBucketItem(BaseModel):
     album: PublicAlbumBrief
 
 
+class PublicBucketOwner(BaseModel):
+    # Public attribution for a published bucket (FEAT-multi-user-accounts P2:
+    # any member can publish a bucket, so the viewer must say whose shelf it is).
+    # handle/display_name only — both already public via /api/members.
+    handle: str
+    display_name: Optional[str] = None
+
+
 class PublicBucket(BaseModel):
     id: str
     name: str
     position: int
     color: Optional[str] = None
+    owner: PublicBucketOwner
     items: List[PublicBucketItem] = Field(default_factory=list)
 
 

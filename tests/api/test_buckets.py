@@ -311,11 +311,20 @@ class TestListBuckets:
         assert resp.status_code == 401
 
 
+def _bucket_owner(handle="user-0468fd3c", display_name="지훈"):
+    """The (bucket, owner) pairing list_public_buckets returns post-attribution:
+    any member can publish a bucket, so the public read carries its owner."""
+    u = MagicMock()
+    u.handle = handle
+    u.display_name = display_name
+    return u
+
+
 class TestPublicBuckets:
     def test_public_returns_whitelisted_shelves(self, client, app):
         svc = MagicMock()
         svc.list_public_buckets.return_value = [
-            _bucket(name="공개 셸프", is_public=True, items=[_item()])
+            (_bucket(name="공개 셸프", is_public=True, items=[_item()]), _bucket_owner())
         ]
         svc.reviewed_album_ids.return_value = {"alb-1"}
         _override(app, svc)
@@ -334,6 +343,28 @@ class TestPublicBuckets:
         assert svc.list_public_buckets.called
         app.dependency_overrides.clear()
 
+    def test_public_buckets_carry_owner_attribution(self, client, app):
+        # FEAT-multi-user-accounts P2: any member can publish a bucket, so the
+        # public projection must attribute each shelf to its owner — a member's
+        # bucket must never render as anonymous/owner-curated content. Only
+        # already-public identity fields (handle/display_name) are exposed.
+        svc = MagicMock()
+        svc.list_public_buckets.return_value = [
+            (
+                _bucket(bucket_id="bk-m", name="멤버 셸프", is_public=True, items=[_item()]),
+                _bucket_owner(handle="user-abcd1234", display_name="멤버"),
+            )
+        ]
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.get("/api/buckets/public")
+
+        assert resp.status_code == 200
+        owner = resp.json()["buckets"][0]["owner"]
+        assert owner == {"handle": "user-abcd1234", "display_name": "멤버"}
+        app.dependency_overrides.clear()
+
     def test_public_skips_nonalbum_rows_without_500(self, client, app):
         # The UNAUTHENTICATED viewer is the higher-blast-radius path: list_public_buckets
         # dereferences it.album.id/.title/.artists, guarded only by `if it.album_id is not
@@ -341,7 +372,7 @@ class TestPublicBuckets:
         # mixed bucket so a future non-album row (post Step-6 relax) can't 500 the public viewer.
         svc = MagicMock()
         svc.list_public_buckets.return_value = [
-            _bucket(name="공개", is_public=True, items=[_item(), _nonalbum_item()])
+            (_bucket(name="공개", is_public=True, items=[_item(), _nonalbum_item()]), _bucket_owner())
         ]
         svc.reviewed_album_ids.return_value = set()
         _override(app, svc)
@@ -359,7 +390,7 @@ class TestPublicBuckets:
         # Security: the public projection must NOT echo private fields.
         svc = MagicMock()
         svc.list_public_buckets.return_value = [
-            _bucket(name="공개", is_public=True, items=[_item()])
+            (_bucket(name="공개", is_public=True, items=[_item()]), _bucket_owner())
         ]
         svc.reviewed_album_ids.return_value = set()
         _override(app, svc)
