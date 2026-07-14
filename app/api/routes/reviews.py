@@ -40,7 +40,6 @@ def _review_response(review, user) -> AlbumReviewResponse:
         id=str(review.id),
         album_id=str(review.album_id),
         author=ReviewAuthor(
-            id=str(user.id),
             handle=user.handle,
             display_name=user.display_name,
             avatar_url=user.avatar_url,

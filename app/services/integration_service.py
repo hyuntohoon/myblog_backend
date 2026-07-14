@@ -11,13 +11,18 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from myblog_shared_db.models import LastfmRecentTrack, User, UserIntegration
+from myblog_shared_db.models import (
+    LastfmRecentTrack,
+    SpotifyMemberNowPlaying,
+    User,
+    UserIntegration,
+)
 
 from app.core.config import settings
 from app.services.review_service import MemberNotFoundError
@@ -31,6 +36,20 @@ SPOTIFY_PROVIDER = "spotify"
 # accounts.spotify.com is the AUTH host (code/token exchange), NOT the Web API
 # content host — the rule-#9-blessed exception (same constant as PlaybackService).
 _SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
+
+
+class PublicNowPlaying(NamedTuple):
+    """Source-merged public now-playing pick (see public_now_playing).
+    source_username is set ONLY for source='lastfm' — the unverified-username
+    provenance the public surface must display."""
+
+    source: str  # 'lastfm' | 'spotify'
+    artist: Optional[str]
+    track: Optional[str]
+    album: Optional[str]
+    image_url: Optional[str]
+    played_at: Optional[datetime]
+    source_username: Optional[str]
 
 
 class SpotifyConnectNotConfiguredError(Exception):
@@ -256,13 +275,67 @@ class IntegrationService:
 
     def public_now_playing(
         self, db: Session, handle: str
-    ) -> Optional[LastfmRecentTrack]:
-        """Handle-scoped public read of a member's now-playing row. Raises
-        MemberNotFoundError for an unknown handle (route maps to 404); a member
-        without a Last.fm integration and one with nothing playing are both
+    ) -> Optional["PublicNowPlaying"]:
+        """Handle-scoped public read of a member's now-playing, merged across
+        BOTH worker-written caches (2026-07-14 audit / RFC OQ7): the Last.fm
+        now-playing row (present ⇒ playing; the poller delete+inserts it) and
+        the Spotify member singleton (V45, is_playing flag). The actively
+        playing source wins; when both play, the most recently written wins.
+
+        Provenance: Last.fm connects are unverified usernames, so a Last.fm
+        pick carries `source_username` for the public "via Last.fm @x" label.
+        Spotify is OAuth-proven — no username exposed.
+
+        Raises MemberNotFoundError for an unknown handle (route maps to 404);
+        a member without integrations and one with nothing playing are both
         plain None — the public profile hides the section either way, and not
         distinguishing them keeps integration status private."""
         user = db.scalar(select(User).where(User.handle == handle.lower()))
         if user is None:
             raise MemberNotFoundError(handle)
-        return self.lastfm_now_playing(db, user.id)
+
+        lastfm = self.lastfm_now_playing(db, user.id)
+        spotify = db.get(SpotifyMemberNowPlaying, user.id)
+        spotify_playing = spotify is not None and bool(spotify.is_playing)
+
+        if lastfm is None and not spotify_playing:
+            return None
+
+        pick = "lastfm" if lastfm is not None else "spotify"
+        if lastfm is not None and spotify_playing:
+            # Both claim to be playing — trust the most recently written cache.
+            # Missing timestamps (defensive; both columns are server-defaulted)
+            # sort oldest so the dated source wins.
+            floor = datetime.min.replace(tzinfo=timezone.utc)
+            lastfm_at = lastfm.created_at or floor
+            spotify_at = spotify.updated_at or floor  # type: ignore[union-attr]
+            pick = "spotify" if spotify_at > lastfm_at else "lastfm"
+
+        if pick == "lastfm":
+            assert lastfm is not None
+            username = db.scalar(
+                select(UserIntegration.username).where(
+                    UserIntegration.user_id == user.id,
+                    UserIntegration.provider == LASTFM_PROVIDER,
+                )
+            )
+            return PublicNowPlaying(
+                source="lastfm",
+                artist=lastfm.artist_name,
+                track=lastfm.track_name,
+                album=lastfm.album_name,
+                image_url=lastfm.image_url,
+                played_at=lastfm.played_at,
+                source_username=username,
+            )
+
+        assert spotify is not None
+        return PublicNowPlaying(
+            source="spotify",
+            artist=spotify.artist_name,
+            track=spotify.track_name,
+            album=spotify.album_name,
+            image_url=spotify.image_url,
+            played_at=None,
+            source_username=None,
+        )

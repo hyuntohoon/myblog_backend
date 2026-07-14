@@ -1070,6 +1070,19 @@ class LastfmNowPlayingResponse(BaseModel):
     played_at: Optional[datetime] = None
 
 
+class MemberNowPlayingResponse(LastfmNowPlayingResponse):
+    """Public member now-playing (GET /api/members/{handle}/now-playing).
+
+    Extends the self-scoped Last.fm shape with provenance (2026-07-14 audit,
+    RFC OQ7): Last.fm connects are unverified usernames, so the public surface
+    must say where the data comes from — `source_username` carries the Last.fm
+    username ONLY while playing via Last.fm ("via Last.fm @x"). Spotify rows
+    are OAuth-proven, so source='spotify' needs no username. Both fields stay
+    None when nothing is playing (미연동 ≡ idle — integration-status privacy)."""
+    source: Optional[Literal["lastfm", "spotify"]] = None
+    source_username: Optional[str] = None
+
+
 class UpdateMeRequest(BaseModel):
     model_config = {"extra": "ignore"}
 
@@ -1101,8 +1114,12 @@ class AlbumReviewUpsertRequest(BaseModel):
 
 
 class ReviewAuthor(BaseModel):
-    """The public reviewer identity embedded in an album's review list."""
-    id: str
+    """The public reviewer identity embedded in an album's review list.
+
+    Deliberately NO `id`: users.id IS the Cognito sub, and the old field
+    published every reviewer's sub on an unauthenticated endpoint (2026-07-14
+    audit F4.3). `handle` is unique — clients identify authors (incl. "my
+    review") by handle."""
     handle: str
     display_name: str
     avatar_url: Optional[str] = None
