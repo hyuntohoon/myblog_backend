@@ -2346,6 +2346,9 @@
             "title": "Name",
             "type": "string"
           },
+          "owner": {
+            "$ref": "#/components/schemas/PublicBucketOwner"
+          },
           "position": {
             "title": "Position",
             "type": "integer"
@@ -2354,7 +2357,8 @@
         "required": [
           "id",
           "name",
-          "position"
+          "position",
+          "owner"
         ],
         "title": "PublicBucket",
         "type": "object"
@@ -2384,6 +2388,30 @@
           "album"
         ],
         "title": "PublicBucketItem",
+        "type": "object"
+      },
+      "PublicBucketOwner": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          }
+        },
+        "required": [
+          "handle"
+        ],
+        "title": "PublicBucketOwner",
         "type": "object"
       },
       "PublicBucketsResponse": {
