@@ -3,8 +3,10 @@
 #   GET /api/members             — index of members with ≥1 review (front
 #                                  getStaticPaths for static profile prerender).
 #   GET /api/members/{handle}    — a member's public profile + review feed.
-#   GET /api/members/{handle}/now-playing — a member's public Last.fm now-playing
-#                                  (DB cache only, worker-written — rule #9).
+#   GET /api/members/{handle}/now-playing — a member's public now-playing, merged
+#                                  across the Last.fm + Spotify member caches
+#                                  (DB only, worker-written — rule #9), with
+#                                  source provenance (OQ7).
 # All are public reads and ride the edge_guard GET catch-all (no JWT route).
 import logging
 
@@ -12,8 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
-    LastfmNowPlayingResponse,
     MemberListResponse,
+    MemberNowPlayingResponse,
     MemberProfileResponse,
     MemberReviewResponse,
     MemberSummary,
@@ -79,28 +81,32 @@ def get_member(
     )
 
 
-@router.get("/{handle}/now-playing", response_model=LastfmNowPlayingResponse)
+@router.get("/{handle}/now-playing", response_model=MemberNowPlayingResponse)
 def member_now_playing(
     handle: str,
     db: Session = Depends(get_db),
     svc: IntegrationService = Depends(get_integration_service),
 ):
-    """The member's public now-playing. Reads only the worker-written
-    lastfm_recent_tracks cache (rule #9 — never a synchronous Last.fm call).
-    404 for an unknown handle; is_playing=false covers both 'not connected'
+    """The member's public now-playing, source-merged across the worker-written
+    lastfm_recent_tracks + spotify_member_now_playing caches (rule #9 — never a
+    synchronous provider call). Carries provenance: `source`, and for Last.fm
+    picks `source_username` ("via Last.fm @x" — unverified-username transparency,
+    OQ7). 404 for an unknown handle; is_playing=false covers both 'not connected'
     and 'nothing playing' so a member's integration status stays private —
     the profile page hides the section unless is_playing is true."""
     try:
-        row = svc.public_now_playing(db, handle)
+        pick = svc.public_now_playing(db, handle)
     except MemberNotFoundError:
         raise HTTPException(status_code=404, detail="Member not found")
-    if row is None:
-        return LastfmNowPlayingResponse(is_playing=False)
-    return LastfmNowPlayingResponse(
+    if pick is None:
+        return MemberNowPlayingResponse(is_playing=False)
+    return MemberNowPlayingResponse(
         is_playing=True,
-        artist=row.artist_name,
-        track=row.track_name,
-        album=row.album_name,
-        image_url=row.image_url,
-        played_at=row.played_at,
+        artist=pick.artist,
+        track=pick.track,
+        album=pick.album,
+        image_url=pick.image_url,
+        played_at=pick.played_at,
+        source=pick.source,  # type: ignore[arg-type]
+        source_username=pick.source_username,
     )

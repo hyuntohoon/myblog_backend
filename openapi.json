@@ -1668,6 +1668,102 @@
         "title": "MemberListResponse",
         "type": "object"
       },
+      "MemberNowPlayingResponse": {
+        "description": "Public member now-playing (GET /api/members/{handle}/now-playing).\n\nExtends the self-scoped Last.fm shape with provenance (2026-07-14 audit,\nRFC OQ7): Last.fm connects are unverified usernames, so the public surface\nmust say where the data comes from \u2014 `source_username` carries the Last.fm\nusername ONLY while playing via Last.fm (\"via Last.fm @x\"). Spotify rows\nare OAuth-proven, so source='spotify' needs no username. Both fields stay\nNone when nothing is playing (\ubbf8\uc5f0\ub3d9 \u2261 idle \u2014 integration-status privacy).",
+        "properties": {
+          "album": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album"
+          },
+          "artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "is_playing": {
+            "title": "Is Playing",
+            "type": "boolean"
+          },
+          "played_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Played At"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "lastfm",
+                  "spotify"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "source_username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Username"
+          },
+          "track": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track"
+          }
+        },
+        "required": [
+          "is_playing"
+        ],
+        "title": "MemberNowPlayingResponse",
+        "type": "object"
+      },
       "MemberProfileResponse": {
         "description": "Public profile at /members/{handle}: identity + newest-first review feed.",
         "properties": {
@@ -2730,7 +2826,7 @@
         "type": "object"
       },
       "ReviewAuthor": {
-        "description": "The public reviewer identity embedded in an album's review list.",
+        "description": "The public reviewer identity embedded in an album's review list.\n\nDeliberately NO `id`: users.id IS the Cognito sub, and the old field\npublished every reviewer's sub on an unauthenticated endpoint (2026-07-14\naudit F4.3). `handle` is unique \u2014 clients identify authors (incl. \"my\nreview\") by handle.",
         "properties": {
           "avatar_url": {
             "anyOf": [
@@ -2750,14 +2846,9 @@
           "handle": {
             "title": "Handle",
             "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
           }
         },
         "required": [
-          "id",
           "handle",
           "display_name"
         ],
@@ -6756,7 +6847,7 @@
     },
     "/api/members/{handle}/now-playing": {
       "get": {
-        "description": "The member's public now-playing. Reads only the worker-written\nlastfm_recent_tracks cache (rule #9 \u2014 never a synchronous Last.fm call).\n404 for an unknown handle; is_playing=false covers both 'not connected'\nand 'nothing playing' so a member's integration status stays private \u2014\nthe profile page hides the section unless is_playing is true.",
+        "description": "The member's public now-playing, source-merged across the worker-written\nlastfm_recent_tracks + spotify_member_now_playing caches (rule #9 \u2014 never a\nsynchronous provider call). Carries provenance: `source`, and for Last.fm\npicks `source_username` (\"via Last.fm @x\" \u2014 unverified-username transparency,\nOQ7). 404 for an unknown handle; is_playing=false covers both 'not connected'\nand 'nothing playing' so a member's integration status stays private \u2014\nthe profile page hides the section unless is_playing is true.",
         "operationId": "member_now_playing_api_members__handle__now_playing_get",
         "parameters": [
           {
@@ -6774,7 +6865,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LastfmNowPlayingResponse"
+                  "$ref": "#/components/schemas/MemberNowPlayingResponse"
                 }
               }
             },
