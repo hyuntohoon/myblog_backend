@@ -77,7 +77,8 @@ class TestPublishHappyPath:
             resp = client.post("/api/publish", json=payload)
 
         assert resp.status_code == 200
-        import base64, json
+        import base64
+        import json
         sent = json.loads(mock_put.call_args.kwargs["data"])
         body = base64.b64decode(sent["content"]).decode("utf-8")
         line = next(ln for ln in body.splitlines() if ln.startswith("tags:"))
@@ -93,7 +94,8 @@ class TestPublishHappyPath:
             resp = client.post("/api/publish", json=VALID_PAYLOAD)
 
         assert resp.status_code == 200
-        import base64, json
+        import base64
+        import json
         sent = json.loads(mock_put.call_args.kwargs["data"])
         body = base64.b64decode(sent["content"]).decode("utf-8")
         assert "tags: []" in body
@@ -112,7 +114,8 @@ class TestPublishHappyPath:
             resp = client.post("/api/publish", json=VALID_PAYLOAD)
 
         assert resp.status_code == 200
-        import base64, json
+        import base64
+        import json
         sent = json.loads(mock_put.call_args.kwargs["data"])
         body = base64.b64decode(sent["content"]).decode("utf-8")
         line = next(ln for ln in body.splitlines() if ln.startswith("subgenres:"))
@@ -129,7 +132,8 @@ class TestPublishHappyPath:
             resp = client.post("/api/publish", json=VALID_PAYLOAD)
 
         assert resp.status_code == 200
-        import base64, json
+        import base64
+        import json
         sent = json.loads(mock_put.call_args.kwargs["data"])
         body = base64.b64decode(sent["content"]).decode("utf-8")
         assert "subgenres: []" in body
@@ -231,7 +235,8 @@ class TestMusicReviewFrontmatter:
 
         assert resp.status_code == 200
         # The frontmatter is base64-encoded inside the PUT payload body.
-        import base64, json
+        import base64
+        import json
         sent = json.loads(mock_put.call_args.kwargs["data"])
         body = base64.b64decode(sent["content"]).decode("utf-8")
         assert "musicReview: " in body
@@ -258,7 +263,8 @@ class TestMusicReviewFrontmatter:
             resp = client.post("/api/publish", json=VALID_PAYLOAD)
 
         assert resp.status_code == 200
-        import base64, json
+        import base64
+        import json
         sent = json.loads(mock_put.call_args.kwargs["data"])
         body = base64.b64decode(sent["content"]).decode("utf-8")
         assert "musicReview:" not in body
