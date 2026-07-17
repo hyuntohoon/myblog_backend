@@ -93,6 +93,7 @@ from app.api.routes import reviews
 from app.api.routes import members
 from app.api.routes import integrations
 from app.api.routes import todays_pick
+from app.api.routes import tracked_artists
 from app.db.session import get_db
 
 app.include_router(sections.router,   prefix="/api/sections",      tags=["sections"])
@@ -111,6 +112,11 @@ app.include_router(reviews.router,    prefix="/api/reviews",       tags=["review
 app.include_router(members.router,    prefix="/api/members",       tags=["members"])
 app.include_router(integrations.router, prefix="/api/integrations",  tags=["integrations"])
 app.include_router(todays_pick.router, prefix="/api/todays-pick",   tags=["todays-pick"])
+app.include_router(
+    tracked_artists.router,
+    prefix="/api/me/tracked-artists",
+    tags=["tracked-artists"],
+)
 
 
 # -----------------------------

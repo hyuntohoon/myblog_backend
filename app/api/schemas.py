@@ -1176,3 +1176,36 @@ class MemberSummary(BaseModel):
 class MemberListResponse(BaseModel):
     """Handle index for the front's getStaticPaths (static profile prerender)."""
     members: List[MemberSummary] = Field(default_factory=list)
+
+
+# FEAT-personal-release-tracking Step 2 (tracked artists)
+
+class TrackedArtistPreviewRequest(BaseModel):
+    bucket_id: UUID
+
+
+class TrackedArtistCandidate(BaseModel):
+    artist_id: UUID
+    name: str
+    photo_url: Optional[str] = None
+    already_tracked: bool
+
+
+class TrackedArtistPreviewResponse(BaseModel):
+    candidates: List[TrackedArtistCandidate] = Field(default_factory=list)
+
+
+class AddTrackedArtistsRequest(BaseModel):
+    artist_ids: List[UUID] = Field(default_factory=list)
+
+
+class AddTrackedArtistsResponse(BaseModel):
+    added: int
+    already_tracked: int
+
+
+class TrackedArtistResponse(BaseModel):
+    artist_id: UUID
+    name: str
+    photo_url: Optional[str] = None
+    added_at: datetime

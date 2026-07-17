@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # attempt trail to count without a schema change.
     BUCKET_DAILY_CAP: int = 30
     BUCKET_ITEM_DAILY_CAP: int = 500
+    # FEAT-personal-release-tracking Step 2: newly tracked artist edges per
+    # member in a rolling 24-hour window. Existing edges skipped by the bulk
+    # upsert do not consume the cap.
+    TRACKED_ARTIST_DAILY_CAP: int = 500
 
     # AWS / SQS — FEAT-member-dashboard Step 3 manual "지금 새로고침" trigger.
     # The backend only *produces* one message ({"job":"spotify_refresh"}); the

@@ -775,17 +775,7 @@ class BucketService:
             if source is None:
                 raise TrackNotFoundError(source_track_id)
 
-        # Exclude the Various Artists placeholder, then de-dup the source's own credit list (a
-        # track may credit the same artist twice).
-        seen_ids: set = set()
-        credited: List[Artist] = []
-        for a in source.artists:
-            if a.name == VARIOUS_ARTISTS:
-                continue
-            if str(a.id) in seen_ids:
-                continue
-            seen_ids.add(str(a.id))
-            credited.append(a)
+        credited = self._credited_artists(source)
 
         existing = (
             db.query(ReviewBucketItem)
@@ -834,6 +824,73 @@ class BucketService:
 
         db.commit()
         return added, skipped
+
+    @staticmethod
+    def _credited_artists(source: Album | Track) -> List[Artist]:
+        """Return a source's distinct catalog credits, excluding the VA sentinel.
+
+        Shared by artist-bucket source expansion and the personal release-tracking
+        import preview so both features interpret album/track credits identically.
+        """
+        seen_ids: set[str] = set()
+        credited: List[Artist] = []
+        for artist in source.artists:
+            artist_id = str(artist.id)
+            if artist.name == VARIOUS_ARTISTS or artist_id in seen_ids:
+                continue
+            seen_ids.add(artist_id)
+            credited.append(artist)
+        return credited
+
+    def bucket_catalog_artists(
+        self,
+        db: Session,
+        user_id: uuid.UUID,
+        bucket_id: uuid.UUID,
+    ) -> List[Artist]:
+        """Distinct catalog artists represented by one member-owned bucket.
+
+        Album and track/playback rows expand through their structured credits;
+        artist rows contribute their direct artist. Source album/track drops are
+        persisted by ``expand_artist_source`` as direct artist rows, so they flow
+        through the same path. Ownership is part of the bucket lookup and a miss
+        is deliberately indistinguishable from another member's bucket.
+        """
+        bucket = (
+            db.query(ReviewBucket)
+            .options(
+                selectinload(ReviewBucket.items)
+                .selectinload(ReviewBucketItem.album)
+                .selectinload(Album.artists),
+                selectinload(ReviewBucket.items)
+                .selectinload(ReviewBucketItem.track)
+                .selectinload(Track.artists),
+                selectinload(ReviewBucket.items).selectinload(ReviewBucketItem.artist),
+            )
+            .filter(
+                ReviewBucket.id == bucket_id,
+                ReviewBucket.user_id == user_id,
+            )
+            .first()
+        )
+        if bucket is None:
+            raise BucketNotFoundError(str(bucket_id))
+
+        artists_by_id: dict[str, Artist] = {}
+        for item in bucket.items:
+            if item.item_type == "artist" and item.artist is not None:
+                artists_by_id.setdefault(str(item.artist.id), item.artist)
+            elif item.item_type == "album" and item.album is not None:
+                for artist in self._credited_artists(item.album):
+                    artists_by_id.setdefault(str(artist.id), artist)
+            elif item.item_type in ("track", "playback") and item.track is not None:
+                for artist in self._credited_artists(item.track):
+                    artists_by_id.setdefault(str(artist.id), artist)
+
+        return sorted(
+            artists_by_id.values(),
+            key=lambda artist: (artist.name.casefold(), str(artist.id)),
+        )
 
     @staticmethod
     def _build_snapshot(item_id, snap: Any) -> BucketItemSnapshot:
