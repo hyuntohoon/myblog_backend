@@ -2708,6 +2708,93 @@
         "title": "RefreshRecentResponse",
         "type": "object"
       },
+      "ReleaseFeedItem": {
+        "properties": {
+          "artist_id": {
+            "format": "uuid",
+            "title": "Artist Id",
+            "type": "string"
+          },
+          "artist_name": {
+            "title": "Artist Name",
+            "type": "string"
+          },
+          "release_date": {
+            "format": "date",
+            "title": "Release Date",
+            "type": "string"
+          },
+          "release_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Type"
+          },
+          "spotify_album_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spotify Album Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "trust": {
+            "enum": [
+              "\ud655\uc815",
+              "\uc608\uc815",
+              "\ubd88\ud655\uc2e4"
+            ],
+            "title": "Trust",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artist_id",
+          "artist_name",
+          "title",
+          "release_date",
+          "status",
+          "trust"
+        ],
+        "title": "ReleaseFeedItem",
+        "type": "object"
+      },
+      "ReleaseFeedResponse": {
+        "properties": {
+          "recent": {
+            "items": {
+              "$ref": "#/components/schemas/ReleaseFeedItem"
+            },
+            "title": "Recent",
+            "type": "array"
+          },
+          "upcoming": {
+            "items": {
+              "$ref": "#/components/schemas/ReleaseFeedItem"
+            },
+            "title": "Upcoming",
+            "type": "array"
+          }
+        },
+        "title": "ReleaseFeedResponse",
+        "type": "object"
+      },
       "ReorderBucket": {
         "properties": {
           "id": {
@@ -6909,6 +6996,74 @@
         "summary": "Update Me",
         "tags": [
           "me"
+        ]
+      }
+    },
+    "/api/me/release-feed": {
+      "get": {
+        "operationId": "get_release_feed_api_me_release_feed_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "upcoming",
+                "recent",
+                "all"
+              ],
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "album",
+                "single",
+                "all"
+              ],
+              "title": "Category",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseFeedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Release Feed",
+        "tags": [
+          "release-feed"
         ]
       }
     },

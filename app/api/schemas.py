@@ -1209,3 +1209,21 @@ class TrackedArtistResponse(BaseModel):
     name: str
     photo_url: Optional[str] = None
     added_at: datetime
+
+
+# FEAT-personal-release-tracking Step 3 (release feed)
+
+class ReleaseFeedItem(BaseModel):
+    artist_id: UUID
+    artist_name: str
+    title: str
+    release_date: date
+    release_type: Optional[str] = None
+    status: str
+    trust: Literal["확정", "예정", "불확실"]
+    spotify_album_id: Optional[str] = None
+
+
+class ReleaseFeedResponse(BaseModel):
+    upcoming: List[ReleaseFeedItem] = Field(default_factory=list)
+    recent: List[ReleaseFeedItem] = Field(default_factory=list)
