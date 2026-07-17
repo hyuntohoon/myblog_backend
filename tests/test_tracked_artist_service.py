@@ -55,9 +55,20 @@ def test_bulk_insert_values_are_sorted_by_user_artist_conflict_key():
             self.rows = rows
 
         def scalars(self):
-            return iter(self.rows)
+            rows = self.rows
 
-    insert_result = SimpleNamespace(rowcount=3)
+            class _Scalars:
+                def __iter__(self):
+                    return iter(rows)
+
+                def all(self):
+                    return list(rows)
+
+            return _Scalars()
+
+    # The insert result is consumed via RETURNING scalars (not rowcount —
+    # prod psycopg reported -1 for this statement shape).
+    insert_result = ScalarRows([ARTIST_A, ARTIST_B, ARTIST_C])
     db = MagicMock()
     db.execute.side_effect = [
         ScalarRows([ARTIST_A, ARTIST_B, ARTIST_C]),
