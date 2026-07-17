@@ -94,13 +94,17 @@ class TrackedArtistService:
             ),
             key=lambda row: (str(row["user_id"]), str(row["artist_id"])),
         )
+        # RETURNING (only actually-inserted rows come back) instead of
+        # rowcount: prod psycopg reported rowcount=-1 for this statement,
+        # yielding added=-1 / already_tracked=len+1 in the live response.
         result = db.execute(
             pg_insert(UserArtistTrack)
             .values(values)
             .on_conflict_do_nothing(index_elements=["user_id", "artist_id"])
+            .returning(UserArtistTrack.artist_id)
         )
+        added = len(result.scalars().all())
         db.commit()
-        added = int(result.rowcount or 0)
         return added, len(unique_ids) - added
 
     def list_tracks(self, db: Session, user_id: uuid.UUID):
