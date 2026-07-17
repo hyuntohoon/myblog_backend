@@ -22,11 +22,11 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from myblog_shared_db.models import DailyPick
+from myblog_shared_db.models import DailyPick, DailyPickQueue
 
 
 class TodaysPickService:
-    """Owner-writable daily pick store + public history (FEAT-today-buckit)."""
+    """Daily-pick store, public history, and private owner staging queue."""
 
     # ── reads (public — edge_guard only) ────────────────────────────────────
 
@@ -51,6 +51,11 @@ class TodaysPickService:
         stmt = stmt.limit(limit)
         return list(db.execute(stmt).scalars().all())
 
+    def list_queue(self, db: Session) -> List[DailyPickQueue]:
+        """Owner-only staging queue, newest row first."""
+        stmt = select(DailyPickQueue).order_by(DailyPickQueue.created_at.desc())
+        return list(db.execute(stmt).scalars().all())
+
     # ── writes (owner — require_owner) ──────────────────────────────────────
 
     def upsert(
@@ -67,6 +72,106 @@ class TodaysPickService:
         """Set today's pick. Upserts on `pick_date = current_date` — re-POSTing
         the same day overwrites the prior pick (the UNIQUE(pick_date) key). The
         server pins `pick_date` to today; the owner body carries no date."""
+        stmt = self._daily_pick_upsert_stmt(
+            track_id=track_id,
+            album_id=album_id,
+            title=title,
+            artist=artist,
+            cover_url=cover_url,
+            spotify_track_id=spotify_track_id,
+        )
+        result = db.execute(stmt)
+        row = result.scalar_one()
+        db.commit()
+        db.refresh(row)
+        return row
+
+    def add_to_queue(
+        self,
+        db: Session,
+        *,
+        track_id: str,
+        album_id: str,
+        title: str,
+        artist: str,
+        cover_url: Optional[str],
+        spotify_track_id: str,
+    ) -> DailyPickQueue:
+        """Stage a track once. Re-adding its track_id returns the existing row."""
+        stmt = (
+            pg_insert(DailyPickQueue)
+            .values(
+                track_id=track_id,
+                album_id=album_id,
+                title=title,
+                artist=artist,
+                cover_url=cover_url,
+                spotify_track_id=spotify_track_id,
+            )
+            .on_conflict_do_nothing(constraint="uq_daily_pick_queue_track")
+            .returning(DailyPickQueue)
+        )
+        row = db.execute(stmt).scalar_one_or_none()
+        if row is None:
+            row = db.execute(
+                select(DailyPickQueue).where(DailyPickQueue.track_id == track_id)
+            ).scalar_one()
+        db.commit()
+        db.refresh(row)
+        return row
+
+    def delete_from_queue(self, db: Session, queue_id: str) -> bool:
+        """Delete one staged pick. Returns False when the id does not exist."""
+        row = db.get(DailyPickQueue, queue_id)
+        if row is None:
+            return False
+        db.delete(row)
+        db.commit()
+        return True
+
+    def promote_from_queue(
+        self, db: Session, queue_id: str
+    ) -> Optional[DailyPick]:
+        """Post a staged row as today's pick and consume it atomically."""
+        queue_row = db.execute(
+            select(DailyPickQueue)
+            .where(DailyPickQueue.id == queue_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if queue_row is None:
+            return None
+
+        try:
+            pick = db.execute(
+                self._daily_pick_upsert_stmt(
+                    track_id=str(queue_row.track_id),
+                    album_id=str(queue_row.album_id),
+                    title=queue_row.title,
+                    artist=queue_row.artist,
+                    cover_url=queue_row.cover_url,
+                    spotify_track_id=queue_row.spotify_track_id,
+                )
+            ).scalar_one()
+            db.delete(queue_row)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+        db.refresh(pick)
+        return pick
+
+    @staticmethod
+    def _daily_pick_upsert_stmt(
+        *,
+        track_id: str,
+        album_id: str,
+        title: str,
+        artist: str,
+        cover_url: Optional[str],
+        spotify_track_id: str,
+    ):
+        """Build the shared daily-pick upsert without owning a transaction."""
         values = {
             "pick_date": func.current_date(),
             "track_id": track_id,
@@ -94,11 +199,7 @@ class TodaysPickService:
             )
             .returning(DailyPick)
         )
-        result = db.execute(stmt)
-        row = result.scalar_one()
-        db.commit()
-        db.refresh(row)
-        return row
+        return stmt
 
     def delete_today(self, db: Session) -> bool:
         """Clear today's pick ("unpost today"). Returns True iff a row was

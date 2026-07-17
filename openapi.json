@@ -132,6 +132,55 @@
         "title": "AddToListenRequest",
         "type": "object"
       },
+      "AddToPickQueueRequest": {
+        "properties": {
+          "album_id": {
+            "format": "uuid",
+            "title": "Album Id",
+            "type": "string"
+          },
+          "artist": {
+            "minLength": 1,
+            "title": "Artist",
+            "type": "string"
+          },
+          "cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Url"
+          },
+          "spotify_track_id": {
+            "minLength": 1,
+            "title": "Spotify Track Id",
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "track_id": {
+            "format": "uuid",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "track_id",
+          "album_id",
+          "title",
+          "artist",
+          "spotify_track_id"
+        ],
+        "title": "AddToPickQueueRequest",
+        "type": "object"
+      },
       "AddTrackedArtistsRequest": {
         "properties": {
           "artist_ids": {
@@ -1119,6 +1168,61 @@
           "updated_at"
         ],
         "title": "DailyPickItem",
+        "type": "object"
+      },
+      "DailyPickQueueItem": {
+        "properties": {
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "artist": {
+            "title": "Artist",
+            "type": "string"
+          },
+          "cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Url"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "spotify_track_id": {
+            "title": "Spotify Track Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "track_id": {
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "track_id",
+          "album_id",
+          "title",
+          "artist",
+          "spotify_track_id",
+          "created_at"
+        ],
+        "title": "DailyPickQueueItem",
         "type": "object"
       },
       "DistItem": {
@@ -8336,6 +8440,171 @@
           }
         },
         "summary": "Get Todays Pick History",
+        "tags": [
+          "todays-pick"
+        ]
+      }
+    },
+    "/api/todays-pick/queue": {
+      "get": {
+        "description": "List staged picks newest-first. This read is owner-only in-Lambda.",
+        "operationId": "get_pick_queue_api_todays_pick_queue_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DailyPickQueueItem"
+                  },
+                  "title": "Response Get Pick Queue Api Todays Pick Queue Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Pick Queue",
+        "tags": [
+          "todays-pick"
+        ]
+      },
+      "post": {
+        "description": "Stage a track; re-adding the same track_id is a successful no-op.",
+        "operationId": "add_to_pick_queue_api_todays_pick_queue_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddToPickQueueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyPickQueueItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Add To Pick Queue",
+        "tags": [
+          "todays-pick"
+        ]
+      }
+    },
+    "/api/todays-pick/queue/{queue_id}": {
+      "delete": {
+        "description": "Remove a staged pick.",
+        "operationId": "delete_from_pick_queue_api_todays_pick_queue__queue_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "queue_id",
+            "required": true,
+            "schema": {
+              "title": "Queue Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete From Pick Queue",
+        "tags": [
+          "todays-pick"
+        ]
+      }
+    },
+    "/api/todays-pick/queue/{queue_id}/promote": {
+      "post": {
+        "description": "Atomically post a staged pick as today's pick and consume the queue row.",
+        "operationId": "promote_from_pick_queue_api_todays_pick_queue__queue_id__promote_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "queue_id",
+            "required": true,
+            "schema": {
+              "title": "Queue Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyPickItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Promote From Pick Queue",
         "tags": [
           "todays-pick"
         ]
