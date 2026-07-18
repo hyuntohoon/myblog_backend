@@ -6,6 +6,7 @@
 #   - GET /api/todays-pick/history public (edge_guard only)
 #   - PUT /api/todays-pick         owner  (require_owner)
 #   - DELETE /api/todays-pick      owner  (require_owner)
+#   - /api/todays-pick/queue/*     owner  (require_owner, including GET)
 #
 # The public GETs ride the CloudFront edge_guard (x-origin-verify) — no
 # apigateway route is needed for them (Step 5 adds routes only for the writes).
@@ -20,7 +21,12 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
-from app.api.schemas import DailyPickItem, UpsertTodaysPickRequest
+from app.api.schemas import (
+    AddToPickQueueRequest,
+    DailyPickItem,
+    DailyPickQueueItem,
+    UpsertTodaysPickRequest,
+)
 from app.core.auth import require_owner
 from app.db.session import get_db
 from app.di import get_todays_pick_service
@@ -46,6 +52,20 @@ def _item(p) -> DailyPickItem:
         spotify_track_id=p.spotify_track_id,
         created_at=p.created_at,
         updated_at=p.updated_at,
+    )
+
+
+def _queue_item(row) -> DailyPickQueueItem:
+    """Serialize a staged queue row, including UUID-to-string coercion."""
+    return DailyPickQueueItem(
+        id=str(row.id),
+        track_id=str(row.track_id),
+        album_id=str(row.album_id),
+        title=row.title,
+        artist=row.artist,
+        cover_url=row.cover_url,
+        spotify_track_id=row.spotify_track_id,
+        created_at=row.created_at,
     )
 
 
@@ -109,3 +129,63 @@ def delete_todays_pick(
     if not svc.delete_today(db):
         raise HTTPException(status_code=404, detail="No pick posted today")
     return Response(status_code=204)
+
+
+# ── private staging queue (owner only — require_owner) ─────────────────────────
+
+@router.get("/queue", response_model=List[DailyPickQueueItem])
+def get_pick_queue(
+    db: Session = Depends(get_db),
+    svc: TodaysPickService = Depends(get_todays_pick_service),
+    _claims: Dict = Depends(require_owner),
+):
+    """List staged picks newest-first. This read is owner-only in-Lambda."""
+    return [_queue_item(row) for row in svc.list_queue(db)]
+
+
+@router.post("/queue", response_model=DailyPickQueueItem)
+def add_to_pick_queue(
+    req: AddToPickQueueRequest,
+    db: Session = Depends(get_db),
+    svc: TodaysPickService = Depends(get_todays_pick_service),
+    _claims: Dict = Depends(require_owner),
+):
+    """Stage a track; re-adding the same track_id is a successful no-op."""
+    return _queue_item(
+        svc.add_to_queue(
+            db,
+            track_id=str(req.track_id),
+            album_id=str(req.album_id),
+            title=req.title,
+            artist=req.artist,
+            cover_url=req.cover_url,
+            spotify_track_id=req.spotify_track_id,
+        )
+    )
+
+
+@router.delete("/queue/{queue_id}", status_code=204)
+def delete_from_pick_queue(
+    queue_id: str,
+    db: Session = Depends(get_db),
+    svc: TodaysPickService = Depends(get_todays_pick_service),
+    _claims: Dict = Depends(require_owner),
+):
+    """Remove a staged pick."""
+    if not svc.delete_from_queue(db, queue_id):
+        raise HTTPException(status_code=404, detail="Queued pick not found")
+    return Response(status_code=204)
+
+
+@router.post("/queue/{queue_id}/promote", response_model=DailyPickItem)
+def promote_from_pick_queue(
+    queue_id: str,
+    db: Session = Depends(get_db),
+    svc: TodaysPickService = Depends(get_todays_pick_service),
+    _claims: Dict = Depends(require_owner),
+):
+    """Atomically post a staged pick as today's pick and consume the queue row."""
+    pick = svc.promote_from_queue(db, queue_id)
+    if pick is None:
+        raise HTTPException(status_code=404, detail="Queued pick not found")
+    return _item(pick)

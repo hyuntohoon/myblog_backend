@@ -11,6 +11,8 @@ import uuid
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.di import get_todays_pick_service
 from app.services.todays_pick_service import TodaysPickService
 
@@ -41,6 +43,29 @@ def _pick(
     p.created_at = datetime(2026, 7, 9, 12, 0, 0)
     p.updated_at = datetime(2026, 7, 9, 12, 0, 0)
     return p
+
+
+def _queued_pick(
+    *,
+    qid=None,
+    track_id=_TRACK,
+    album_id=_ALBUM,
+    title="Dior",
+    artist="Pop Smoke",
+    cover_url="https://i.scdn.co/cover.jpg",
+    spotify_track_id="0VjIjW4GlU",
+    created_at=datetime(2026, 7, 9, 12, 0, 0),
+):
+    row = MagicMock()
+    row.id = qid or uuid.uuid4()
+    row.track_id = track_id
+    row.album_id = album_id
+    row.title = title
+    row.artist = artist
+    row.cover_url = cover_url
+    row.spotify_track_id = spotify_track_id
+    row.created_at = created_at
+    return row
 
 
 def _override(app, svc):
@@ -266,6 +291,125 @@ class TestDeleteTodaysPick:
         app.dependency_overrides.clear()
 
 
+# ── Owner staging queue ────────────────────────────────────────────────────────
+
+
+class TestPickQueue:
+    def test_list_empty(self, client, app):
+        svc = MagicMock(spec=TodaysPickService)
+        svc.list_queue.return_value = []
+        _override(app, svc)
+
+        resp = client.get("/api/todays-pick/queue")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+        svc.list_queue.assert_called_once()
+        app.dependency_overrides.clear()
+
+    def test_add_is_listed_and_readd_is_idempotent(self, client, app):
+        svc = MagicMock(spec=TodaysPickService)
+        queued = []
+
+        def add_once(_db, **kwargs):
+            if queued:
+                return queued[0]
+            row = _queued_pick(
+                track_id=uuid.UUID(kwargs["track_id"]),
+                album_id=uuid.UUID(kwargs["album_id"]),
+                title=kwargs["title"],
+                artist=kwargs["artist"],
+                cover_url=kwargs["cover_url"],
+                spotify_track_id=kwargs["spotify_track_id"],
+            )
+            queued.append(row)
+            return row
+
+        svc.add_to_queue.side_effect = add_once
+        svc.list_queue.side_effect = lambda _db: list(queued)
+        _override(app, svc)
+        body = {
+            "track_id": str(_TRACK),
+            "album_id": str(_ALBUM),
+            "title": "Dior",
+            "artist": "Pop Smoke",
+            "cover_url": "https://i.scdn.co/cover.jpg",
+            "spotify_track_id": "0VjIjW4GlU",
+        }
+
+        first = client.post("/api/todays-pick/queue", json=body)
+        second = client.post("/api/todays-pick/queue", json=body)
+        listed = client.get("/api/todays-pick/queue")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert second.json()["id"] == first.json()["id"]
+        assert [row["track_id"] for row in listed.json()] == [str(_TRACK)]
+        assert svc.add_to_queue.call_count == 2
+        app.dependency_overrides.clear()
+
+    def test_list_preserves_service_newest_first_order(self, client, app):
+        svc = MagicMock(spec=TodaysPickService)
+        newer = _queued_pick(
+            qid=uuid.uuid4(), created_at=datetime(2026, 7, 10, 12, 0, 0)
+        )
+        older = _queued_pick(
+            qid=uuid.uuid4(),
+            track_id=uuid.uuid4(),
+            created_at=datetime(2026, 7, 9, 12, 0, 0),
+        )
+        svc.list_queue.return_value = [newer, older]
+        _override(app, svc)
+
+        resp = client.get("/api/todays-pick/queue")
+
+        assert resp.status_code == 200
+        assert [row["id"] for row in resp.json()] == [str(newer.id), str(older.id)]
+        app.dependency_overrides.clear()
+
+    def test_delete_removes_row_and_unknown_is_404(self, client, app):
+        svc = MagicMock(spec=TodaysPickService)
+        queue_id = str(uuid.uuid4())
+        svc.delete_from_queue.side_effect = [True, False]
+        _override(app, svc)
+
+        removed = client.delete(f"/api/todays-pick/queue/{queue_id}")
+        missing = client.delete(f"/api/todays-pick/queue/{queue_id}")
+
+        assert removed.status_code == 204
+        assert missing.status_code == 404
+        assert svc.delete_from_queue.call_count == 2
+        app.dependency_overrides.clear()
+
+    def test_promote_returns_pick_and_consumes_queue_row(self, client, app):
+        svc = MagicMock(spec=TodaysPickService)
+        queue_id = str(uuid.uuid4())
+        svc.promote_from_queue.return_value = _pick()
+        svc.list_queue.return_value = []
+        _override(app, svc)
+
+        promoted = client.post(f"/api/todays-pick/queue/{queue_id}/promote")
+        listed = client.get("/api/todays-pick/queue")
+
+        assert promoted.status_code == 200
+        assert promoted.json()["track_id"] == str(_TRACK)
+        assert promoted.json()["album_id"] == str(_ALBUM)
+        assert promoted.json()["title"] == "Dior"
+        assert listed.json() == []
+        svc.promote_from_queue.assert_called_once()
+        app.dependency_overrides.clear()
+
+    def test_promote_unknown_is_404(self, client, app):
+        svc = MagicMock(spec=TodaysPickService)
+        svc.promote_from_queue.return_value = None
+        _override(app, svc)
+
+        resp = client.post(f"/api/todays-pick/queue/{uuid.uuid4()}/promote")
+
+        assert resp.status_code == 404
+        app.dependency_overrides.clear()
+
+
 # ── Owner gate (require_owner) on PUT/DELETE ───────────────────────────────────
 # The GETs are public (no auth dependency). The writes must fail closed in prod:
 # missing OWNER_SUB → 503, valid-but-non-owner member → 403, local ENV bypasses.
@@ -285,6 +429,42 @@ def _prod_settings(owner_sub: str):
 
 
 class TestOwnerGate:
+    @pytest.mark.parametrize(
+        ("method", "path", "body"),
+        [
+            ("GET", "/api/todays-pick/queue", None),
+            (
+                "POST",
+                "/api/todays-pick/queue",
+                {
+                    "track_id": str(_TRACK),
+                    "album_id": str(_ALBUM),
+                    "title": "Dior",
+                    "artist": "Pop Smoke",
+                    "spotify_track_id": "0VjIjW4GlU",
+                },
+            ),
+            ("DELETE", f"/api/todays-pick/queue/{uuid.uuid4()}", None),
+            ("POST", f"/api/todays-pick/queue/{uuid.uuid4()}/promote", None),
+        ],
+    )
+    def test_queue_routes_reject_non_owner_in_prod(
+        self, client, app, method, path, body
+    ):
+        import app.core.auth as auth_module
+        from app.core.auth import require_cognito_token
+
+        svc = MagicMock(spec=TodaysPickService)
+        _override(app, svc)
+        app.dependency_overrides[require_cognito_token] = lambda: {"sub": "some-member"}
+
+        with patch.object(auth_module, "settings", _prod_settings(owner_sub="owner-sub")):
+            resp = client.request(method, path, json=body)
+
+        assert resp.status_code == 403
+        assert svc.method_calls == []
+        app.dependency_overrides.clear()
+
     def test_put_503_when_owner_sub_unset_in_prod(self, client, app):
         # require_owner depends on require_cognito_token. To exercise the OWNER_SUB
         # fail-closed branch IN ISOLATION (independent of token presence), we stub

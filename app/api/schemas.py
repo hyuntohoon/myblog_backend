@@ -958,6 +958,8 @@ class UpdateGenreRequest(BaseModel):
 # (require_owner). `pick_date` is server-pinned to today on upsert, so it is
 # absent from the request and present on the response. cover_url is nullable
 # (album art may be missing from Spotify); the rest are NOT NULL (V39 schema).
+# The queue request mirrors the upsert payload and its response omits only the
+# daily-pick-specific date/update columns (V48 schema).
 
 class DailyPickItem(BaseModel):
     model_config = {"from_attributes": True}
@@ -975,6 +977,30 @@ class DailyPickItem(BaseModel):
 
 
 class UpsertTodaysPickRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    track_id: UUID
+    album_id: UUID
+    title: str = Field(min_length=1)
+    artist: str = Field(min_length=1)
+    cover_url: Optional[str] = None
+    spotify_track_id: str = Field(min_length=1)
+
+
+class DailyPickQueueItem(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: str
+    track_id: str
+    album_id: str
+    title: str
+    artist: str
+    cover_url: Optional[str] = None
+    spotify_track_id: str
+    created_at: datetime
+
+
+class AddToPickQueueRequest(BaseModel):
     model_config = {"extra": "ignore"}
 
     track_id: UUID
