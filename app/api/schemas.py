@@ -1069,6 +1069,9 @@ class IntegrationResponse(BaseModel):
     username: Optional[str] = None
     status: str
     last_synced_at: Optional[datetime] = None
+    # Granted OAuth scope string (Spotify only), extracted from payload.
+    # The payload itself (including ciphertext) is never serialized.
+    scope: Optional[str] = None
 
 
 class IntegrationsResponse(BaseModel):

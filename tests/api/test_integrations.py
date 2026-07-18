@@ -29,6 +29,7 @@ class TestIntegrationRoutes:
         assert resp.status_code == 200
         row = resp.json()["integrations"][0]
         assert row["provider"] == "lastfm" and row["username"] == "rj"
+        assert row["scope"] is None
         app.dependency_overrides.clear()
 
     def test_connect_lastfm_forwards_username(self, client, app):
@@ -176,7 +177,10 @@ class TestSpotifyConnectRoutes:
                 username=None,
                 status="connected",
                 last_synced_at=None,
-                payload='{"ciphertext":"TOPSECRET"}',
+                payload=(
+                    '{"v":1,"ciphertext":"S3VCRT","scope":'
+                    '"user-read-currently-playing user-read-recently-played"}'
+                ),
             )
         ]
         _override(app, svc)
@@ -184,8 +188,28 @@ class TestSpotifyConnectRoutes:
         assert resp.status_code == 200
         row = resp.json()["integrations"][0]
         assert row["provider"] == "spotify" and row["status"] == "connected"
+        assert row["scope"] == (
+            "user-read-currently-playing user-read-recently-played"
+        )
         assert "payload" not in row
-        assert "TOPSECRET" not in resp.text
+        assert "ciphertext" not in resp.text and "S3VCRT" not in resp.text
+        app.dependency_overrides.clear()
+
+    def test_list_spotify_malformed_payload_has_no_scope(self, client, app):
+        svc = MagicMock()
+        svc.list_integrations.return_value = [
+            SimpleNamespace(
+                provider="spotify",
+                username=None,
+                status="connected",
+                last_synced_at=None,
+                payload="not-json",
+            )
+        ]
+        _override(app, svc)
+        resp = client.get("/api/integrations")
+        assert resp.status_code == 200
+        assert resp.json()["integrations"][0]["scope"] is None
         app.dependency_overrides.clear()
 
 
