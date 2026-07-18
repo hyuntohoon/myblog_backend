@@ -1433,6 +1433,17 @@
             "title": "Provider",
             "type": "string"
           },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
           "status": {
             "title": "Status",
             "type": "string"

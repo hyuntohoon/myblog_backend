@@ -8,8 +8,9 @@
 #   PUT    /api/integrations/spotify            — 3b-c: server-side code exchange,
 #                                                 KMS-enveloped refresh-token custody (JWT route).
 #   DELETE /api/integrations/spotify            — disconnect Spotify (JWT route).
+import json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
@@ -39,12 +40,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _spotify_scope(row) -> Optional[str]:
+    if row.provider != SPOTIFY_PROVIDER:
+        return None
+    payload = getattr(row, "payload", None)
+    try:
+        parsed = json.loads(payload)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    scope = parsed.get("scope")
+    return scope if isinstance(scope, str) else None
+
+
 def _integration_response(row) -> IntegrationResponse:
     return IntegrationResponse(
         provider=row.provider,
         username=row.username,
         status=row.status,
         last_synced_at=row.last_synced_at,
+        scope=_spotify_scope(row),
     )
 
 
