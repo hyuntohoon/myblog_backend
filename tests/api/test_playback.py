@@ -7,15 +7,11 @@ from unittest.mock import MagicMock, patch
 
 from app.core.auth import require_cognito_token
 from app.db.session import get_db
-from app.di import get_integration_service, get_playback_service
-from app.services.integration_service import (
-    IntegrationService,
-    SpotifyConnectNotConfiguredError,
-    SpotifyProviderError,
-)
+from app.di import get_playback_service
 from app.services.playback_service import (
     PlaybackItemNotFoundError,
     PlaybackNotConfiguredError,
+    PlaybackNotConnectedError,
     PlaybackProviderError,
     PlaybackService,
 )
@@ -28,11 +24,7 @@ def _override(app, svc):
 
 
 def _override_member_path(app, svc, db, claims):
-    """Route the Step-2 member path deterministically: one mock service serves both
-    DI seams, get_db returns the fake session, and the verified claims are injected
-    (conftest forces ENV=local, whose bypass would otherwise yield {} = owner path)."""
     _override(app, svc)
-    app.dependency_overrides[get_integration_service] = lambda: svc
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[require_cognito_token] = lambda: claims
 
@@ -69,28 +61,39 @@ class TestSpotifyTokenRoute:
         assert svc.mint_streaming_token.call_args.kwargs["owner"] == "owner"
         app.dependency_overrides.clear()
 
-    def test_member_sub_uses_member_integration_token(self, client, app):
-        # FEAT-member-player Step 2: a verified non-owner sub mints from the member's
-        # own KMS-enveloped integration, never the owner streaming credential.
+    def test_member_sub_uses_member_mint(self, client, app):
+        # FEAT-member-player Step 2: a non-owner sub routes to the member mint (its own
+        # row-scoped refresh token), never the owner credential path.
         import app.api.routes.playback as playback_route
+        import app.core.auth as auth_module
 
         member_id = uuid.UUID("22222222-2222-2222-2222-222222222222")
         db, svc = MagicMock(), MagicMock()
-        svc.mint_member_access_token.return_value = {
+        svc.mint_member_streaming_token.return_value = {
             "access_token": "member-access",
             "expires_in": 1800,
             "token_type": "Bearer",
         }
         _override_member_path(app, svc, db, {"sub": str(member_id)})
+        auth_settings = MagicMock(
+            ENV="prod",
+            COGNITO_USER_POOL_ID="ap-northeast-2_TestPool",
+            COGNITO_REGION="ap-northeast-2",
+        )
 
-        with patch.object(
-            playback_route, "settings", SimpleNamespace(OWNER_SUB="different-owner")
+        with (
+            patch.object(auth_module, "settings", auth_settings),
+            patch.object(
+                playback_route,
+                "settings",
+                SimpleNamespace(OWNER_SUB="different-owner"),
+            ),
         ):
             resp = client.get("/api/playback/spotify-token")
 
         assert resp.status_code == 200
         assert resp.json()["access_token"] == "member-access"
-        svc.mint_member_access_token.assert_called_once_with(db, member_id)
+        svc.mint_member_streaming_token.assert_called_once_with(db, member_id=member_id)
         svc.mint_streaming_token.assert_not_called()
         app.dependency_overrides.clear()
 
@@ -111,12 +114,11 @@ class TestSpotifyTokenRoute:
 
         assert resp.status_code == 200
         svc.mint_streaming_token.assert_called_once_with(owner=owner_sub)
-        svc.mint_member_access_token.assert_not_called()
+        svc.mint_member_streaming_token.assert_not_called()
         app.dependency_overrides.clear()
 
     def test_local_empty_claims_preserve_owner_sentinel_path(self, client, app):
-        # ENV=local claims are {} — the pre-Step-2 behavior (owner sentinel path) must
-        # survive so local dev keeps working without a Cognito token.
+        # ENV=local|dev bypass yields claims={} — keep the pre-Step-2 owner behavior.
         db, svc = MagicMock(), MagicMock()
         svc.mint_streaming_token.return_value = {
             "access_token": "local-owner-access",
@@ -129,7 +131,23 @@ class TestSpotifyTokenRoute:
 
         assert resp.status_code == 200
         svc.mint_streaming_token.assert_called_once_with(owner="owner")
-        svc.mint_member_access_token.assert_not_called()
+        svc.mint_member_streaming_token.assert_not_called()
+        app.dependency_overrides.clear()
+
+    def test_member_not_connected_maps_to_404(self, client, app, monkeypatch):
+        from app.core.config import settings
+
+        member_id = uuid.UUID("22222222-2222-2222-2222-222222222222")
+        monkeypatch.setattr(settings, "OWNER_SUB", "different-owner")
+        db, svc = MagicMock(), MagicMock()
+        svc.mint_member_streaming_token.side_effect = PlaybackNotConnectedError()
+        _override_member_path(app, svc, db, {"sub": str(member_id)})
+
+        resp = client.get("/api/playback/spotify-token")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Spotify not connected"
+        svc.mint_streaming_token.assert_not_called()
         app.dependency_overrides.clear()
 
     def test_member_not_configured_maps_to_503(self, client, app, monkeypatch):
@@ -138,7 +156,7 @@ class TestSpotifyTokenRoute:
         member_id = uuid.UUID("22222222-2222-2222-2222-222222222222")
         monkeypatch.setattr(settings, "OWNER_SUB", "different-owner")
         db, svc = MagicMock(), MagicMock()
-        svc.mint_member_access_token.side_effect = SpotifyConnectNotConfiguredError()
+        svc.mint_member_streaming_token.side_effect = PlaybackNotConfiguredError()
         _override_member_path(app, svc, db, {"sub": str(member_id)})
 
         resp = client.get("/api/playback/spotify-token")
@@ -154,7 +172,7 @@ class TestSpotifyTokenRoute:
         member_id = uuid.UUID("22222222-2222-2222-2222-222222222222")
         monkeypatch.setattr(settings, "OWNER_SUB", "different-owner")
         db, svc = MagicMock(), MagicMock()
-        svc.mint_member_access_token.side_effect = SpotifyProviderError("rejected")
+        svc.mint_member_streaming_token.side_effect = PlaybackProviderError("rejected")
         _override_member_path(app, svc, db, {"sub": str(member_id)})
 
         resp = client.get("/api/playback/spotify-token")
@@ -193,6 +211,7 @@ class TestSpotifyTokenRoute:
 
         assert resp.status_code == 401
         svc.mint_streaming_token.assert_not_called()
+        svc.mint_member_streaming_token.assert_not_called()
         app.dependency_overrides.clear()
 
 
@@ -315,8 +334,8 @@ class TestMintStreamingToken:
             pass
 
 
-class TestMintMemberAccessToken:
-    """IntegrationService.mint_member_access_token — the member half of the Step-2
+class TestMintMemberStreamingToken:
+    """PlaybackService.mint_member_streaming_token — the member half of the Step-2
     route. Fake db rows + patched kms_envelope; no real DB, KMS, or Spotify call."""
 
     member_id = uuid.UUID("22222222-2222-2222-2222-222222222222")
@@ -332,7 +351,10 @@ class TestMintMemberAccessToken:
         values.update(overrides)
         for key, value in values.items():
             monkeypatch.setattr(settings, key, value)
-        return IntegrationService(users=MagicMock())
+        monkeypatch.setattr(PlaybackService, "_creds_cache", {"val": None, "ts": 0.0})
+        svc = PlaybackService()
+        monkeypatch.setattr(svc, "_read_spotify_secret", lambda: {})
+        return svc
 
     @staticmethod
     def _row(*, status="connected", payload=None):
@@ -360,9 +382,9 @@ class TestMintMemberAccessToken:
         db, http = MagicMock(), MagicMock()
 
         try:
-            svc.mint_member_access_token(db, self.member_id, client=http)
-            raise AssertionError("expected SpotifyConnectNotConfiguredError")
-        except SpotifyConnectNotConfiguredError:
+            svc.mint_member_streaming_token(db, member_id=self.member_id, client=http)
+            raise AssertionError("expected PlaybackNotConfiguredError")
+        except PlaybackNotConfiguredError:
             pass
 
         db.scalar.assert_not_called()
@@ -370,55 +392,57 @@ class TestMintMemberAccessToken:
 
     def test_missing_app_creds_fail_before_db_or_outbound(self, monkeypatch):
         svc = self._service(monkeypatch, SPOTIFY_CLIENT_ID="", SPOTIFY_CLIENT_SECRET="")
-        monkeypatch.setattr(svc, "_spotify_app_creds", lambda: ("", ""))
         db, http = MagicMock(), MagicMock()
 
         try:
-            svc.mint_member_access_token(db, self.member_id, client=http)
-            raise AssertionError("expected SpotifyConnectNotConfiguredError")
-        except SpotifyConnectNotConfiguredError:
+            svc.mint_member_streaming_token(db, member_id=self.member_id, client=http)
+            raise AssertionError("expected PlaybackNotConfiguredError")
+        except PlaybackNotConfiguredError:
             pass
 
         db.scalar.assert_not_called()
         http.post.assert_not_called()
 
-    def test_missing_row_is_not_configured_without_outbound(self, monkeypatch):
+    def test_missing_row_is_not_connected_without_outbound(self, monkeypatch):
         svc, db, http = self._service(monkeypatch), MagicMock(), MagicMock()
         db.scalar.return_value = None
 
         try:
-            svc.mint_member_access_token(db, self.member_id, client=http)
-            raise AssertionError("expected SpotifyConnectNotConfiguredError")
-        except SpotifyConnectNotConfiguredError:
+            svc.mint_member_streaming_token(db, member_id=self.member_id, client=http)
+            raise AssertionError("expected PlaybackNotConnectedError")
+        except PlaybackNotConnectedError:
             pass
 
         http.post.assert_not_called()
 
-    def test_non_connected_row_is_not_configured_without_outbound(self, monkeypatch):
+    def test_non_connected_row_is_not_connected_without_outbound(self, monkeypatch):
         svc, db, http = self._service(monkeypatch), MagicMock(), MagicMock()
         db.scalar.return_value = self._row(status="error")
 
         try:
-            svc.mint_member_access_token(db, self.member_id, client=http)
-            raise AssertionError("expected SpotifyConnectNotConfiguredError")
-        except SpotifyConnectNotConfiguredError:
+            svc.mint_member_streaming_token(db, member_id=self.member_id, client=http)
+            raise AssertionError("expected PlaybackNotConnectedError")
+        except PlaybackNotConnectedError:
             pass
 
         http.post.assert_not_called()
 
-    def test_payload_without_ciphertext_is_not_configured(self, monkeypatch):
+    def test_payload_without_ciphertext_is_not_connected(self, monkeypatch):
         svc, db, http = self._service(monkeypatch), MagicMock(), MagicMock()
-        db.scalar.return_value = self._row(payload=json.dumps({"v": 1, "scope": "streaming"}))
+        db.scalar.return_value = self._row(
+            payload=json.dumps({"v": 1, "scope": "streaming"})
+        )
 
         try:
-            svc.mint_member_access_token(db, self.member_id, client=http)
-            raise AssertionError("expected SpotifyConnectNotConfiguredError")
-        except SpotifyConnectNotConfiguredError:
+            svc.mint_member_streaming_token(db, member_id=self.member_id, client=http)
+            raise AssertionError("expected PlaybackNotConnectedError")
+        except PlaybackNotConnectedError:
             pass
 
         http.post.assert_not_called()
 
     def test_decrypt_failure_is_not_configured(self, monkeypatch):
+        # Fail closed — a KMS outage must never fall back to the owner token or a 404.
         from app.core import kms_envelope
 
         svc, db, http = self._service(monkeypatch), MagicMock(), MagicMock()
@@ -430,9 +454,9 @@ class TestMintMemberAccessToken:
         )
 
         try:
-            svc.mint_member_access_token(db, self.member_id, client=http)
-            raise AssertionError("expected SpotifyConnectNotConfiguredError")
-        except SpotifyConnectNotConfiguredError:
+            svc.mint_member_streaming_token(db, member_id=self.member_id, client=http)
+            raise AssertionError("expected PlaybackNotConfiguredError")
+        except PlaybackNotConfiguredError:
             pass
 
         http.post.assert_not_called()
@@ -448,7 +472,9 @@ class TestMintMemberAccessToken:
             {"access_token": "member-access", "expires_in": 1800, "token_type": "Bearer"}
         )
 
-        token = svc.mint_member_access_token(db, self.member_id, client=http)
+        token = svc.mint_member_streaming_token(
+            db, member_id=self.member_id, client=http
+        )
 
         assert token == {
             "access_token": "member-access",
@@ -464,6 +490,42 @@ class TestMintMemberAccessToken:
         assert http.post.call_args.kwargs["auth"] == ("cid", "csec")
         db.commit.assert_not_called()
 
+    def test_invalid_grant_marks_row_error_and_raises(self, monkeypatch):
+        from app.core import kms_envelope
+
+        svc, db, row = self._service(monkeypatch), MagicMock(), self._row()
+        db.scalar.return_value = row
+        monkeypatch.setattr(kms_envelope, "kms_decrypt_b64", lambda _: "member-refresh")
+        http = self._http_response({"error": "invalid_grant"}, status_code=400)
+
+        try:
+            svc.mint_member_streaming_token(db, member_id=self.member_id, client=http)
+            raise AssertionError("expected PlaybackProviderError")
+        except PlaybackProviderError:
+            pass
+
+        # Revoked/rotated-away token → the row is flagged so the front can surface a
+        # reconnect (and the next mint 404s); the mint still fails with a clean 502.
+        assert row.status == "error"
+        db.commit.assert_called_once_with()
+
+    def test_non_invalid_grant_rejection_leaves_row_untouched(self, monkeypatch):
+        from app.core import kms_envelope
+
+        svc, db, row = self._service(monkeypatch), MagicMock(), self._row()
+        db.scalar.return_value = row
+        monkeypatch.setattr(kms_envelope, "kms_decrypt_b64", lambda _: "member-refresh")
+        http = self._http_response({"error": "server_error"}, status_code=500)
+
+        try:
+            svc.mint_member_streaming_token(db, member_id=self.member_id, client=http)
+            raise AssertionError("expected PlaybackProviderError")
+        except PlaybackProviderError:
+            pass
+
+        assert row.status == "connected"
+        db.commit.assert_not_called()
+
     def test_rotated_refresh_token_updates_envelope_and_commits(self, monkeypatch):
         from app.core import kms_envelope
 
@@ -473,25 +535,20 @@ class TestMintMemberAccessToken:
         encrypt = MagicMock(return_value="new-envelope")
         monkeypatch.setattr(kms_envelope, "kms_encrypt_b64", encrypt)
         http = self._http_response(
-            {
-                "access_token": "member-access",
-                "refresh_token": "rotated-refresh",
-                "scope": "streaming user-read-email user-read-playback-state",
-                "expires_in": 2700,
-            }
+            {"access_token": "member-access", "refresh_token": "rotated-refresh"}
         )
 
-        token = svc.mint_member_access_token(db, self.member_id, client=http)
+        token = svc.mint_member_streaming_token(
+            db, member_id=self.member_id, client=http
+        )
 
         assert token["access_token"] == "member-access"
         encrypt.assert_called_once_with("rotated-refresh")
         stored = json.loads(row.payload)
         assert stored["v"] == 1
         assert stored["ciphertext"] == "new-envelope"
-        # scope/expires_in track the refresh response when present (worker
-        # _rotated_payload twin — the response reflects the actual grant).
-        assert stored["scope"] == "streaming user-read-email user-read-playback-state"
-        assert stored["expires_in"] == 2700
+        # The stored connect-time scope is the actual grant — rotation keeps it.
+        assert stored["scope"] == "streaming user-read-email"
         assert stored["obtained_at"] != "2026-07-01T00:00:00+00:00"
         db.commit.assert_called_once_with()
 
@@ -508,7 +565,9 @@ class TestMintMemberAccessToken:
             {"access_token": "member-access", "refresh_token": "member-refresh"}
         )
 
-        token = svc.mint_member_access_token(db, self.member_id, client=http)
+        token = svc.mint_member_streaming_token(
+            db, member_id=self.member_id, client=http
+        )
 
         assert token["access_token"] == "member-access"
         assert row.payload == old_payload
@@ -531,63 +590,13 @@ class TestMintMemberAccessToken:
             {"access_token": "member-access", "refresh_token": "rotated-refresh"}
         )
 
-        token = svc.mint_member_access_token(db, self.member_id, client=http)
+        token = svc.mint_member_streaming_token(
+            db, member_id=self.member_id, client=http
+        )
 
         assert token["access_token"] == "member-access"
         assert row.payload == old_payload
         db.commit.assert_not_called()
-
-    def test_invalid_grant_marks_row_error_and_raises(self, monkeypatch):
-        from app.core import kms_envelope
-
-        svc, db, row = self._service(monkeypatch), MagicMock(), self._row()
-        db.scalar.return_value = row
-        monkeypatch.setattr(kms_envelope, "kms_decrypt_b64", lambda _: "member-refresh")
-        http = self._http_response({"error": "invalid_grant"}, status_code=400)
-
-        try:
-            svc.mint_member_access_token(db, self.member_id, client=http)
-            raise AssertionError("expected SpotifyProviderError")
-        except SpotifyProviderError:
-            pass
-
-        # Revoked/rotated-away token → the row is flagged so the front can
-        # surface a reconnect; the mint still fails with a clean 502.
-        assert row.status == "error"
-        db.commit.assert_called_once_with()
-
-    def test_non_invalid_grant_rejection_leaves_row_untouched(self, monkeypatch):
-        from app.core import kms_envelope
-
-        svc, db, row = self._service(monkeypatch), MagicMock(), self._row()
-        db.scalar.return_value = row
-        monkeypatch.setattr(kms_envelope, "kms_decrypt_b64", lambda _: "member-refresh")
-        http = self._http_response({"error": "server_error"}, status_code=500)
-
-        try:
-            svc.mint_member_access_token(db, self.member_id, client=http)
-            raise AssertionError("expected SpotifyProviderError")
-        except SpotifyProviderError:
-            pass
-
-        assert row.status == "connected"
-        db.commit.assert_not_called()
-
-    def test_non_json_200_raises_provider_error(self, monkeypatch):
-        from app.core import kms_envelope
-
-        svc, db, row = self._service(monkeypatch), MagicMock(), self._row()
-        db.scalar.return_value = row
-        monkeypatch.setattr(kms_envelope, "kms_decrypt_b64", lambda _: "member-refresh")
-        http = MagicMock()
-        http.post.return_value = MagicMock(status_code=200)
-        http.post.return_value.json.side_effect = ValueError("not json")
-
-        try:
-            svc.mint_member_access_token(db, self.member_id, client=http)
-            raise AssertionError("expected SpotifyProviderError")
-        except SpotifyProviderError:
-            pass
 
 
 class TestResolveRoute:
