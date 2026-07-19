@@ -21,15 +21,11 @@ from app.api.schemas import PlaybackResolveResponse, SpotifyStreamingTokenRespon
 from app.core.auth import require_cognito_token, resolve_owner
 from app.core.config import settings
 from app.db.session import get_db
-from app.di import get_integration_service, get_playback_service
-from app.services.integration_service import (
-    IntegrationService,
-    SpotifyConnectNotConfiguredError,
-    SpotifyProviderError,
-)
+from app.di import get_playback_service
 from app.services.playback_service import (
     PlaybackItemNotFoundError,
     PlaybackNotConfiguredError,
+    PlaybackNotConnectedError,
     PlaybackProviderError,
     PlaybackService,
 )
@@ -44,29 +40,23 @@ def spotify_token(
     svc: PlaybackService = Depends(get_playback_service),
     claims: Dict = Depends(require_cognito_token),
     db: Session = Depends(get_db),
-    integrations: IntegrationService = Depends(get_integration_service),
 ):
+    # Empty claims only exist under the ENV=local|dev auth bypass — a verified prod JWT
+    # always carries a sub, so the owner special-case never captures an anonymous caller.
     is_owner = not claims or bool(
         settings.OWNER_SUB and claims.get("sub") == settings.OWNER_SUB
     )
-    if is_owner:
-        try:
+    try:
+        if is_owner:
             tok = svc.mint_streaming_token(owner=resolve_owner(claims))
-        except PlaybackNotConfiguredError:
-            raise HTTPException(
-                status_code=503, detail="Spotify playback not configured"
-            )
-        except PlaybackProviderError as e:
-            raise HTTPException(status_code=502, detail=str(e))
-    else:
-        try:
-            tok = integrations.mint_member_access_token(db, _member_id(claims))
-        except SpotifyConnectNotConfiguredError:
-            raise HTTPException(
-                status_code=503, detail="Spotify playback not configured"
-            )
-        except SpotifyProviderError as e:
-            raise HTTPException(status_code=502, detail=str(e))
+        else:
+            tok = svc.mint_member_streaming_token(db, member_id=_member_id(claims))
+    except PlaybackNotConnectedError:
+        raise HTTPException(status_code=404, detail="Spotify not connected")
+    except PlaybackNotConfiguredError:
+        raise HTTPException(status_code=503, detail="Spotify playback not configured")
+    except PlaybackProviderError as e:
+        raise HTTPException(status_code=502, detail=str(e))
     return SpotifyStreamingTokenResponse(
         access_token=str(tok["access_token"]),
         expires_in=int(tok["expires_in"]),  # type: ignore[arg-type]
