@@ -675,6 +675,10 @@ class SavedTrackItem(BaseModel):
     spotify_track_id: str
     track_name: str
     artist_name: Optional[str] = None
+    # RFC-ui-surface-unification Step 4: primary catalog-artist id for the
+    # resolved album — lights the LikedBoard artist link. None when the track's
+    # album isn't in the catalog (artist_name stays the denormalized string).
+    artist_id: Optional[str] = None
     album_name: Optional[str] = None
     album_sid: Optional[str] = None
     # Resolved catalog album id + brief when the track's album is in our catalog;
@@ -970,6 +974,10 @@ class DailyPickItem(BaseModel):
     album_id: str
     title: str
     artist: str
+    # RFC-ui-surface-unification Step 4: primary artist's catalog id, resolved
+    # at read time from the pick's album (albums→album_artists join) — the pick
+    # row itself stays denormalized. None when the album has no artist rows.
+    artist_id: Optional[str] = None
     cover_url: Optional[str] = None
     spotify_track_id: str
     created_at: datetime
@@ -1179,6 +1187,11 @@ class MemberReviewResponse(BaseModel):
     album_id: str
     album_title: str
     album_cover_url: Optional[str] = None
+    # RFC-ui-surface-unification Step 4 (평가 artist line): the album's primary
+    # artist, resolved at read time (albums→album_artists join). Both None when
+    # the album has no artist rows.
+    artist_name: Optional[str] = None
+    artist_id: Optional[str] = None
     rating: float
     comment: Optional[str] = None
     created_at: datetime
