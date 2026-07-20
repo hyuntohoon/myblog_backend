@@ -22,6 +22,7 @@ from app.api.schemas import (
 )
 from app.db.session import get_db
 from app.di import get_integration_service, get_review_service
+from app.services.artist_primary import primary_artist_map
 from app.services.integration_service import IntegrationService
 from app.services.review_service import MemberNotFoundError, ReviewService
 
@@ -59,6 +60,9 @@ def get_member(
         user, rows = svc.member_profile(db, handle)
     except MemberNotFoundError:
         raise HTTPException(status_code=404, detail="Member not found")
+    # ui-unify Step 4 (평가 artist line): one batch resolve for the whole feed —
+    # the feed albums' primary artists, keyed by album id.
+    amap = primary_artist_map(db, [a.id for _, a in rows])
     return MemberProfileResponse(
         handle=user.handle,
         display_name=user.display_name,
@@ -71,6 +75,8 @@ def get_member(
                 album_id=str(r.album_id),
                 album_title=a.title,
                 album_cover_url=a.cover_url,
+                artist_id=(amap.get(str(a.id)) or (None, None))[0],
+                artist_name=(amap.get(str(a.id)) or (None, None))[1],
                 rating=float(r.rating),
                 comment=r.comment,
                 created_at=r.created_at,

@@ -30,6 +30,7 @@ from app.api.schemas import (
 from app.core.auth import require_owner
 from app.db.session import get_db
 from app.di import get_todays_pick_service
+from app.services.artist_primary import primary_artist_map
 from app.services.todays_pick_service import TodaysPickService
 
 logger = logging.getLogger(__name__)
@@ -37,10 +38,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _item(p) -> DailyPickItem:
+def _item(p, artist_id: Optional[str] = None) -> DailyPickItem:
     """Serialize a DailyPick ORM row into the response shape, casting the UUID
     columns to str (mirrors genres.py's _node helper — Pydantic's from_attributes
-    does not coerce UUID → str automatically)."""
+    does not coerce UUID → str automatically). `artist_id` is the read-time
+    primary-artist resolve (ui-unify Step 4) the caller batch-computed."""
     return DailyPickItem(
         id=str(p.id),
         pick_date=p.pick_date,
@@ -48,11 +50,21 @@ def _item(p) -> DailyPickItem:
         album_id=str(p.album_id),
         title=p.title,
         artist=p.artist,
+        artist_id=artist_id,
         cover_url=p.cover_url,
         spotify_track_id=p.spotify_track_id,
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
+
+
+def _items_with_artist(db: Session, picks: List) -> List[DailyPickItem]:
+    """Batch the primary-artist resolve for a page of picks (one query)."""
+    amap = primary_artist_map(db, [p.album_id for p in picks])
+    return [
+        _item(p, artist_id=(amap.get(str(p.album_id)) or (None,))[0])
+        for p in picks
+    ]
 
 
 def _queue_item(row) -> DailyPickQueueItem:
@@ -78,7 +90,7 @@ def get_todays_pick(
 ):
     """Today's pick, or null on a no-pick day (home tile hides on null)."""
     pick = svc.get_today(db)
-    return _item(pick) if pick is not None else None
+    return _items_with_artist(db, [pick])[0] if pick is not None else None
 
 
 @router.get("/history", response_model=List[DailyPickItem])
@@ -91,7 +103,7 @@ def get_todays_pick_history(
     svc: TodaysPickService = Depends(get_todays_pick_service),
 ):
     """Date-desc history of past picks. `before` pages older entries."""
-    return [_item(p) for p in svc.list_history(db, limit=limit, before=before)]
+    return _items_with_artist(db, svc.list_history(db, limit=limit, before=before))
 
 
 # ── mutations (owner only — require_owner) ──────────────────────────────────────
@@ -105,17 +117,16 @@ def put_todays_pick(
 ):
     """Set today's pick. Upserts on pick_date = today; re-POST overwrites. The
     server pins pick_date to today — the body carries the track's ids + display."""
-    return _item(
-        svc.upsert(
-            db,
-            track_id=str(req.track_id),
-            album_id=str(req.album_id),
-            title=req.title,
-            artist=req.artist,
-            cover_url=req.cover_url,
-            spotify_track_id=req.spotify_track_id,
-        )
+    pick = svc.upsert(
+        db,
+        track_id=str(req.track_id),
+        album_id=str(req.album_id),
+        title=req.title,
+        artist=req.artist,
+        cover_url=req.cover_url,
+        spotify_track_id=req.spotify_track_id,
     )
+    return _items_with_artist(db, [pick])[0]
 
 
 @router.delete("", status_code=204)
@@ -188,4 +199,4 @@ def promote_from_pick_queue(
     pick = svc.promote_from_queue(db, queue_id)
     if pick is None:
         raise HTTPException(status_code=404, detail="Queued pick not found")
-    return _item(pick)
+    return _items_with_artist(db, [pick])[0]

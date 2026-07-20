@@ -48,6 +48,7 @@ from app.clients.sqs_client import get_spotify_connection_status
 from app.core.auth import require_owner
 from app.db.session import get_db
 from app.di import get_library_service, get_sqs_client
+from app.services.artist_primary import pick_primary_artist
 from app.services.enqueue import safe_enqueue_catalog_sync
 from app.services.genre_service import GenreService
 from app.services.library_service import (
@@ -72,6 +73,16 @@ def _album_brief(album, genres=None) -> AlbumBrief:
         artist_names=[a.name for a in album.artists],
         genres=genres or [],
     )
+
+
+def _saved_track_artist_id(row) -> Optional[str]:
+    """ui-unify Step 4: primary catalog-artist id for a saved-track row —
+    in-memory pick over the eager-loaded .album.artists (no extra query);
+    None when the track's album isn't in the catalog."""
+    if row.album is None:
+        return None
+    primary = pick_primary_artist(row.album.artists)
+    return str(primary.id) if primary is not None else None
 
 
 def _to_listen_response(item) -> ToListenItemResponse:
@@ -272,6 +283,7 @@ def list_saved_tracks(
                 spotify_track_id=r.spotify_track_id,
                 track_name=r.track_name,
                 artist_name=r.artist_name,
+                artist_id=_saved_track_artist_id(r),
                 album_name=r.album_name,
                 album_sid=r.album_sid,
                 album_id=str(r.album_id) if r.album_id else None,

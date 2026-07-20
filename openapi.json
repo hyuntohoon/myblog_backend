@@ -1113,6 +1113,17 @@
             "title": "Artist",
             "type": "string"
           },
+          "artist_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Id"
+          },
           "cover_url": {
             "anyOf": [
               {
@@ -1980,6 +1991,28 @@
           "album_title": {
             "title": "Album Title",
             "type": "string"
+          },
+          "artist_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Id"
+          },
+          "artist_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Name"
           },
           "comment": {
             "anyOf": [
@@ -3175,6 +3208,17 @@
               }
             ],
             "title": "Album Sid"
+          },
+          "artist_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Id"
           },
           "artist_name": {
             "anyOf": [
