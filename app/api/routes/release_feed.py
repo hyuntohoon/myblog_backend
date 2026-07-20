@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.routes.me import provisioned_member_id
 from app.api.schemas import ReleaseFeedItem, ReleaseFeedResponse
 from app.db.session import get_db
-from myblog_shared_db.models import Artist, ArtistReleaseEvent, UserArtistTrack
+from myblog_shared_db.models import Album, Artist, ArtistReleaseEvent, UserArtistTrack
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,25 @@ def _merge_group(
     )
 
 
+def _attach_catalog_albums(db: Session, items: list[ReleaseFeedItem]) -> None:
+    """FEAT-for-you-releases Step 1: link items to the catalog album (cover +
+    overlay id) via their confirmed spotify_album_id — one IN-query for the
+    whole page; announced-only events (no spotify id) stay bare."""
+    spotify_ids = {i.spotify_album_id for i in items if i.spotify_album_id}
+    if not spotify_ids:
+        return
+    rows = db.execute(
+        select(Album.spotify_id, Album.id, Album.cover_url).where(
+            Album.spotify_id.in_(spotify_ids)
+        )
+    ).all()
+    by_spotify_id = {sid: (album_id, cover) for sid, album_id, cover in rows}
+    for item in items:
+        hit = by_spotify_id.get(item.spotify_album_id)
+        if hit:
+            item.album_id, item.cover_url = hit
+
+
 def _in_category(item: ReleaseFeedItem, category: str) -> bool:
     if category == "album":
         return item.release_type in ("album", "ep")
@@ -161,4 +180,5 @@ def get_release_feed(
         recent = []
     elif state == "recent":
         upcoming = []
+    _attach_catalog_albums(db, upcoming + recent)
     return ReleaseFeedResponse(upcoming=upcoming, recent=recent)

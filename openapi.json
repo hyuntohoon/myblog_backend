@@ -2858,6 +2858,18 @@
       },
       "ReleaseFeedItem": {
         "properties": {
+          "album_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
+          },
           "artist_id": {
             "format": "uuid",
             "title": "Artist Id",
@@ -2866,6 +2878,17 @@
           "artist_name": {
             "title": "Artist Name",
             "type": "string"
+          },
+          "cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Url"
           },
           "release_date": {
             "format": "date",
