@@ -18,6 +18,7 @@ MEMBER_ID = uuid.UUID("10000000-0000-0000-0000-000000000001")
 EMPTY_MEMBER_ID = uuid.UUID("10000000-0000-0000-0000-000000000002")
 TRACKED_ARTIST_ID = uuid.UUID("20000000-0000-0000-0000-000000000001")
 UNTRACKED_ARTIST_ID = uuid.UUID("20000000-0000-0000-0000-000000000002")
+DAY0_ALBUM_ID = uuid.UUID("30000000-0000-0000-0000-000000000001")
 
 
 @pytest.fixture
@@ -47,6 +48,14 @@ def release_db():
                 "first_seen_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
             )
         )
+        # Minimal catalog-album mirror for the cover/overlay enrichment join
+        # (the route selects only these three columns).
+        conn.execute(
+            text(
+                "CREATE TABLE albums ("
+                "id CHAR(32) PRIMARY KEY, spotify_id TEXT, cover_url TEXT)"
+            )
+        )
 
     with Session(engine) as db:
         # Must match the route's day-boundary source (KST wall-clock) — seeding
@@ -66,6 +75,19 @@ def release_db():
                 "VALUES (:user_id, :artist_id)"
             ),
             {"user_id": MEMBER_ID.hex, "artist_id": TRACKED_ARTIST_ID.hex},
+        )
+        # Only the Day0 spotify album exists in the catalog — the other
+        # spotify-bearing event ("spotify-ep") must stay bare (no cover).
+        db.execute(
+            text(
+                "INSERT INTO albums (id, spotify_id, cover_url) "
+                "VALUES (:id, :spotify_id, :cover_url)"
+            ),
+            {
+                "id": DAY0_ALBUM_ID.hex,
+                "spotify_id": "spotify-day0",
+                "cover_url": "https://img.example/day0.jpg",
+            },
         )
 
         events = [
@@ -168,6 +190,27 @@ def test_feed_contains_only_the_members_tracked_artists(app, client, release_db)
     ]
     assert [item["trust"] for item in body["recent"]] == ["확정", "확정", "불확실"]
     assert user_service.get_or_create.call_args[0][1] == MEMBER_ID
+
+
+def test_catalog_album_enrichment_attaches_cover_and_album_id(app, client, release_db):
+    """An item whose spotify_album_id exists in the catalog carries album_id +
+    cover_url; spotify-bearing items without a catalog row, and announced-only
+    items, stay bare (FEAT-for-you-releases Step 1)."""
+    _wire_member(app, release_db, MEMBER_ID)
+
+    body = client.get("/api/me/release-feed").json()
+    by_title = {i["title"]: i for i in body["upcoming"] + body["recent"]}
+
+    day0 = by_title["Day0 Released"]
+    assert day0["album_id"] == str(DAY0_ALBUM_ID)
+    assert day0["cover_url"] == "https://img.example/day0.jpg"
+
+    # In-catalog miss: spotify id known but no catalog album row.
+    assert by_title["Future EP"]["album_id"] is None
+    assert by_title["Future EP"]["cover_url"] is None
+    # Announced-only: no spotify id at all.
+    assert by_title["Recent EP"]["album_id"] is None
+    assert by_title["Recent EP"]["cover_url"] is None
 
 
 def test_feed_is_empty_when_member_tracks_no_artists(app, client, release_db):

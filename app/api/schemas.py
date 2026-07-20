@@ -1264,6 +1264,11 @@ class ReleaseFeedItem(BaseModel):
     status: str
     trust: Literal["확정", "예정", "불확실"]
     spotify_album_id: Optional[str] = None
+    # FEAT-for-you-releases Step 1: catalog linkage for the home "나를 위한 새
+    # 앨범" cover strip — NULL when the event's Spotify album isn't in the
+    # catalog (announced-only or not yet ingested).
+    album_id: Optional[UUID] = None
+    cover_url: Optional[str] = None
 
 
 class ReleaseFeedResponse(BaseModel):
