@@ -3476,6 +3476,19 @@
         "title": "SpotifyConnectionResponse",
         "type": "object"
       },
+      "SpotifyFollowImportResponse": {
+        "properties": {
+          "queued": {
+            "title": "Queued",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "queued"
+        ],
+        "title": "SpotifyFollowImportResponse",
+        "type": "object"
+      },
       "SpotifyLibraryAlbumState": {
         "properties": {
           "album_id": {
@@ -7364,6 +7377,33 @@
           }
         ],
         "summary": "Preview Tracked Artists",
+        "tags": [
+          "tracked-artists"
+        ]
+      }
+    },
+    "/api/me/tracked-artists/spotify-import": {
+      "post": {
+        "description": "Owner-only (FEAT-for-you-releases Step 2): the worker reads the OWNER's\nSpotify bootstrap token, so an open member route would copy the owner's\nfollows into another member's tracked list. Rule #9: this only ENQUEUES \u2014\nthe worker pages /me/following, snapshot-imports catalog matches, and\ncatalog-ingests the rest (same independence contract as the Buckit import).",
+        "operationId": "import_spotify_followed_artists_api_me_tracked_artists_spotify_import_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpotifyFollowImportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Import Spotify Followed Artists",
         "tags": [
           "tracked-artists"
         ]

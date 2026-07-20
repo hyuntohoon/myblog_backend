@@ -4,6 +4,9 @@
 # synchronously):
 #   {"job": "spotify_refresh"}        — manual "지금 새로고침" listening-refresh
 #   {"job": "spotify_library_sync"}   — explicit Spotify Library bucket reconcile
+#   {"job": "spotify_follow_import", "user_id": ...}
+#                                     — owner followed-artists snapshot import
+#                                       (FEAT-for-you-releases Step 2)
 #   {"album_ids": [...]}              — catalog album-sync for the 분석 버킷 분류하기
 #                                       (worker _process_batch → AlbumSyncService +
 #                                       S1 genre mapping)
@@ -71,6 +74,31 @@ class SqsClient:
             MessageBody=json.dumps({"job": "spotify_library_sync"}),
         )
         logger.info("enqueued spotify library sync job")
+        return True
+
+    def send_follow_import(self, user_id: str) -> bool:
+        """Enqueue an owner followed-artists snapshot import ({"job":
+        "spotify_follow_import", "user_id": ...}); the worker pages Spotify
+        /me/following, matches catalog artists into user_artist_tracks, and
+        catalog-ingests the rest (hard rule #9 — the user-facing endpoint must
+        never call Spotify synchronously). Returns False (and logs) when no queue
+        is configured — e.g. local dev — so the endpoint degrades to a no-op
+        instead of 500ing."""
+        if not self.queue_url:
+            logger.info("SQS_QUEUE_URL unset; follow import not enqueued (local/dev)")
+            return False
+        import boto3
+
+        sqs = boto3.client(
+            "sqs",
+            region_name=settings.AWS_DEFAULT_REGION,
+            endpoint_url=(settings.LOCALSTACK_ENDPOINT or None),
+        )
+        sqs.send_message(
+            QueueUrl=self.queue_url,
+            MessageBody=json.dumps({"job": "spotify_follow_import", "user_id": user_id}),
+        )
+        logger.info("enqueued spotify follow import job")
         return True
 
     def send_album_sync(self, album_sids) -> int:

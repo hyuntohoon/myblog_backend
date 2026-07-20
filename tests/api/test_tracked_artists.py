@@ -190,3 +190,65 @@ class TestTrackedArtistCrudIsolation:
         assert [row["artist_id"] for row in own_rows.json()] == [str(ARTIST_A)]
         assert client.delete(f"/api/me/tracked-artists/{ARTIST_A}").status_code == 204
         assert client.get("/api/me/tracked-artists").json() == []
+
+
+# ── FEAT-for-you-releases Step 2: POST /spotify-import (owner-gated enqueue) ────
+
+
+class TestSpotifyFollowImport:
+    def _override_import(self, app, sqs, owner_id=MEMBER_A):
+        from app.api.routes.me import provisioned_owner_id
+        from app.di import get_sqs_client
+
+        app.dependency_overrides[get_db] = lambda: MagicMock(name="db")
+        app.dependency_overrides[get_sqs_client] = lambda: sqs
+        app.dependency_overrides[provisioned_owner_id] = lambda: owner_id
+
+    def test_enqueues_for_owner_and_returns_202(self, client, app):
+        sqs = MagicMock()
+        sqs.send_follow_import.return_value = True
+        self._override_import(app, sqs)
+
+        resp = client.post("/api/me/tracked-artists/spotify-import")
+
+        assert resp.status_code == 202
+        assert resp.json() == {"queued": True}
+        sqs.send_follow_import.assert_called_once_with(str(MEMBER_A))
+
+    def test_degrades_to_queued_false_without_queue(self, client, app):
+        sqs = MagicMock()
+        sqs.send_follow_import.return_value = False
+        self._override_import(app, sqs)
+
+        resp = client.post("/api/me/tracked-artists/spotify-import")
+
+        assert resp.status_code == 202
+        assert resp.json() == {"queued": False}
+
+    def test_rejects_non_owner_in_prod(self, client, app):
+        # The worker spends the OWNER's Spotify token — a signed-in non-owner
+        # member must 403 before anything is enqueued (test_todays_pick pattern).
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        import app.core.auth as auth_module
+        from app.core.auth import require_cognito_token
+        from app.di import get_sqs_client
+
+        sqs = MagicMock()
+        app.dependency_overrides[get_db] = lambda: MagicMock(name="db")
+        app.dependency_overrides[get_sqs_client] = lambda: sqs
+        app.dependency_overrides[require_cognito_token] = lambda: {"sub": "some-member"}
+
+        prod = SimpleNamespace(
+            ENV="prod",
+            COGNITO_USER_POOL_ID="ap-northeast-2_TestPool",
+            COGNITO_REGION="ap-northeast-2",
+            OWNER_SUB="owner-sub",
+        )
+        with patch.object(auth_module, "settings", prod):
+            resp = client.post("/api/me/tracked-artists/spotify-import")
+
+        assert resp.status_code == 403
+        sqs.send_follow_import.assert_not_called()
+        app.dependency_overrides.clear()
