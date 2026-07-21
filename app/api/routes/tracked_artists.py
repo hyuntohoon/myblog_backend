@@ -5,10 +5,11 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
-from app.api.routes.me import provisioned_member_id
+from app.api.routes.me import provisioned_member_id, provisioned_owner_id
 from app.api.schemas import (
     AddTrackedArtistsRequest,
     AddTrackedArtistsResponse,
+    SpotifyFollowImportResponse,
     TrackedArtistCandidate,
     TrackedArtistPreviewRequest,
     TrackedArtistPreviewResponse,
@@ -16,7 +17,7 @@ from app.api.schemas import (
 )
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.di import get_bucket_service, get_tracked_artist_service
+from app.di import get_bucket_service, get_sqs_client, get_tracked_artist_service
 from app.services.bucket_service import BucketNotFoundError, BucketService
 from app.services.tracked_artist_service import (
     ArtistNotFoundError,
@@ -83,6 +84,23 @@ def add_tracked_artists(
         added=added,
         already_tracked=already_tracked,
     )
+
+
+@router.post(
+    "/spotify-import",
+    response_model=SpotifyFollowImportResponse,
+    status_code=202,
+)
+def import_spotify_followed_artists(
+    sqs=Depends(get_sqs_client),
+    owner_id: uuid.UUID = Depends(provisioned_owner_id),
+):
+    """Owner-only (FEAT-for-you-releases Step 2): the worker reads the OWNER's
+    Spotify bootstrap token, so an open member route would copy the owner's
+    follows into another member's tracked list. Rule #9: this only ENQUEUES —
+    the worker pages /me/following, snapshot-imports catalog matches, and
+    catalog-ingests the rest (same independence contract as the Buckit import)."""
+    return SpotifyFollowImportResponse(queued=sqs.send_follow_import(str(owner_id)))
 
 
 @router.get("", response_model=list[TrackedArtistResponse])

@@ -1253,6 +1253,12 @@ class TrackedArtistResponse(BaseModel):
     added_at: datetime
 
 
+# FEAT-for-you-releases Step 2: async Spotify followed-artists import trigger.
+# queued=False = degraded no-op (no SQS queue configured, e.g. local dev).
+class SpotifyFollowImportResponse(BaseModel):
+    queued: bool
+
+
 # FEAT-personal-release-tracking Step 3 (release feed)
 
 class ReleaseFeedItem(BaseModel):
