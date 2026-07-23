@@ -1,1 +1,6 @@
 pytest>=8.0
+# boto3 is provided by the AWS Lambda runtime in prod (deliberately kept out of
+# requirements.txt to keep the deploy bundle small), so tests — which run outside
+# that runtime — must install it explicitly. Only tests/clients/test_sqs_client.py
+# needs it, and only to import (the SQS client itself is MagicMock-ed).
+boto3
