@@ -29,9 +29,10 @@ from myblog_shared_db.models import AlbumToListenItem
 
 TEST_DB_URL = os.environ.get("TEST_DB_URL")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DB_URL, reason="TEST_DB_URL not set (Neon test branch)"
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not TEST_DB_URL, reason="TEST_DB_URL not set (Neon test branch)"),
+]
 
 
 @pytest.fixture(scope="module")

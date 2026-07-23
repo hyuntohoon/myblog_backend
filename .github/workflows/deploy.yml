@@ -37,6 +37,29 @@ jobs:
       - name: Type check (pyright)
         run: pyright app/
 
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure git auth for private package
+        env:
+          SHARED_DB_PAT: ${{ secrets.SHARED_DB_PAT }}
+        run: git config --global url."https://${SHARED_DB_PAT}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-test.txt
+
+      # Unit suite only. Integration tests (tests/integration/*) are marked
+      # `integration` and require a real DB via TEST_DB_URL — excluded from the
+      # PR gate; they self-skip anyway when TEST_DB_URL is unset.
+      - name: Run tests
+        run: pytest -m "not integration"
+
   contract:
     runs-on: ubuntu-latest
     steps:
@@ -62,7 +85,7 @@ jobs:
           git diff --exit-code openapi.json
 
   deploy:
-    needs: [check, contract]
+    needs: [check, test, contract]
     # Production deploy is main-only. push already filters to main (on.push.branches), but
     # workflow_dispatch can be invoked against ANY ref, so guard the ref explicitly — otherwise
     # a dispatch from a feature branch would ship that branch's code to prod.
