@@ -111,7 +111,7 @@ def github_put_file(
     url = _contents_url(owner, repo, path)
     headers = _github_headers(token)
 
-    r_get = requests.get(url, headers=headers, params={"ref": branch})
+    r_get = requests.get(url, headers=headers, params={"ref": branch}, timeout=10)
     sha = r_get.json().get("sha") if r_get.status_code == 200 else None
 
     payload: dict = {
@@ -122,7 +122,7 @@ def github_put_file(
     if sha:
         payload["sha"] = sha
 
-    return requests.put(url, headers=headers, data=json.dumps(payload))
+    return requests.put(url, headers=headers, data=json.dumps(payload), timeout=10)
 
 
 def github_delete_file(
@@ -141,7 +141,7 @@ def github_delete_file(
     url = _contents_url(owner, repo, path)
     headers = _github_headers(token)
 
-    r_get = requests.get(url, headers=headers, params={"ref": branch})
+    r_get = requests.get(url, headers=headers, params={"ref": branch}, timeout=10)
     if r_get.status_code == 404:
         return {"ok": True, "path": path, "deleted": False, "reason": "absent"}
     sha = r_get.json().get("sha") if r_get.status_code == 200 else None
@@ -155,7 +155,7 @@ def github_delete_file(
         "sha": sha,
         "branch": branch,
     }
-    r = requests.delete(url, headers=headers, data=json.dumps(payload))
+    r = requests.delete(url, headers=headers, data=json.dumps(payload), timeout=10)
     if r.status_code == 404:
         # The file vanished between our GET (which resolved a sha) and this
         # DELETE — a concurrent removal, or GitHub contents-API read-after-write
