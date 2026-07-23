@@ -1,0 +1,7 @@
+# Pytest config lives here (not pytest.ini/setup.cfg) because .gitignore ignores
+# *.ini and *.cfg — pyproject.toml is the only tracked config home in this repo.
+[tool.pytest.ini_options]
+pythonpath = ["."]
+markers = [
+    "integration: requires external services (a real DB via TEST_DB_URL); excluded from the PR gate",
+]

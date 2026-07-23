@@ -18,9 +18,10 @@ from myblog_shared_db.models import ReviewBucket, ReviewBucketItem
 
 TEST_DB_URL = os.environ.get("TEST_DB_URL")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DB_URL, reason="TEST_DB_URL not set (Neon test branch)"
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not TEST_DB_URL, reason="TEST_DB_URL not set (Neon test branch)"),
+]
 
 MEMBER_A = uuid.UUID("00000000-0000-0000-0000-0000000000c1")
 MEMBER_B = uuid.UUID("00000000-0000-0000-0000-0000000000c2")

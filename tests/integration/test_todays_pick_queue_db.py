@@ -14,9 +14,10 @@ from app.services.todays_pick_service import TodaysPickService
 
 TEST_DB_URL = os.environ.get("TEST_DB_URL")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DB_URL, reason="TEST_DB_URL not set (Neon test branch)"
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not TEST_DB_URL, reason="TEST_DB_URL not set (Neon test branch)"),
+]
 
 # The Neon test branch can lag prod migrations — apply the V48 DDL
 # idempotently before the module runs (reference-neon-test-branch-migration-drift).
