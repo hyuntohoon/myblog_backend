@@ -126,3 +126,24 @@ jobs:
             --function-name "${FUNCTION_NAME:-ratemymusic-api}" \
             --zip-file fileb://bundle.zip \
             --architectures arm64
+
+      # OPS-delivery-safety-gates Step 3 — post-deploy health smoke (health-only,
+      # no credentials). The Lambda code is already live here, so this is
+      # detect-and-alert-fast + rollback trigger, NOT a pre-cutover gate. A red
+      # run means: roll back (re-run the previous green deploy from the Actions
+      # tab, or re-push the previous bundle). Retries absorb update propagation.
+      - name: Post-deploy smoke (health)
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          URL="https://www.ratemymusic.blog/api/db/ping?_cb=${RUN_ID}"
+          for i in 1 2 3 4 5; do
+            if curl -fsS --max-time 15 "$URL" | tee /tmp/ping.json | grep -q "Database connected"; then
+              echo "Backend health OK."
+              exit 0
+            fi
+            echo "attempt $i: health not green yet, retrying in 5s…"
+            sleep 5
+          done
+          echo "::error::Backend health smoke FAILED — /api/db/ping did not report 'Database connected'. Roll back the deploy."
+          exit 1
