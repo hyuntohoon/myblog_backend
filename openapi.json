@@ -2145,6 +2145,40 @@
         "title": "MoveBucketRequest",
         "type": "object"
       },
+      "NightlyGrowRequest": {
+        "description": "FIX-nightly-draft-identity: the nightly draft agent's grow-once call.\n\nAfter delivering a draft the 03:00 job marks the source memo processed. It\ncannot use the generic item PATCH (member-scoped; the agent owns no buckets \u2192\n404 by design), so this request names only the album and the created draft.\nThe server derives WHOSE items to touch from OWNER_SUB \u2014 never from this\nbody \u2014 so the agent identity cannot become an impersonation primitive.",
+        "properties": {
+          "album_id": {
+            "format": "uuid",
+            "title": "Album Id",
+            "type": "string"
+          },
+          "post_id": {
+            "format": "uuid",
+            "title": "Post Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "album_id",
+          "post_id"
+        ],
+        "title": "NightlyGrowRequest",
+        "type": "object"
+      },
+      "NightlyGrowResponse": {
+        "properties": {
+          "grown": {
+            "title": "Grown",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "grown"
+        ],
+        "title": "NightlyGrowResponse",
+        "type": "object"
+      },
       "NowPlayingResponse": {
         "properties": {
           "album": {
@@ -4931,6 +4965,59 @@
           }
         ],
         "summary": "Create Bucket",
+        "tags": [
+          "buckets"
+        ]
+      }
+    },
+    "/api/buckets/nightly-grow": {
+      "post": {
+        "description": "FIX-nightly-draft-identity: grow-once for the 03:00 draft agent.\n\nAfter creating a draft the nightly job must mark the source memo processed\n(stamp post_id + clear prep_tonight) or the same album is regenerated every\nnight and 409s forever. The generic item PATCH cannot do it \u2014 it is\nmember-scoped and the agent owns no buckets (404 by design, per #133). This\nnarrow route is the replacement: the caller names an album and the draft it\ncreated; the service touches ONLY the owner's checked memos for that album\n(owner pinned from settings, never the request body) and refuses to stamp\nanything but a draft. Idempotent \u2014 a repeat call returns grown=0.",
+        "operationId": "nightly_grow_api_buckets_nightly_grow_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NightlyGrowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NightlyGrowResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "post_id does not exist"
+          },
+          "409": {
+            "description": "post_id is not a draft"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Nightly Grow",
         "tags": [
           "buckets"
         ]
