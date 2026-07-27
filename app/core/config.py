@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     # via Terraform — set it alongside the 0c infra step.
     OWNER_SUB: str = ""
 
+    # FIX-nightly-draft-identity Phase A: the Cognito sub of the nightly draft
+    # agent (scripts/buckit_nightly.py). It is accepted by
+    # require_owner_or_draft_agent on draft creation ONLY, and create_post
+    # coerces its posts to status='draft' so it can never publish.
+    # Empty means "no agent exists" and must degrade to owner-only — never a
+    # wildcard. require_owner (38 routes) is deliberately NOT widened.
+    DRAFT_AGENT_SUB: str = ""
+
     # FEAT-multi-user-accounts Phase 1: anti-abuse floor for public album reviews.
     # A member may CREATE at most this many reviews per rolling 24h window (edits
     # to an existing review don't count). Generous enough to be invisible to real

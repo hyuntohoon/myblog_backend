@@ -14,7 +14,7 @@ from app.api.schemas import (
     WritePostRequest,
     WritePostResponse,
 )
-from app.core.auth import require_owner
+from app.core.auth import is_owner, require_owner, require_owner_or_draft_agent
 from app.db.session import get_db
 from app.di import get_post_service
 from app.services import content_sync
@@ -61,10 +61,20 @@ def create_post(
     req: WritePostRequest,
     db: Session = Depends(get_db),
     svc: PostService = Depends(get_post_service),
-    _claims: Dict = Depends(require_owner),
+    claims: Dict = Depends(require_owner_or_draft_agent),
 ):
     try:
         section_name = (req.category or "").strip() or None
+
+        # FIX-nightly-draft-identity Phase A: this is the one route the nightly
+        # draft agent may reach. Passing the gate is not permission to publish —
+        # WritePostRequest carries `status`, so a bare allow would let the agent
+        # create a PUBLISHED post. Coerce rather than validate: a validation
+        # branch can be bypassed by any future path that forgets to run it, a
+        # coercion cannot. The owner is unaffected.
+        post_status = req.status if is_owner(claims) else "draft"
+        if post_status != req.status:
+            logger.info("non-owner caller: coercing post status %r -> 'draft'", req.status)
 
         post = svc.create(
             db,
@@ -72,7 +82,7 @@ def create_post(
             description=req.description,
             body_mdx=req.body_mdx,
             posted_date=req.posted_date,
-            status=req.status,
+            status=post_status,
             section_name=section_name,
             tags=req.tags,
             genre_ids=req.genre_ids,

@@ -163,3 +163,62 @@ def require_owner(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner only")
 
     return claims
+
+
+def require_owner_or_draft_agent(
+    claims: Dict[str, Any] = Depends(require_cognito_token),
+) -> Dict[str, Any]:
+    """The owner, or the nightly draft agent — for draft creation only.
+
+    FIX-nightly-draft-identity Phase A. `scripts/buckit_nightly.py` runs at 03:00
+    with nobody logged in and must create a draft post. It used to borrow the smoke
+    user, which `require_owner` has rejected since 392dd50 (2026-07-08).
+
+    This is a SEPARATE dependency, not a widening of `require_owner`. `require_owner`
+    guards 38 routes (authoring, publish, delete, genre taxonomy, the owner's
+    buckets/library/playback); admitting a second `sub` there would grant the
+    automation all of them to solve a problem that needs exactly one capability.
+    Only `create_post` and the grow-once bucket-item PATCH use this.
+
+    Passing this gate is not permission to publish: `create_post` COERCES a
+    non-owner caller's post to `status='draft'` (it does not merely validate, so a
+    future code path that forgets the check cannot open a publish hole).
+
+    Fail closed, identically to `require_owner`: local/dev bypasses, an unset
+    OWNER_SUB in prod is a misconfiguration ⇒ 503, anything else ⇒ 403. An unset
+    DRAFT_AGENT_SUB means *no agent exists* and must never widen access — it is
+    checked for truthiness before comparing, so `sub=None`/`""` cannot match it.
+    """
+    if settings.ENV in ("local", "dev"):
+        return claims  # {} — mirrors the require_cognito_token local bypass
+
+    if not settings.OWNER_SUB:
+        logger.error(
+            "OWNER_SUB unset while ENV=%s — refusing to fail open",
+            settings.ENV,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Auth not configured",
+        )
+
+    sub = claims.get("sub")
+    if sub == settings.OWNER_SUB:
+        return claims
+    if settings.DRAFT_AGENT_SUB and sub == settings.DRAFT_AGENT_SUB:
+        return claims
+
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner only")
+
+
+def is_owner(claims: Dict[str, Any]) -> bool:
+    """True when these claims are the owner's.
+
+    Used by routes that admit the draft agent to tell the two callers apart — the
+    agent gets its post coerced to a draft. In local/dev `require_cognito_token`
+    yields `{}`, and local admin work must keep behaving as the owner, so an empty
+    claim set is treated as the owner there and only there.
+    """
+    if settings.ENV in ("local", "dev"):
+        return True
+    return bool(settings.OWNER_SUB) and claims.get("sub") == settings.OWNER_SUB
