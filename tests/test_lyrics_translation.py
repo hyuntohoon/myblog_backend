@@ -127,15 +127,18 @@ class TestGetNormalizedTranslation:
     get_normalized is a single OUTER-JOIN query (cross-region RTT): the mock returns
     one (track_id, lyrics_row, trans_row) row instead of three sequential results."""
 
-    def _db(self, track_id, lyrics_row, trans_row):
+    def _db(self, track_id, lyrics_row, trans_row, genius_row=None):
+        # Three outerjoins since FEAT-lyrics-annotations: track_lyrics,
+        # track_lyrics_translations, track_genius_songs.
         db = MagicMock()
         (
             db.query.return_value
             .outerjoin.return_value
             .outerjoin.return_value
+            .outerjoin.return_value
             .filter.return_value
             .one_or_none.return_value
-        ) = (track_id, lyrics_row, trans_row)
+        ) = (track_id, lyrics_row, trans_row, genius_row)
         return db
 
     def test_ok_payload_carries_translation(self):
@@ -150,8 +153,9 @@ class TestGetNormalizedTranslation:
         out = LyricsService().get_normalized(db, spotify_track_id="sid")
         assert out.availability == "unavailable"
         assert out.translation is None
-        # single round trip: exactly one query executed
-        assert db.query.return_value.outerjoin.return_value.outerjoin.return_value.filter.return_value.one_or_none.call_count == 1
+        # Single round trip. Asserted on db.query itself rather than by walking the
+        # join chain, so adding a join does not break the test that guards the RTT.
+        assert db.query.call_count == 1
 
 
 class TestRequestTranslation:

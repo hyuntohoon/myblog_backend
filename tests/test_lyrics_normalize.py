@@ -129,7 +129,7 @@ class TestNormalizeLyrics:
         shapes = [set(o.model_dump().keys()) for o in outs]
         assert shapes[0] == shapes[1] == shapes[2] == {
             "availability", "source_kind", "trackable", "normalizer_version", "segments",
-            "translation"}
+            "translation", "annotations"}
         for o in outs:
             assert o.availability == "ok"
             assert {"i", "text", "start_ms", "text_ko"} == set(o.segments[0].model_dump().keys())

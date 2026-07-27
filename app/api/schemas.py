@@ -1065,6 +1065,34 @@ class LyricsTranslationInfo(BaseModel):
     lang: Optional[str] = None
 
 
+class LyricsAnnotation(BaseModel):
+    # FEAT-lyrics-annotations Thread 1. One Genius annotation, already anchored.
+    #
+    # start_i/end_i are LyricsSegment.i values — the same coordinate the viewer keys
+    # on — recomputed per request by app/services/genius_anchor.py. They are NEVER
+    # persisted: a stored offset would rot the first time the track is re-matched
+    # against a different LRCLIB upload.
+    id: int                      # Genius's own annotation id (the natural key)
+    ordinal: int                 # referent document order; the ordering tiebreak
+    status: Literal["unique", "partial", "repeated", "section", "unmatched"]
+    # Present iff the fragment resolved to a span. Inclusive.
+    start_i: Optional[int] = None
+    end_i: Optional[int] = None
+    # >1 means a chorus: render on the first occurrence and say so. Never a failure.
+    occurrences: int = 0
+    fragment: str
+    # Korean body. Withheld when translation_status != "done" — including "stale",
+    # which means the Genius source changed after the translation was made.
+    body_ko: Optional[str] = None
+    translation_status: Literal["pending", "done", "failed", "stale"] = "pending"
+    body_source_lang: Optional[str] = None
+    votes_total: int = 0
+    # Derived, not stored. A negative-vote reading must never be drawn in the
+    # endorsing highlight — the site would read as agreeing with it.
+    disputed: bool = False
+    genius_url: Optional[str] = None
+
+
 class LyricsResponse(BaseModel):
     availability: Literal["ok", "no_lyrics", "unavailable"]
     # Present iff availability == "ok".
@@ -1078,6 +1106,13 @@ class LyricsResponse(BaseModel):
     segments: List[LyricsSegment] = Field(default_factory=list)
     # Present iff availability == "ok" (additive, FEAT-lyrics-translation Step 2).
     translation: Optional[LyricsTranslationInfo] = None
+    # FEAT-lyrics-annotations Thread 1. Ordered by position in the lyrics —
+    # (start_i, ordinal), unanchored rows by ordinal alone. NEVER by votes: vote
+    # order surfaces translations, an explicit non-goal.
+    # Attached even when availability != "ok" — 2 of 15 LUX tracks carry 12
+    # annotations and no synced lyrics, and that standalone mode is the whole
+    # reason the store does not depend on track_lyrics.
+    annotations: List[LyricsAnnotation] = Field(default_factory=list)
 
 
 # ====== Me (FEAT-multi-user-accounts Phase 0 / 0d) ======
