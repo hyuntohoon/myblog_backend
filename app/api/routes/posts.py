@@ -72,9 +72,37 @@ def create_post(
         # create a PUBLISHED post. Coerce rather than validate: a validation
         # branch can be bypassed by any future path that forgets to run it, a
         # coercion cannot. The owner is unaffected.
-        post_status = req.status if is_owner(claims) else "draft"
+        caller_is_owner = is_owner(claims)
+        post_status = req.status if caller_is_owner else "draft"
         if post_status != req.status:
-            logger.info("non-owner caller: coercing post status %r -> 'draft'", req.status)
+            # WARNING, not INFO: prod Lambdas run LOG_LEVEL=WARNING, and a
+            # coercion firing is exactly the event worth seeing in CloudWatch.
+            logger.warning("non-owner caller: coercing post status %r -> 'draft'", req.status)
+
+        # Same hardening, widened (identity follow-on): a non-owner caller's
+        # editorial fields are dropped, not honored. The agent needs title/body/
+        # date/section only; album links (→ post_albums, the reviewed-set),
+        # rating, tags, editorial genres, classics, recommended tracks and BEST
+        # NEW (→ mutates the shared albums.best_new) are editorial state the
+        # automation has no business writing. Coerce, same rationale as status.
+        if not caller_is_owner:
+            dropped = [
+                name for name, sent in (
+                    ("tags", bool(req.tags)),
+                    ("genre_ids", bool(req.genre_ids)),
+                    ("album_ids", bool(req.album_ids)),
+                    ("artist_ids", bool(req.artist_ids)),
+                    ("rating", req.rating is not None),
+                    ("album_classics", bool(req.album_classics)),
+                    ("recommended_track_ids", bool(req.recommended_track_ids)),
+                    ("subject_best_new", req.subject_best_new is not None),
+                ) if sent
+            ]
+            if dropped:
+                logger.warning(
+                    "non-owner caller: ignoring editorial field(s): %s",
+                    ", ".join(dropped),
+                )
 
         post = svc.create(
             db,
@@ -84,15 +112,15 @@ def create_post(
             posted_date=req.posted_date,
             status=post_status,
             section_name=section_name,
-            tags=req.tags,
-            genre_ids=req.genre_ids,
-            album_ids=req.album_ids,
-            artist_ids=req.artist_ids,
-            rating=req.rating,
+            tags=req.tags if caller_is_owner else [],
+            genre_ids=req.genre_ids if caller_is_owner else [],
+            album_ids=req.album_ids if caller_is_owner else [],
+            artist_ids=req.artist_ids if caller_is_owner else [],
+            rating=req.rating if caller_is_owner else None,
             rating_scale=5,
-            album_classics=req.album_classics,
-            recommended_track_ids=req.recommended_track_ids,
-            subject_best_new=req.subject_best_new,
+            album_classics=req.album_classics if caller_is_owner else {},
+            recommended_track_ids=req.recommended_track_ids if caller_is_owner else [],
+            subject_best_new=req.subject_best_new if caller_is_owner else None,
         )
 
         return WritePostResponse(id=str(post.id), slug=post.slug)

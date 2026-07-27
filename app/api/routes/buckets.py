@@ -1,7 +1,7 @@
 # app/api/routes/buckets.py
 import logging
 import uuid
-from typing import Union
+from typing import Dict, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.exc import IntegrityError
@@ -18,6 +18,8 @@ from app.api.schemas import (
     BucketsResponse,
     CreateBucketRequest,
     MoveBucketRequest,
+    NightlyGrowRequest,
+    NightlyGrowResponse,
     PublicAlbumBrief,
     PublicBucket,
     PublicBucketItem,
@@ -33,6 +35,7 @@ from app.api.schemas import (
 )
 from app.api.routes.me import provisioned_member_id, provisioned_owner_id
 from app.clients.sqs_client import get_spotify_connection_status
+from app.core.auth import require_owner_or_draft_agent
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.di import (
@@ -50,6 +53,8 @@ from app.services.bucket_service import (
     BucketService,
     BucketTypeError,
     DuplicateItemError,
+    GrowPostNotDraftError,
+    GrowPostNotFoundError,
     ItemNotFoundError,
     ReviewTargetNotFoundError,
     TrackNotFoundError,
@@ -677,3 +682,38 @@ def delete_item(
     if not svc.delete_item(db, member_id, bucket_id, item_id):
         raise HTTPException(status_code=404, detail="Item not found")
     return Response(status_code=204)
+
+
+@router.post(
+    "/nightly-grow",
+    response_model=NightlyGrowResponse,
+    responses={
+        404: {"description": "post_id does not exist"},
+        409: {"description": "post_id is not a draft"},
+    },
+)
+def nightly_grow(
+    req: NightlyGrowRequest,
+    db: Session = Depends(get_db),
+    svc: BucketService = Depends(get_bucket_service),
+    _claims: Dict = Depends(require_owner_or_draft_agent),
+):
+    """FIX-nightly-draft-identity: grow-once for the 03:00 draft agent.
+
+    After creating a draft the nightly job must mark the source memo processed
+    (stamp post_id + clear prep_tonight) or the same album is regenerated every
+    night and 409s forever. The generic item PATCH cannot do it — it is
+    member-scoped and the agent owns no buckets (404 by design, per #133). This
+    narrow route is the replacement: the caller names an album and the draft it
+    created; the service touches ONLY the owner's checked memos for that album
+    (owner pinned from settings, never the request body) and refuses to stamp
+    anything but a draft. Idempotent — a repeat call returns grown=0.
+    """
+    settings = get_settings()
+    try:
+        grown = svc.grow_nightly(db, settings.OWNER_SUB, req.album_id, req.post_id)
+    except GrowPostNotFoundError:
+        raise HTTPException(status_code=404, detail="Post not found")
+    except GrowPostNotDraftError:
+        raise HTTPException(status_code=409, detail="Post is not a draft")
+    return NightlyGrowResponse(grown=grown)

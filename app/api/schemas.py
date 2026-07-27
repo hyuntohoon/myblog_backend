@@ -246,6 +246,26 @@ class UpdateBucketItemRequest(BaseModel):
     prep_tonight: Optional[bool] = None
 
 
+class NightlyGrowRequest(BaseModel):
+    """FIX-nightly-draft-identity: the nightly draft agent's grow-once call.
+
+    After delivering a draft the 03:00 job marks the source memo processed. It
+    cannot use the generic item PATCH (member-scoped; the agent owns no buckets →
+    404 by design), so this request names only the album and the created draft.
+    The server derives WHOSE items to touch from OWNER_SUB — never from this
+    body — so the agent identity cannot become an impersonation primitive.
+    """
+    model_config = {"extra": "ignore"}
+
+    album_id: UUID
+    post_id: UUID
+
+
+class NightlyGrowResponse(BaseModel):
+    # Number of bucket items stamped + unchecked. 0 on a repeat call (idempotent).
+    grown: int
+
+
 class ReorderBucket(BaseModel):
     id: str
     item_ids: List[str] = Field(default_factory=list)

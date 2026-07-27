@@ -81,6 +81,17 @@ class BucketItemRateLimitError(Exception):
     """Per-member daily bucket-item create cap hit. Route maps to 429."""
 
 
+class GrowPostNotFoundError(Exception):
+    """Raised when nightly-grow references a post id that does not exist. Route maps to 404.
+    FIX-nightly-draft-identity."""
+
+
+class GrowPostNotDraftError(Exception):
+    """Raised when nightly-grow references a post that is not status='draft'. Route maps to
+    409 — the agent may only link the draft it just created, never publish-era editorial
+    state. FIX-nightly-draft-identity."""
+
+
 # Auto-recommendation: initial position is seeded from a weighted blend of two
 # DB-only signals (RFC §"백엔드 API" — release recency + Spotify popularity).
 # After the first placement, manual drag (PUT /reorder) is the source of truth.
@@ -954,6 +965,58 @@ class BucketService:
         db.commit()
         db.refresh(item)
         return item
+
+    def grow_nightly(
+        self,
+        db: Session,
+        owner_sub: str,
+        album_id: uuid.UUID,
+        post_id: uuid.UUID,
+    ) -> int:
+        """FIX-nightly-draft-identity: server-side grow-once for the 03:00 draft agent.
+
+        Stamps `post_id` and clears `prep_tonight` on every OWNER-owned checked memo
+        for `album_id`. The acting user is pinned to OWNER_SUB by the route — never
+        taken from the request body — so the agent can act *for* the owner without
+        being able to act *as* an arbitrary user (the impersonation primitive Phase A
+        refuses; Phase B swaps this pin for bucket-derived ownership, nothing else).
+
+        The generic item PATCH cannot serve this: it resolves the acting user from
+        the verified JWT sub, and the agent owns no buckets, so it 404s by design.
+
+        Guarantees: the post must exist and be a draft; items already carrying a
+        post_id are never overwritten; idempotent — a second call matches zero rows
+        and returns 0. Item ids are sorted before the UPDATE (row-lock-order
+        convention). Single transaction, committed here.
+        """
+        if not owner_sub:
+            # local/dev has no configured owner; nothing can match — never guess.
+            return 0
+        post = db.get(Post, post_id)
+        if post is None:
+            raise GrowPostNotFoundError(str(post_id))
+        if post.status != "draft":
+            raise GrowPostNotDraftError(str(post_id))
+
+        item_ids = sorted(
+            row[0]
+            for row in db.query(ReviewBucketItem.id)
+            .join(ReviewBucket, ReviewBucketItem.bucket_id == ReviewBucket.id)
+            .filter(
+                ReviewBucket.user_id == uuid.UUID(owner_sub),
+                ReviewBucketItem.album_id == album_id,
+                ReviewBucketItem.prep_tonight.is_(True),
+                ReviewBucketItem.post_id.is_(None),
+            )
+            .all()
+        )
+        if not item_ids:
+            return 0
+        db.query(ReviewBucketItem).filter(ReviewBucketItem.id.in_(item_ids)).update(
+            {"post_id": post_id, "prep_tonight": False}, synchronize_session=False
+        )
+        db.commit()
+        return len(item_ids)
 
     def delete_item(
         self, db: Session, user_id: uuid.UUID, bucket_id: str, item_id: str
