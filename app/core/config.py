@@ -16,7 +16,12 @@ class Settings(BaseSettings):
 
     # App
     APP_NAME: str = "Blog Backend"
-    ENV: str = "local"
+    # SEC-2 (OPS-safety-net-drift Step 3): absence must be restrictive. ENV
+    # gates every local-dev permissiveness (auth/edge-guard bypass, CORS
+    # localhost origins, FastAPI debug, owner live-tail) — with a "local"
+    # default, a Lambda that ever lost its ENV var would silently disable ALL
+    # auth. Local dev opts in explicitly via ENV=local (repo README).
+    ENV: str = "prod"
 
     # Secrets Manager (legacy) + SSM Parameter Store (CHORE-secrets-ssm-migration).
     # SECRETS_PARAM (an SSM SecureString name like /myblog/backend) takes priority;

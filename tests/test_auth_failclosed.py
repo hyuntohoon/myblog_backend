@@ -75,3 +75,31 @@ def test_require_owner_403_for_non_owner_member(monkeypatch):
 def test_require_owner_allows_the_owner(monkeypatch):
     monkeypatch.setattr(auth, "settings", _settings(OWNER_SUB="owner-sub"))
     assert auth.require_owner(claims={"sub": "owner-sub"}) == {"sub": "owner-sub"}
+
+
+# SEC-2 (OPS-safety-net-drift Step 3): ENV *absence* must be restrictive.
+# Every test above hand-writes ENV="prod", so none of them could see the real
+# defect: the config default was "local", meaning a Lambda that lost its ENV
+# var silently disabled ALL auth — the one missing-config path that failed
+# open. These construct Settings the way an ENV-less runtime would.
+
+
+def test_env_absent_defaults_to_prod(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.delenv("ENV", raising=False)
+    fresh = Settings(_env_file=None)
+    assert fresh.ENV == "prod"
+
+
+def test_env_absent_guard_rejects_not_bypasses(monkeypatch):
+    # With default settings (no ENV anywhere), require_cognito_token must raise
+    # (503 unconfigured-auth or 401 missing-token depending on ambient pool id)
+    # — never return the local-bypass {}.
+    from app.core.config import Settings
+
+    monkeypatch.delenv("ENV", raising=False)
+    monkeypatch.setattr(auth, "settings", Settings(_env_file=None))
+    with pytest.raises(HTTPException) as ei:
+        auth.require_cognito_token(credentials=None)
+    assert ei.value.status_code in (401, 503)
