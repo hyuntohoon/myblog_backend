@@ -163,7 +163,12 @@ class TestLyricsPrivacyGate:
         spec = app.openapi()
 
         lyric_schemas = {n for n in spec["components"]["schemas"] if "lyric" in n.lower()}
-        assert lyric_schemas == {"LyricsResponse", "LyricsSegment", "LyricsTranslationInfo"}
+        # LyricsAnnotation (FEAT-lyrics-annotations) carries Genius commentary keyed to
+        # lyric positions — same owner-only bar, so it joins the inventory and therefore
+        # the leak check below.
+        assert lyric_schemas == {
+            "LyricsAnnotation", "LyricsResponse", "LyricsSegment", "LyricsTranslationInfo",
+        }
 
         import json
         for path, ops in spec["paths"].items():
@@ -186,13 +191,15 @@ class TestGetNormalized:
     """LyricsService.get_normalized with a fake db — resolve + row-read wiring only
     (normalize_lyrics itself is covered in tests/test_lyrics_normalize.py).
 
-    get_normalized is a single OUTER-JOIN query (cross-region RTT): the mock returns
-    None for an unknown spotify_id, else one (track_id, lyrics_row, trans_row) row."""
+    get_normalized is one OUTER-JOIN query (cross-region RTT): the mock returns None
+    for an unknown spotify_id, else one (track_id, lyrics_row, trans_row, genius_row)
+    row. A second query for annotations fires only when genius_row is not None."""
 
     def _db(self, joined_row):
         db = MagicMock()
         (
             db.query.return_value
+            .outerjoin.return_value
             .outerjoin.return_value
             .outerjoin.return_value
             .filter.return_value
@@ -209,7 +216,15 @@ class TestGetNormalized:
             pass
 
     def test_known_track_missing_row_is_unavailable(self):
-        db = self._db(("11111111-1111-1111-1111-111111111111", None, None))
+        db = self._db(("11111111-1111-1111-1111-111111111111", None, None, None))
         out = LyricsService().get_normalized(db, spotify_track_id=_SPOTIFY_ID)
         assert out.availability == "unavailable"
         assert out.segments == []
+        assert out.annotations == []
+
+    def test_no_genius_row_skips_the_annotation_query(self):
+        # The annotation fetch is a second cross-region round trip (~80ms). It must
+        # not fire for the overwhelming majority of tracks, which have no Genius row.
+        db = self._db(("11111111-1111-1111-1111-111111111111", None, None, None))
+        LyricsService().get_normalized(db, spotify_track_id=_SPOTIFY_ID)
+        assert db.query.call_count == 1

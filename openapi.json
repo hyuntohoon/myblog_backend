@@ -1615,8 +1615,131 @@
         "title": "ListenedAlbumsResponse",
         "type": "object"
       },
+      "LyricsAnnotation": {
+        "properties": {
+          "body_ko": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body Ko"
+          },
+          "body_source_lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body Source Lang"
+          },
+          "disputed": {
+            "default": false,
+            "title": "Disputed",
+            "type": "boolean"
+          },
+          "end_i": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End I"
+          },
+          "fragment": {
+            "title": "Fragment",
+            "type": "string"
+          },
+          "genius_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Genius Url"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "occurrences": {
+            "default": 0,
+            "title": "Occurrences",
+            "type": "integer"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "start_i": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start I"
+          },
+          "status": {
+            "enum": [
+              "unique",
+              "partial",
+              "repeated",
+              "section",
+              "unmatched"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "translation_status": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "done",
+              "failed",
+              "stale"
+            ],
+            "title": "Translation Status",
+            "type": "string"
+          },
+          "votes_total": {
+            "default": 0,
+            "title": "Votes Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "ordinal",
+          "status",
+          "fragment"
+        ],
+        "title": "LyricsAnnotation",
+        "type": "object"
+      },
       "LyricsResponse": {
         "properties": {
+          "annotations": {
+            "items": {
+              "$ref": "#/components/schemas/LyricsAnnotation"
+            },
+            "title": "Annotations",
+            "type": "array"
+          },
           "availability": {
             "enum": [
               "ok",
