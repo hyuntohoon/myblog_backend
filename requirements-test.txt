@@ -4,3 +4,8 @@ pytest>=8.0
 # that runtime — must install it explicitly. Only tests/clients/test_sqs_client.py
 # needs it, and only to import (the SQS client itself is MagicMock-ed).
 boto3
+# PyYAML is test-only: prod builds MDX frontmatter by string construction (no
+# YAML lib in the deploy bundle), so tests must parse it back with a real YAML
+# parser to prove the Astro build's getCollection will accept it (audit A-2 —
+# an unparseable title used to block every subsequent site deploy).
+PyYAML
