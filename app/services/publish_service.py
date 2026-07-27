@@ -19,6 +19,16 @@ def slugify(s: str) -> str:
     return s or "untitled"
 
 
+def _yaml_str(s: str) -> str:
+    """Quote a scalar for YAML frontmatter. JSON string quoting is a valid YAML
+    double-quoted scalar — the same "JSON = YAML flow" property the list/map
+    fields below rely on. Python repr() is not: a value containing both `'` and
+    `"` (e.g. `Taylor Swift's "1989"`) emits backslash-escaped single quotes,
+    which YAML rejects — publish returns 200 but every subsequent Astro build
+    fails at getCollection (audit 2026-07-26 A-2)."""
+    return json.dumps(s, ensure_ascii=False)
+
+
 def make_mdx_frontmatter(
     title: str,
     slug: str,
@@ -40,11 +50,11 @@ def make_mdx_frontmatter(
     cat = (category or "default").strip() or "default"
     lines = [
         "---",
-        f"title: {title!r}",
-        f"slug: {slug!r}",
-        f"description: {(description or '')!r}",
+        f"title: {_yaml_str(title)}",
+        f"slug: {_yaml_str(slug)}",
+        f"description: {_yaml_str(description or '')}",
         f"date: {posted_date.isoformat()}",
-        f"category: {cat!r}",
+        f"category: {_yaml_str(cat)}",
         # STAB-5: review tags surfaced to the static site so /reviews can filter
         # + render them (build-time getCollection reads this). JSON = YAML flow.
         f"tags: {json.dumps(tags or [], ensure_ascii=False)}",
@@ -56,7 +66,7 @@ def make_mdx_frontmatter(
         "draft: false",
         f"albumIds: {json.dumps(album_ids or [], ensure_ascii=False)}",
         f"artistIds: {json.dumps(artist_ids or [], ensure_ascii=False)}",
-        f"postId: {post_id!r}",
+        f"postId: {_yaml_str(post_id)}",
         f"albumCover: {json.dumps(album_cover_url or '', ensure_ascii=False)}",
         f"ratingScale: {rating_scale}",
         f"bestNew: {'true' if best_new else 'false'}",

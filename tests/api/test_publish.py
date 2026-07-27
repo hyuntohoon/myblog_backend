@@ -184,6 +184,97 @@ class TestPublishHappyPath:
         assert sent_payload["sha"] == "existing_sha_abc"
 
 
+class TestFrontmatterYaml:
+    """Audit 2026-07-26 A-2: frontmatter used to be written with Python repr(),
+    which emits backslash-escaped single quotes for a value containing both
+    `'` and `"` — invalid YAML. Publish returned 200, then every Astro build
+    failed at getCollection until the file was found by hand. These tests
+    parse the emitted frontmatter with a real YAML parser (what the build
+    does), not by substring."""
+
+    EVIL_TITLE = 'Taylor Swift\'s "1989"'
+
+    @staticmethod
+    def _parse_frontmatter(mdx: str) -> dict:
+        import yaml
+
+        # Same extraction the Astro build does: the block between the first
+        # two `---` lines.
+        inner = mdx.split("---\n", 2)[1]
+        return yaml.safe_load(inner)
+
+    def test_old_repr_form_is_invalid_yaml(self):
+        # Mutation check: prove the parser these tests rely on would have
+        # caught the original defect — repr() of the evil title must be
+        # rejected, so a regression back to repr() fails loudly here.
+        import yaml
+
+        with pytest.raises(yaml.YAMLError):
+            yaml.safe_load(f"title: {self.EVIL_TITLE!r}")
+
+    def test_both_quote_kinds_roundtrip(self):
+        from datetime import date
+
+        from app.services.publish_service import make_mdx_frontmatter
+
+        out = make_mdx_frontmatter(
+            title=self.EVIL_TITLE,
+            slug="taylor-swift-s-1989",
+            description='she said "it\'s fine"',
+            posted_date=date(2026, 7, 28),
+            category="music",
+            album_ids=["a1"],
+            artist_ids=["r1"],
+            post_id="p-1",
+        )
+        fm = self._parse_frontmatter(out)
+        assert fm["title"] == self.EVIL_TITLE
+        assert fm["description"] == 'she said "it\'s fine"'
+        assert fm["slug"] == "taylor-swift-s-1989"
+
+    def test_backslash_newline_and_korean_roundtrip(self):
+        # repr() also mangled backslashes silently (YAML single-quoted keeps
+        # `\\` literal); JSON-quoting must roundtrip them, plus multi-line
+        # descriptions and non-ASCII intact.
+        from datetime import date
+
+        from app.services.publish_service import make_mdx_frontmatter
+
+        out = make_mdx_frontmatter(
+            title="열기 \\ 続き",
+            slug="s",
+            description="line one\nline two",
+            posted_date=date(2026, 7, 28),
+            category="음악",
+            album_ids=[],
+            artist_ids=[],
+            post_id="p-2",
+        )
+        fm = self._parse_frontmatter(out)
+        assert fm["title"] == "열기 \\ 続き"
+        assert fm["description"] == "line one\nline two"
+        assert fm["category"] == "음악"
+
+    def test_publish_route_emits_parseable_frontmatter(self, client):
+        # End-to-end through POST /api/publish: the exact A-2 payload must
+        # produce frontmatter the build can parse, with the title intact.
+        mock_get, mock_put = _mock_github(201)
+        payload = {**VALID_PAYLOAD, "title": self.EVIL_TITLE, "slug": "evil"}
+        with (
+            patch("app.services.publish_service.requests.get", mock_get),
+            patch("app.services.publish_service.requests.put", mock_put),
+        ):
+            resp = client.post("/api/publish", json=payload)
+
+        assert resp.status_code == 200
+        import base64
+        import json
+        sent = json.loads(mock_put.call_args.kwargs["data"])
+        body = base64.b64decode(sent["content"]).decode("utf-8")
+        fm = self._parse_frontmatter(body)
+        assert fm["title"] == self.EVIL_TITLE
+
+
 class TestPublishMissingToken:
     def test_missing_github_token_returns_500(self, client):
         import app.core.config as cfg
