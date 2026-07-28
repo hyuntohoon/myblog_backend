@@ -72,6 +72,22 @@ class Settings(BaseSettings):
     # upsert do not consume the cap.
     TRACKED_ARTIST_DAILY_CAP: int = 500
 
+    # DATA-catalog-noise-and-lyrics-coverage Step 2: read-side classical-compilation
+    # filter tunables for GET /api/me/release-feed (app/services/compilation_filter.py).
+    # A feed item is dropped if its resolved catalog album credits
+    # >= COMP_FILTER_MAX_ARTISTS distinct artists, OR carries a pure-compilation
+    # label, OR matches a compilation title family; announced-only items (no
+    # catalog album) fall back to the title signal. Read-side only — reversible.
+    # Twin of myblog_music/app/core/config.py: names + defaults must match (a fix
+    # lands in both repos). The owner already tracks Claude Debussy + Michael
+    # Korstick, so this gate is live the moment a member follows a classical artist.
+    COMP_FILTER_MAX_ARTISTS: int = 10
+    COMP_FILTER_BUDGET_LABELS: list[str] = [
+        "UME - Global Clearing House",
+        "Novus Promusica",
+        "Naxos Special Projects",
+    ]
+
     # AWS / SQS — FEAT-member-dashboard Step 3 manual "지금 새로고침" trigger.
     # The backend only *produces* one message ({"job":"spotify_refresh"}); the
     # worker consumes it and does the Spotify read (rule #9 — never sync here).

@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.kst import kst_today
 from app.core.auth import require_cognito_token
+from app.core.config import settings
 from app.db.session import get_db
 from app.di import get_user_service
 
@@ -19,6 +20,49 @@ EMPTY_MEMBER_ID = uuid.UUID("10000000-0000-0000-0000-000000000002")
 TRACKED_ARTIST_ID = uuid.UUID("20000000-0000-0000-0000-000000000001")
 UNTRACKED_ARTIST_ID = uuid.UUID("20000000-0000-0000-0000-000000000002")
 DAY0_ALBUM_ID = uuid.UUID("30000000-0000-0000-0000-000000000001")
+NOISE_MANY_ARTISTS_ALBUM_ID = uuid.UUID("40000000-0000-0000-0000-000000000001")
+NOISE_BUDGET_LABEL_ALBUM_ID = uuid.UUID("40000000-0000-0000-0000-000000000002")
+
+
+def _create_release_schema(conn) -> None:
+    """SQLite mirror of the shared_db tables the route touches (UUIDs stored as
+    CHAR(32) hex, matching the ORM's coercion in this harness). Shared by the
+    baseline + noise fixtures."""
+    conn.execute(
+        text("CREATE TABLE artists (id CHAR(32) PRIMARY KEY, name TEXT NOT NULL)")
+    )
+    conn.execute(
+        text(
+            "CREATE TABLE user_artist_tracks ("
+            "user_id CHAR(32) NOT NULL, artist_id CHAR(32) NOT NULL)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE TABLE artist_release_events ("
+            "id CHAR(32) PRIMARY KEY, artist_id CHAR(32) NOT NULL, "
+            "source TEXT NOT NULL, "
+            "source_key TEXT NOT NULL, spotify_album_id TEXT, title TEXT NOT NULL, "
+            "release_type TEXT, release_date DATE NOT NULL, status TEXT NOT NULL, "
+            "first_seen_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+        )
+    )
+    # Catalog-album mirror: cover/id enrichment (Step 1) + the Step-2 noise
+    # filter's label signal. label is nullable so announced-only rows and
+    # untagged albums stay benign.
+    conn.execute(
+        text(
+            "CREATE TABLE albums ("
+            "id CHAR(32) PRIMARY KEY, spotify_id TEXT, cover_url TEXT, label TEXT)"
+        )
+    )
+    # album↔artist links — drives the Step-2 noise filter's n_artists count.
+    conn.execute(
+        text(
+            "CREATE TABLE album_artists ("
+            "album_id CHAR(32) NOT NULL, artist_id CHAR(32) NOT NULL, role TEXT)"
+        )
+    )
 
 
 @pytest.fixture
@@ -29,33 +73,7 @@ def release_db():
         poolclass=StaticPool,
     )
     with engine.begin() as conn:
-        conn.execute(
-            text("CREATE TABLE artists (id CHAR(32) PRIMARY KEY, name TEXT NOT NULL)")
-        )
-        conn.execute(
-            text(
-                "CREATE TABLE user_artist_tracks ("
-                "user_id CHAR(32) NOT NULL, artist_id CHAR(32) NOT NULL)"
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE TABLE artist_release_events ("
-                "id CHAR(32) PRIMARY KEY, artist_id CHAR(32) NOT NULL, "
-                "source TEXT NOT NULL, "
-                "source_key TEXT NOT NULL, spotify_album_id TEXT, title TEXT NOT NULL, "
-                "release_type TEXT, release_date DATE NOT NULL, status TEXT NOT NULL, "
-                "first_seen_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
-            )
-        )
-        # Minimal catalog-album mirror for the cover/overlay enrichment join
-        # (the route selects only these three columns).
-        conn.execute(
-            text(
-                "CREATE TABLE albums ("
-                "id CHAR(32) PRIMARY KEY, spotify_id TEXT, cover_url TEXT)"
-            )
-        )
+        _create_release_schema(conn)
 
     with Session(engine) as db:
         # Must match the route's day-boundary source (KST wall-clock) — seeding
@@ -290,3 +308,157 @@ def test_cross_source_observations_soft_group_to_one_item(app, client, release_d
         ).json()["upcoming"]
     ]
     assert "Dupe Album" in single_titles
+
+
+# --- DATA-catalog-noise-and-lyrics-coverage Step 2: compilation-noise filter ---
+# Twin of myblog_music's home-feed + /releases/ calendar tests. One tracked
+# artist with four upcoming albums: three trip a different noise signal, one is
+# a normal release that must pass through. Bucketing/soft-grouping coverage lives
+# in the tests above — these isolate the filter only.
+@pytest.fixture
+def noise_db():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    with engine.begin() as conn:
+        _create_release_schema(conn)
+
+    with Session(engine) as db:
+        today = kst_today()
+        db.execute(
+            text("INSERT INTO artists (id, name) VALUES (:id, :name)"),
+            {"id": TRACKED_ARTIST_ID.hex, "name": "Classical Artist"},
+        )
+        db.execute(
+            text(
+                "INSERT INTO user_artist_tracks (user_id, artist_id) "
+                "VALUES (:user_id, :artist_id)"
+            ),
+            {"user_id": MEMBER_ID.hex, "artist_id": TRACKED_ARTIST_ID.hex},
+        )
+        # Two catalog albums: one with many linked artists, one with a budget label.
+        db.execute(
+            text(
+                "INSERT INTO albums (id, spotify_id, cover_url, label) "
+                "VALUES (:id, :spotify_id, :cover_url, :label)"
+            ),
+            [
+                {
+                    "id": NOISE_MANY_ARTISTS_ALBUM_ID.hex,
+                    "spotify_id": "spotify-many-artists",
+                    "cover_url": "https://img.example/many.jpg",
+                    "label": "Deutsche Grammophon",
+                },
+                {
+                    "id": NOISE_BUDGET_LABEL_ALBUM_ID.hex,
+                    "spotify_id": "spotify-budget-label",
+                    "cover_url": "https://img.example/budget.jpg",
+                    "label": "Naxos Special Projects",
+                },
+            ],
+        )
+        # >= COMP_FILTER_MAX_ARTISTS links on the many-artists album ⇒ dropped.
+        db.execute(
+            text(
+                "INSERT INTO album_artists (album_id, artist_id, role) "
+                "VALUES (:album_id, :artist_id, :role)"
+            ),
+            [
+                {
+                    "album_id": NOISE_MANY_ARTISTS_ALBUM_ID.hex,
+                    "artist_id": uuid.uuid4().hex,
+                    "role": "main",
+                }
+                for _ in range(settings.COMP_FILTER_MAX_ARTISTS)
+            ],
+        )
+        events = [
+            (TRACKED_ARTIST_ID, "Many Artists Album", "album", 5, "announced", "spotify-many-artists", "itunes"),
+            (TRACKED_ARTIST_ID, "Budget Label Album", "album", 5, "announced", "spotify-budget-label", "itunes"),
+            (TRACKED_ARTIST_ID, "065 Piano Essentials", "album", 5, "announced", None, "itunes"),
+            (TRACKED_ARTIST_ID, "Normal Album", "album", 5, "announced", None, "itunes"),
+        ]
+        db.execute(
+            text(
+                "INSERT INTO artist_release_events ("
+                "id, artist_id, source, source_key, spotify_album_id, title, "
+                "release_type, release_date, status, first_seen_at, updated_at"
+                ") VALUES ("
+                ":id, :artist_id, :source, :source_key, :spotify_album_id, :title, "
+                ":release_type, :release_date, :status, '2026-01-01', '2026-01-01')"
+            ),
+            [
+                {
+                    "id": uuid.uuid4().hex,
+                    "artist_id": artist_id.hex,
+                    "source": source,
+                    "source_key": f"noise-{index}",
+                    "spotify_album_id": spotify_album_id,
+                    "title": title,
+                    "release_type": release_type,
+                    "release_date": (today + timedelta(days=day_offset)).isoformat(),
+                    "status": status,
+                }
+                for index, (
+                    artist_id,
+                    title,
+                    release_type,
+                    day_offset,
+                    status,
+                    spotify_album_id,
+                    source,
+                ) in enumerate(events)
+            ],
+        )
+        yield db
+    engine.dispose()
+
+
+def test_many_artist_compilation_dropped_from_feed(app, client, noise_db):
+    """Signal 1: an item whose resolved catalog album credits
+    >= COMP_FILTER_MAX_ARTISTS distinct artists is hidden."""
+    _wire_member(app, noise_db, MEMBER_ID)
+
+    titles = [
+        i["title"] for i in client.get("/api/me/release-feed").json()["upcoming"]
+    ]
+    assert "Many Artists Album" not in titles
+
+
+def test_budget_label_compilation_dropped_from_feed(app, client, noise_db):
+    """Signal 2: an item whose catalog album carries a pure-compilation label
+    ('Naxos Special Projects') is hidden."""
+    _wire_member(app, noise_db, MEMBER_ID)
+
+    titles = [
+        i["title"] for i in client.get("/api/me/release-feed").json()["upcoming"]
+    ]
+    assert "Budget Label Album" not in titles
+
+
+def test_announced_only_compilation_title_dropped_from_feed(app, client, noise_db):
+    """Signal 3: an announced-only item (no catalog album) with a compilation
+    title family ('065 Piano Essentials') is hidden on the title signal alone —
+    label/artist signals unavailable, mirroring the music twin's announced rows."""
+    _wire_member(app, noise_db, MEMBER_ID)
+
+    titles = [
+        i["title"] for i in client.get("/api/me/release-feed").json()["upcoming"]
+    ]
+    assert "065 Piano Essentials" not in titles
+
+
+def test_normal_release_passes_through_filter(app, client, noise_db):
+    """A normal release (few artists, normal label, normal title) survives — and
+    it is the ONLY one of the four seeded items to do so (the three noise items
+    above are all dropped)."""
+    _wire_member(app, noise_db, MEMBER_ID)
+
+    body = client.get("/api/me/release-feed").json()
+    titles = [i["title"] for i in body["upcoming"] + body["recent"]]
+    assert "Normal Album" in titles
+    assert titles == ["Normal Album"]
+    assert body["recent"] == []
+
