@@ -4,14 +4,22 @@ from datetime import date, timedelta
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.routes.me import provisioned_member_id
 from app.api.schemas import ReleaseFeedItem, ReleaseFeedResponse
+from app.core.config import settings
 from app.core.kst import kst_today
 from app.db.session import get_db
-from myblog_shared_db.models import Album, Artist, ArtistReleaseEvent, UserArtistTrack
+from app.services.compilation_filter import is_compilation_noise
+from myblog_shared_db.models import (
+    Album,
+    Artist,
+    ArtistReleaseEvent,
+    UserArtistTrack,
+    album_artists_table,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +110,29 @@ def _attach_catalog_albums(db: Session, items: list[ReleaseFeedItem]) -> None:
             item.album_id, item.cover_url = hit
 
 
+def _album_noise_signals(
+    db: Session, items: list[ReleaseFeedItem]
+) -> dict[str, tuple[Optional[str], int]]:
+    """DATA-catalog-noise-and-lyrics-coverage Step 2: batched lookup of
+    (label, linked-artist count) for every item's resolved catalog album — one
+    LEFT JOIN over the page, no per-item queries. Returns spotify_id →
+    (label, n_artists); an album with no artist links gets n_artists=0. Distinct
+    from ``_attach_catalog_albums`` (cover/id enrichment, runs after bucketing),
+    which is left untouched here."""
+    spotify_ids = {i.spotify_album_id for i in items if i.spotify_album_id}
+    if not spotify_ids:
+        return {}
+    artist_count = func.count(album_artists_table.c.artist_id).label("n_artists")
+    rows = db.execute(
+        select(Album.spotify_id, Album.label, artist_count)
+        .select_from(Album)
+        .outerjoin(album_artists_table, album_artists_table.c.album_id == Album.id)
+        .where(Album.spotify_id.in_(spotify_ids))
+        .group_by(Album.id, Album.spotify_id, Album.label)
+    ).all()
+    return {sid: (label, count or 0) for sid, label, count in rows}
+
+
 def _in_category(item: ReleaseFeedItem, category: str) -> bool:
     if category == "album":
         return item.release_type in ("album", "ep")
@@ -145,16 +176,43 @@ def get_release_feed(
         key = (event.artist_id, event.release_date, _normalize_title(event.title))
         groups.setdefault(key, []).append((event, artist_name))
 
-    upcoming: list[ReleaseFeedItem] = []
-    recent: list[ReleaseFeedItem] = []
+    # Merge each soft group to one item, then apply the category filter — both
+    # must see the whole group together (see the fetch comment above).
+    merged: list[ReleaseFeedItem] = []
     for members in groups.values():
         item = _merge_group(members, today)
         if not _in_category(item, category):
             continue
-        # Buckets tile the window completely: future → upcoming; past → recent;
-        # release DAY itself goes to recent once confirmed released (the worker
-        # confirms on day 0 — it must not vanish on its own release day), and
-        # stays upcoming while still only announced.
+        merged.append(item)
+
+    # DATA-catalog-noise-and-lyrics-coverage Step 2: drop budget classical
+    # compilations before bucketing — twin of myblog_music's home feed +
+    # /releases/ calendar (app/services/compilation_filter.py). label +
+    # n_artists come from ONE batched catalog lookup; items with no
+    # spotify_album_id or no catalog hit fall back to label=None, n_artists=0
+    # (the title signal alone), exactly like the music twin's announced-only rows.
+    noise_signals = _album_noise_signals(db, merged)
+    budget_labels = frozenset(settings.COMP_FILTER_BUDGET_LABELS)
+    max_artists = settings.COMP_FILTER_MAX_ARTISTS
+    merged = [
+        item
+        for item in merged
+        if not is_compilation_noise(
+            title=item.title,
+            label=noise_signals.get(item.spotify_album_id, (None, 0))[0],
+            n_artists=noise_signals.get(item.spotify_album_id, (None, 0))[1],
+            max_artists=max_artists,
+            budget_labels=budget_labels,
+        )
+    ]
+
+    # Bucket the survivors. Buckets tile the window completely: future →
+    # upcoming; past → recent; release DAY itself goes to recent once confirmed
+    # released (the worker confirms on day 0 — it must not vanish on its own
+    # release day), and stays upcoming while still only announced.
+    upcoming: list[ReleaseFeedItem] = []
+    recent: list[ReleaseFeedItem] = []
+    for item in merged:
         if item.release_date > today or (
             item.release_date == today and item.status != "released"
         ):
