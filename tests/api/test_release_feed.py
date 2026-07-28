@@ -326,7 +326,7 @@ def noise_db():
         _create_release_schema(conn)
 
     with Session(engine) as db:
-        today = _kst_today()
+        today = kst_today()
         db.execute(
             text("INSERT INTO artists (id, name) VALUES (:id, :name)"),
             {"id": TRACKED_ARTIST_ID.hex, "name": "Classical Artist"},
