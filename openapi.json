@@ -1390,6 +1390,46 @@
         "title": "GenreNode",
         "type": "object"
       },
+      "GenreRootSlim": {
+        "description": "Tier-0 genre reduced to what the homepage share-bars render\n(PERF-home-genre-payload, audit E-1). The full tree ships 742 KB decoded \u2014\ndominated by the 2,064-entry `edges` array and per-node `definition_md` \u2014\nof which `/` reads exactly these three fields.",
+        "properties": {
+          "album_count": {
+            "default": 0,
+            "title": "Album Count",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "label"
+        ],
+        "title": "GenreRootSlim",
+        "type": "object"
+      },
+      "GenreRootsResponse": {
+        "properties": {
+          "genres": {
+            "items": {
+              "$ref": "#/components/schemas/GenreRootSlim"
+            },
+            "title": "Genres",
+            "type": "array"
+          }
+        },
+        "required": [
+          "genres"
+        ],
+        "title": "GenreRootsResponse",
+        "type": "object"
+      },
       "GenreTreeResponse": {
         "properties": {
           "edges": {
@@ -5643,6 +5683,28 @@
           }
         ],
         "summary": "Create Genre",
+        "tags": [
+          "genres"
+        ]
+      }
+    },
+    "/api/genres/roots": {
+      "get": {
+        "description": "Tier-0 slim shape for the homepage share-bars (PERF-home-genre-payload).\nSame list_tree() source of truth as /tree \u2014 the saving is payload, not\nquery: no edges, no definition_md, no children recursion.",
+        "operationId": "genre_roots_api_genres_roots_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenreRootsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Genre Roots",
         "tags": [
           "genres"
         ]

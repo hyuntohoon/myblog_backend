@@ -39,6 +39,53 @@ def _override(app, svc):
     app.dependency_overrides[get_db] = lambda: MagicMock()
 
 
+class TestGenreRoots:
+    """PERF-home-genre-payload (audit E-1): the homepage reads exactly
+    slug/label/album_count of the tier-0 roots, so /roots must ship only that —
+    no edges, no definition_md, no children — and both public genre reads must
+    carry the browser Cache-Control the music-service siblings already had."""
+
+    def test_roots_returns_slim_tier0_only(self, client, app):
+        child = _genre(genre_id="gen-2", slug="city-pop", label="City Pop", parent_id="gen-1")
+        root = _genre(album_count=7, definition_md="a long definition", children=[child])
+        svc = MagicMock()
+        svc.list_tree.return_value = [root]
+        _override(app, svc)
+
+        resp = client.get("/api/genres/roots")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {"genres": [{"slug": "pop", "label": "Pop", "album_count": 7}]}
+        # The heavy fields must be absent from the wire shape entirely.
+        body = resp.text
+        assert "definition_md" not in body
+        assert "edges" not in body
+        assert "children" not in body
+        svc.list_edges.assert_not_called()
+
+    def test_roots_sets_cache_control(self, client, app):
+        svc = MagicMock()
+        svc.list_tree.return_value = []
+        _override(app, svc)
+
+        resp = client.get("/api/genres/roots")
+
+        assert resp.status_code == 200
+        assert resp.headers["Cache-Control"] == "public, max-age=300, stale-while-revalidate=120"
+
+    def test_tree_sets_cache_control(self, client, app):
+        svc = MagicMock()
+        svc.list_tree.return_value = []
+        svc.list_edges.return_value = []
+        _override(app, svc)
+
+        resp = client.get("/api/genres/tree")
+
+        assert resp.status_code == 200
+        assert resp.headers["Cache-Control"] == "public, max-age=300, stale-while-revalidate=120"
+
+
 class TestGenreTree:
     def test_tree_returns_nested_nodes(self, client, app):
         child = _genre(genre_id="gen-2", slug="city-pop", label="City Pop", parent_id="gen-1")

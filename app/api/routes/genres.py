@@ -2,17 +2,20 @@
 import logging
 from typing import Dict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
     CreateGenreRequest,
     GenreEdge,
     GenreNode,
+    GenreRootSlim,
+    GenreRootsResponse,
     GenreTreeResponse,
     UpdateGenreRequest,
 )
 from app.core.auth import require_owner
+from app.core.cache import GENRE_CACHE_CONTROL
 from app.db.session import get_db
 from app.di import get_genre_service
 from app.services.genre_service import (
@@ -46,12 +49,37 @@ def _node(g) -> GenreNode:
 
 @router.get("/tree", response_model=GenreTreeResponse)
 def genre_tree(
+    response: Response,
     db: Session = Depends(get_db),
     svc: GenreService = Depends(get_genre_service),
 ):
     roots = svc.list_tree(db)
     edges = [GenreEdge(from_id=f, to_id=t, type=ty) for f, t, ty in svc.list_edges(db)]
+    response.headers["Cache-Control"] = GENRE_CACHE_CONTROL
     return GenreTreeResponse(genres=[_node(r) for r in roots], edges=edges)
+
+
+@router.get("/roots", response_model=GenreRootsResponse)
+def genre_roots(
+    response: Response,
+    db: Session = Depends(get_db),
+    svc: GenreService = Depends(get_genre_service),
+):
+    """Tier-0 slim shape for the homepage share-bars (PERF-home-genre-payload).
+    Same list_tree() source of truth as /tree — the saving is payload, not
+    query: no edges, no definition_md, no children recursion."""
+    roots = svc.list_tree(db)
+    response.headers["Cache-Control"] = GENRE_CACHE_CONTROL
+    return GenreRootsResponse(
+        genres=[
+            GenreRootSlim(
+                slug=g.slug,
+                label=g.label,
+                album_count=int(getattr(g, "album_count", 0) or 0),
+            )
+            for g in roots
+        ]
+    )
 
 
 # ── mutations (Cognito JWT — copy buckets_post, NOT categories_post) ────────────
