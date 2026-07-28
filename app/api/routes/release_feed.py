@@ -194,17 +194,20 @@ def get_release_feed(
     noise_signals = _album_noise_signals(db, merged)
     budget_labels = frozenset(settings.COMP_FILTER_BUDGET_LABELS)
     max_artists = settings.COMP_FILTER_MAX_ARTISTS
-    merged = [
-        item
-        for item in merged
-        if not is_compilation_noise(
+
+    def _is_noise(item: ReleaseFeedItem) -> bool:
+        label, n_artists = (None, 0)
+        if item.spotify_album_id:
+            label, n_artists = noise_signals.get(item.spotify_album_id, (None, 0))
+        return is_compilation_noise(
             title=item.title,
-            label=noise_signals.get(item.spotify_album_id, (None, 0))[0],
-            n_artists=noise_signals.get(item.spotify_album_id, (None, 0))[1],
+            label=label,
+            n_artists=n_artists,
             max_artists=max_artists,
             budget_labels=budget_labels,
         )
-    ]
+
+    merged = [item for item in merged if not _is_noise(item)]
 
     # Bucket the survivors. Buckets tile the window completely: future →
     # upcoming; past → recent; release DAY itself goes to recent once confirmed
