@@ -84,6 +84,57 @@ jobs:
           python scripts/export_openapi.py
           git diff --exit-code openapi.json
 
+  # Real-DB suite against the Neon test branch. Split from `test` because it needs
+  # a live DB and runs ~8 min, where the unit gate runs in seconds.
+  #
+  # The branch was synced to prod schema (V2–V49) on 2026-07-29, which is what
+  # makes this job meaningful: before that, every DB-bound suite in the repo
+  # self-skipped and reported green — the false-green pattern that let two isrc
+  # write-path defects through. So a skip is treated as a FAILURE here: if the
+  # secret is missing or a suite opts out for a DB/schema reason, this job goes
+  # red instead of quietly passing.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure git auth for private package
+        env:
+          SHARED_DB_PAT: ${{ secrets.SHARED_DB_PAT }}
+        run: git config --global url."https://${SHARED_DB_PAT}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-test.txt
+
+      - name: Run integration suite
+        env:
+          TEST_DB_URL: ${{ secrets.TEST_DB_URL }}
+          DATABASE_URL: "postgresql+psycopg://x:x@localhost/x"
+        run: |
+          if [ -z "$TEST_DB_URL" ]; then
+            echo "::error::TEST_DB_URL secret is not set on this repo — the integration suite would self-skip and report a false green. Set it (same value as myblog_worker's) and re-run."
+            exit 1
+          fi
+          # pipefail is NOT on by default in Actions' `bash -e` — without it the
+          # pipeline exits with tee's status and a failing pytest reads as green.
+          set -o pipefail
+          pytest tests/integration -m integration -rs | tee /tmp/integration.txt
+
+      - name: Fail on DB-reason skips
+        run: |
+          # A suite that opts out because the schema/URL is missing must not pass
+          # silently — that is exactly how the isrc defects survived CI.
+          if grep -E '^SKIPPED' /tmp/integration.txt | grep -qiE 'TEST_DB_URL|test branch|not deployed|schema'; then
+            echo "::error::a suite skipped for a DB/schema reason — treat as failure, not green:"
+            grep -E '^SKIPPED' /tmp/integration.txt
+            exit 1
+          fi
+          echo "No DB-reason skips."
+
   deploy:
     needs: [check, test, contract]
     # Production deploy is main-only. push already filters to main (on.push.branches), but

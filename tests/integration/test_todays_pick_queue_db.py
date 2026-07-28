@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
+from app.core.kst import kst_today
 from app.services.todays_pick_service import TodaysPickService
 
 TEST_DB_URL = os.environ.get("TEST_DB_URL")
@@ -93,8 +94,17 @@ def _add(svc, db, track_id, album_id, *, title="Queued"):
 
 
 def _todays_pick_track_id(db):
+    """Read back today's pick row by the KST day the service writes.
+
+    `current_date` here would resolve against the session timezone (UTC on Neon),
+    so between 00:00 and 09:00 KST it looks up the previous day and finds nothing
+    — the A-4 boundary the service already avoids via `app.core.kst`. The date is
+    still bound explicitly rather than routed through `get_today()` so the assert
+    stays independent of the service's own read path.
+    """
     return db.execute(
-        text("SELECT track_id FROM daily_picks WHERE pick_date = current_date")
+        text("SELECT track_id FROM daily_picks WHERE pick_date = :day"),
+        {"day": kst_today()},
     ).scalar_one_or_none()
 
 
