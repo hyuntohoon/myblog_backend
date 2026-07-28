@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from app.api.routes.release_feed import _kst_today
+from app.core.kst import kst_today
 from app.core.auth import require_cognito_token
 from app.db.session import get_db
 from app.di import get_user_service
@@ -61,7 +61,7 @@ def release_db():
         # Must match the route's day-boundary source (KST wall-clock) — seeding
         # relative to the DB's UTC current_date would shift the fixture by one
         # day during 15:00–24:00 UTC and flake these tests.
-        today = _kst_today()
+        today = kst_today()
         db.execute(
             text("INSERT INTO artists (id, name) VALUES (:id, :name)"),
             [
