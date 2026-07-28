@@ -957,6 +957,21 @@ class GenreTreeResponse(BaseModel):
     edges: List[GenreEdge] = Field(default_factory=list)
 
 
+class GenreRootSlim(BaseModel):
+    """Tier-0 genre reduced to what the homepage share-bars render
+    (PERF-home-genre-payload, audit E-1). The full tree ships 742 KB decoded —
+    dominated by the 2,064-entry `edges` array and per-node `definition_md` —
+    of which `/` reads exactly these three fields."""
+
+    slug: str
+    label: str
+    album_count: int = 0
+
+
+class GenreRootsResponse(BaseModel):
+    genres: List[GenreRootSlim]
+
+
 class CreateGenreRequest(BaseModel):
     slug: str = Field(min_length=1)
     label: str = Field(min_length=1)
