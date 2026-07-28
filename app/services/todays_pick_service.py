@@ -22,6 +22,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.core.kst import kst_today
 from myblog_shared_db.models import DailyPick, DailyPickQueue
 
 
@@ -31,9 +32,14 @@ class TodaysPickService:
     # ── reads (public — edge_guard only) ────────────────────────────────────
 
     def get_today(self, db: Session) -> Optional[DailyPick]:
-        """Today's pick, or None on a no-pick day. The home tile hides on None."""
+        """Today's pick, or None on a no-pick day. The home tile hides on None.
+
+        "Today" is the KST day (`app.core.kst`), not Postgres' `current_date` —
+        the DB session runs in UTC, so `current_date` rolled the pick over at
+        09:00 KST instead of midnight (A-4).
+        """
         return db.execute(
-            select(DailyPick).where(DailyPick.pick_date == func.current_date())
+            select(DailyPick).where(DailyPick.pick_date == kst_today())
         ).scalar_one_or_none()
 
     def list_history(
@@ -69,7 +75,7 @@ class TodaysPickService:
         cover_url: Optional[str],
         spotify_track_id: str,
     ) -> DailyPick:
-        """Set today's pick. Upserts on `pick_date = current_date` — re-POSTing
+        """Set today's pick. Upserts on `pick_date = today (KST)` — re-POSTing
         the same day overwrites the prior pick (the UNIQUE(pick_date) key). The
         server pins `pick_date` to today; the owner body carries no date."""
         stmt = self._daily_pick_upsert_stmt(
@@ -171,9 +177,15 @@ class TodaysPickService:
         cover_url: Optional[str],
         spotify_track_id: str,
     ):
-        """Build the shared daily-pick upsert without owning a transaction."""
+        """Build the shared daily-pick upsert without owning a transaction.
+
+        `pick_date` is the KST day computed in Python, matching `get_today()`.
+        Both halves had to move together: with the write on UTC `current_date`
+        and the read on KST (or vice versa) a pick posted between 00:00 and
+        09:00 KST would be stored under one date and looked up under another.
+        """
         values = {
-            "pick_date": func.current_date(),
+            "pick_date": kst_today(),
             "track_id": track_id,
             "album_id": album_id,
             "title": title,

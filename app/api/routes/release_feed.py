@@ -1,8 +1,7 @@
 import logging
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Literal, Optional
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -10,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.routes.me import provisioned_member_id
 from app.api.schemas import ReleaseFeedItem, ReleaseFeedResponse
+from app.core.kst import kst_today
 from app.db.session import get_db
 from myblog_shared_db.models import Album, Artist, ArtistReleaseEvent, UserArtistTrack
 
@@ -24,21 +24,10 @@ RECENT_WINDOW_DAYS = 30
 # farthest-future tail first, never the near window.
 _FETCH_CAP = 1000
 
-_KST = ZoneInfo("Asia/Seoul")
-
 # Cross-repo twin: myblog_music/app/services/release_calendar_service.py
 # (public calendar display soft-grouping). Keep key + preference rules in sync.
 _SOURCE_PRIORITY = {"spotify": 0, "musicbrainz": 1, "itunes": 2}
 _ITUNES_SUFFIXES = (" - single", " - ep")
-
-
-def _kst_today() -> date:
-    """Day boundary is KST wall-clock (site convention; DB stores UTC).
-
-    Python-side (not func.current_date()) so a UTC Lambda session doesn't roll
-    the day at 09:00 KST, and so the SQLite test harness behaves identically.
-    """
-    return datetime.now(_KST).date()
 
 
 def _normalize_title(title: str) -> str:
@@ -128,7 +117,7 @@ def get_release_feed(
     db: Session = Depends(get_db),
     member_id: uuid.UUID = Depends(provisioned_member_id),
 ) -> ReleaseFeedResponse:
-    today = _kst_today()
+    today = kst_today()
 
     # One fetch for both buckets: soft-grouping and the category filter must
     # see every source's observation of a release together — an iTunes
