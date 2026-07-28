@@ -10,6 +10,7 @@ from app.services.lyrics_service import (
     LyricsTrackNotFoundError,
 )
 
+_OWNER_SUB = "0468fd3c-2011-70f5-0681-b852ddaade41"  # matches prod OWNER_SUB shape
 _SPOTIFY_ID = "3n3Ppam7vgaVa1iaRUc9Lp"
 
 
@@ -92,6 +93,85 @@ class TestLyricsRoute:
             resp = client.get(f"/api/lyrics/{_SPOTIFY_ID}")
 
         assert resp.status_code == 401
+        svc.get_normalized.assert_not_called()
+        app.dependency_overrides.clear()
+
+
+class TestLyricsOwnerGate:
+    """Owner-only since 2026-07-28 (RFC §6.9 O2).
+
+    These have to flip ENV to prod and stub the verified claims: conftest forces
+    ENV=local, and BOTH require_cognito_token and require_owner bypass there — so
+    the whole suite stayed green when the gate was tightened, which is exactly why
+    the distinction needs its own tests rather than trusting the pass count.
+    """
+
+    def _run(self, client, app, *, sub, path, method="get"):
+        import app.core.auth as auth_module
+
+        svc = MagicMock()
+        # Real payloads, not bare MagicMocks: response_model validation runs AFTER
+        # the guard, so a mock return turns an allowed request into a 500 and the
+        # test then cannot tell "the gate let it through" from "the gate rejected it".
+        svc.get_normalized.return_value = LyricsResponse(availability="unavailable")
+        svc.request_translation.return_value = LyricsTranslationInfo(status="requested")
+        _override(app, svc)
+        _override_db(app)
+        fake = MagicMock()
+        fake.ENV = "prod"
+        fake.OWNER_SUB = _OWNER_SUB
+        # Override the inner dependency by its ORIGINAL function object. Patching
+        # the module attribute as well would rebind the name and leave the override
+        # keyed to the patch rather than to what require_owner actually depends on —
+        # the route then runs the real verifier and 401s, which reads like the gate
+        # rejecting the member when it never saw the claims at all.
+        app.dependency_overrides[auth_module.require_cognito_token] = lambda: {"sub": sub}
+        with patch.object(auth_module, "settings", fake):
+            resp = getattr(client, method)(path)
+        app.dependency_overrides.clear()
+        return resp, svc
+
+    def test_member_cannot_read_lyrics(self, client, app):
+        resp, svc = self._run(client, app, sub="member-sub-not-the-owner",
+                              path=f"/api/lyrics/{_SPOTIFY_ID}")
+        assert resp.status_code == 403
+        svc.get_normalized.assert_not_called(), "the corpus must not be read for a non-owner"
+
+    def test_owner_can_read_lyrics(self, client, app):
+        resp, svc = self._run(client, app, sub=_OWNER_SUB, path=f"/api/lyrics/{_SPOTIFY_ID}")
+        assert resp.status_code == 200, "tightening must not lock the owner out"
+        svc.get_normalized.assert_called_once()
+
+    def test_member_cannot_queue_a_translation(self, client, app):
+        # Stronger reason than the read: this makes a non-owner able to queue LLM
+        # work against the owner's corpus.
+        resp, svc = self._run(client, app, sub="member-sub-not-the-owner",
+                              path=f"/api/lyrics/{_SPOTIFY_ID}/translation-request",
+                              method="post")
+        assert resp.status_code == 403
+        svc.request_translation.assert_not_called()
+
+    def test_owner_can_queue_a_translation(self, client, app):
+        resp, svc = self._run(client, app, sub=_OWNER_SUB,
+                              path=f"/api/lyrics/{_SPOTIFY_ID}/translation-request",
+                              method="post")
+        assert resp.status_code == 200
+        svc.request_translation.assert_called_once()
+
+    def test_unset_owner_sub_fails_closed(self, client, app):
+        # Missing config must be 503, never a silent bypass (house rule).
+        import app.core.auth as auth_module
+
+        svc = MagicMock()
+        _override(app, svc)
+        _override_db(app)
+        fake = MagicMock()
+        fake.ENV = "prod"
+        fake.OWNER_SUB = ""
+        with patch.object(auth_module, "settings", fake):
+            app.dependency_overrides[auth_module.require_cognito_token] = lambda: {"sub": _OWNER_SUB}
+            resp = client.get(f"/api/lyrics/{_SPOTIFY_ID}")
+        assert resp.status_code == 503
         svc.get_normalized.assert_not_called()
         app.dependency_overrides.clear()
 
