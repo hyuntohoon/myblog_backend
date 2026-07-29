@@ -123,13 +123,14 @@ jobs:
           # Neon password — pasting the password alone fails 85 tests with an
           # opaque "Could not parse SQLAlchemy URL" and is easy to do, because the
           # Neon console shows the password on its own next to the connection
-          # string. Never echo the value or any slice of it: when the value is
-          # wrong it is usually wrong by BEING a raw credential, so a "harmless
-          # prefix" is credential material.
+          # string. Never echo the value, any slice of it, or its length: when the
+          # value is wrong it is usually wrong by BEING a raw credential, so a
+          # "harmless prefix" is credential material and the length narrows a
+          # brute-force search. The message below carries no property of the value.
           case "$TEST_DB_URL" in
             postgresql://*|postgresql+*://*) ;;
             *)
-              echo "::error::TEST_DB_URL is set but is not a postgresql:// URL (length ${#TEST_DB_URL}). Expected the full connection string, e.g. postgresql+psycopg://USER:PASSWORD@HOST/neondb?sslmode=require — not the password by itself."
+              echo "::error::TEST_DB_URL is set but does not start with postgresql:// — it looks like the Neon password pasted on its own. Set the full connection string instead: postgresql+psycopg://USER:PASSWORD@HOST/neondb?sslmode=require"
               exit 1
               ;;
           esac
