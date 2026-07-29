@@ -110,28 +110,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-test.txt
 
-      # TEMPORARY diagnostic — remove before merge. Reports only the SHAPE of the
-      # secret (length, scheme prefix, stray quoting/whitespace), never its value:
-      # the leading characters of a malformed value are the wrapper, not the
-      # credential. Added because a rotated secret failed to parse in BOTH repos.
-      - name: Diagnose secret shape
-        env:
-          TEST_DB_URL: ${{ secrets.TEST_DB_URL }}
-        run: |
-          python3 - <<'PY'
-          import os, re
-          v = os.environ.get("TEST_DB_URL", "")
-          print("length:", len(v))
-          print("leading 10 chars:", repr(v[:10]))
-          print("has leading/trailing whitespace:", v != v.strip())
-          print("contains newline:", "\n" in v)
-          print("starts with postgresql://:", v.strip().startswith("postgresql://"))
-          print("starts with postgresql+psycopg://:", v.strip().startswith("postgresql+psycopg://"))
-          print("wrapped in quotes:", v.strip()[:1] in "\"'" or v.strip()[-1:] in "\"'")
-          print("looks like a psql command:", v.strip().startswith("psql"))
-          print("parses as a URL:", bool(re.match(r"^postgresql(\+\w+)?://[^:@/]+:[^@]+@[^/]+/\S+$", v.strip())))
-          PY
-
       - name: Run integration suite
         env:
           TEST_DB_URL: ${{ secrets.TEST_DB_URL }}
@@ -141,6 +119,20 @@ jobs:
             echo "::error::TEST_DB_URL secret is not set on this repo — the integration suite would self-skip and report a false green. Set it (same value as myblog_worker's) and re-run."
             exit 1
           fi
+          # Shape check. The secret must be a full SQLAlchemy URL, not just the
+          # Neon password — pasting the password alone fails 85 tests with an
+          # opaque "Could not parse SQLAlchemy URL" and is easy to do, because the
+          # Neon console shows the password on its own next to the connection
+          # string. Never echo the value or any slice of it: when the value is
+          # wrong it is usually wrong by BEING a raw credential, so a "harmless
+          # prefix" is credential material.
+          case "$TEST_DB_URL" in
+            postgresql://*|postgresql+*://*) ;;
+            *)
+              echo "::error::TEST_DB_URL is set but is not a postgresql:// URL (length ${#TEST_DB_URL}). Expected the full connection string, e.g. postgresql+psycopg://USER:PASSWORD@HOST/neondb?sslmode=require — not the password by itself."
+              exit 1
+              ;;
+          esac
           # pipefail is NOT on by default in Actions' `bash -e` — without it the
           # pipeline exits with tee's status and a failing pytest reads as green.
           set -o pipefail
