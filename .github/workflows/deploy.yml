@@ -110,6 +110,28 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-test.txt
 
+      # TEMPORARY diagnostic — remove before merge. Reports only the SHAPE of the
+      # secret (length, scheme prefix, stray quoting/whitespace), never its value:
+      # the leading characters of a malformed value are the wrapper, not the
+      # credential. Added because a rotated secret failed to parse in BOTH repos.
+      - name: Diagnose secret shape
+        env:
+          TEST_DB_URL: ${{ secrets.TEST_DB_URL }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          v = os.environ.get("TEST_DB_URL", "")
+          print("length:", len(v))
+          print("leading 10 chars:", repr(v[:10]))
+          print("has leading/trailing whitespace:", v != v.strip())
+          print("contains newline:", "\n" in v)
+          print("starts with postgresql://:", v.strip().startswith("postgresql://"))
+          print("starts with postgresql+psycopg://:", v.strip().startswith("postgresql+psycopg://"))
+          print("wrapped in quotes:", v.strip()[:1] in "\"'" or v.strip()[-1:] in "\"'")
+          print("looks like a psql command:", v.strip().startswith("psql"))
+          print("parses as a URL:", bool(re.match(r"^postgresql(\+\w+)?://[^:@/]+:[^@]+@[^/]+/\S+$", v.strip())))
+          PY
+
       - name: Run integration suite
         env:
           TEST_DB_URL: ${{ secrets.TEST_DB_URL }}
