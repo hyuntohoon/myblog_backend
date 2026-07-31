@@ -81,10 +81,10 @@ def get_integration_service():
     return IntegrationService()
 
 
-def get_review_service():
-    from app.services.review_service import ReviewService
+def get_rating_service():
+    from app.services.rating_service import RatingService
 
-    return ReviewService()
+    return RatingService()
 
 
 _metrics_repo: MetricsRepository = SqlMetricsRepository()

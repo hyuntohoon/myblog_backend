@@ -5,19 +5,27 @@
 #   PATCH  /api/me  — handle / display_name edits (JWT-authorizer route at API GW).
 #   DELETE /api/me  — account deletion, 개인정보보호법: Cognito user first, then
 #                     the DB row (JWT-authorizer route at API GW).
+#   GET    /api/me/album-states — MY per-album states, private facet included
+#                     (rides the GET catch-all; JWT checked here at the Lambda).
 import logging
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
-from app.api.schemas import MeResponse, UpdateMeRequest
+from app.api.schemas import (
+    MeResponse,
+    MyAlbumStateListResponse,
+    MyAlbumStateResponse,
+    UpdateMeRequest,
+)
 from app.clients.cognito_client import CognitoDeleteError, delete_cognito_user
 from app.core.auth import require_cognito_token, require_owner
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.di import get_user_service
+from app.di import get_rating_service, get_user_service
+from app.services.rating_service import RatingService
 from app.services.user_service import (
     LOCAL_DEV_USER_ID,
     HandleTakenError,
@@ -89,6 +97,47 @@ def get_me(
 ):
     user = svc.get_or_create(db, _member_id(claims), claims)
     return _me_response(user)
+
+
+@router.get("/album-states", response_model=MyAlbumStateListResponse)
+def get_my_album_states(
+    album_id: Optional[str] = Query(default=None),
+    claims: Dict[str, Any] = Depends(require_cognito_token),
+    db: Session = Depends(get_db),
+    svc: RatingService = Depends(get_rating_service),
+):
+    """The caller's own per-album states (FEAT-album-review-authoring Step 1).
+
+    Serves both surfaces that can carry a mark: the bucket board reads the whole
+    set once, the album overlay filters to one id. Private — it carries the
+    editorial marks — so it is JWT-only and scoped to the caller's own member id;
+    there is deliberately no way to ask for someone else's.
+
+    A GET needs no API Gateway route: authed GETs ride the edge_guard catch-all
+    and the JWT is verified here at the Lambda, like GET /api/me. That is why
+    Step 1 ships with no infra change.
+    """
+    aid: Optional[uuid.UUID] = None
+    if album_id:
+        try:
+            aid = uuid.UUID(album_id)
+        except ValueError:
+            # A malformed filter matches nothing; it is not a server error.
+            return MyAlbumStateListResponse(states=[])
+    rows = svc.my_states(db, _member_id(claims), aid)
+    return MyAlbumStateListResponse(
+        states=[
+            MyAlbumStateResponse(
+                album_id=str(r.album_id),
+                rating=float(r.rating) if r.rating is not None else None,
+                comment=r.comment,
+                review_candidate=bool(r.review_candidate),
+                created_at=r.created_at,
+                updated_at=r.updated_at,
+            )
+            for r in rows
+        ]
+    )
 
 
 @router.patch("", response_model=MeResponse)
