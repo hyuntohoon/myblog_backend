@@ -1202,22 +1202,56 @@ class UpdateMeRequest(BaseModel):
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=80)
 
 
-# ====== Album reviews (FEAT-multi-user-accounts Phase 1) ======
-# RYM-style public reviews: one rating (+ optional comment) per member per album.
-# Aggregates (avg/count) are computed live at read time (OQ2). All reads public.
+# ====== Album ratings (FEAT-multi-user-accounts Phase 1) ======
+# 평가 = a member's public star + one-liner for an album. One per member per
+# album; aggregates (avg/count) computed live at read time (OQ2).
+#
+# FEAT-album-review-authoring Step 1 turned that row into "the member's STATE
+# for this album": the rating is its public facet, `review_candidate` a private
+# one. Two schema families follow from that split and MUST NOT be merged:
+#   - AlbumRating*        → public. Only ever built from rating-bearing rows.
+#   - MyAlbumState*       → the author's own row, private facet included. Only
+#                           ever returned on a JWT route, to that author.
 
-# Comment length ceiling — a lightweight review, not an essay (the owner's
-# long-form editorial stays on the GitHub-MDX path).
-RATING_COMMENT_MAX = 4000
+# One-liner ceiling. 60 chars, from the real render widths — one line is ~35
+# chars on the 460px album overlay and ~25 on a 390px phone, so 60 holds an
+# 이동진-style one-liner (15–35 in practice) while making a paragraph physically
+# impossible. That impossibility is the point: the owner filed 89 albums and
+# rated 0 because a 평가 felt as heavy as a 평론 (RFC diagnosis 1, owner decision
+# 2026-07-31). Applies to new writes and edits only — prod holds no rows.
+RATING_COMMENT_MAX = 60
 
 
 class AlbumRatingUpsertRequest(BaseModel):
+    """A PARTIAL update of the caller's state for one album.
+
+    Only the fields actually present in the request body are applied, so the
+    album surface can save a star without knowing about the mark and the bucket
+    surface can flip the mark without knowing the star — neither can wipe the
+    other's facet with a stale value. `rating: null` and `comment: null` are
+    real instructions ("clear it"); an explicit `review_candidate: null` is not
+    an instruction and is ignored, since the mark has no absent state.
+    """
     model_config = {"extra": "ignore"}
 
-    # Mirrors ck_album_reviews_rating_halfstep (V38): 0.5–5.0 in half-steps, so a
-    # bad rating 422s at the edge instead of surfacing as a CHECK-violation 500.
-    rating: float = Field(..., ge=0.5, le=5.0, multiple_of=0.5)
+    # Mirrors ck_album_reviews_rating_halfstep (V38, widened V50): 0.5–5.0 in
+    # half-steps, so a bad rating 422s at the edge instead of surfacing as a
+    # CHECK-violation 500. Optional since V50 — a state can exist with no rating
+    # (the mark may be placed before listening).
+    rating: Optional[float] = Field(default=None, ge=0.5, le=5.0, multiple_of=0.5)
     comment: Optional[str] = Field(default=None, max_length=RATING_COMMENT_MAX)
+    review_candidate: Optional[bool] = None
+
+    def changes(self) -> Dict[str, Any]:
+        """The fields the caller actually sent, with the no-op null dropped."""
+        sent = {
+            name: getattr(self, name)
+            for name in ("rating", "comment", "review_candidate")
+            if name in self.model_fields_set
+        }
+        if sent.get("review_candidate") is None:
+            sent.pop("review_candidate", None)
+        return sent
 
 
 class RatingAuthor(BaseModel):
@@ -1243,11 +1277,40 @@ class AlbumRatingResponse(BaseModel):
 
 
 class AlbumRatingAggregateResponse(BaseModel):
-    """Album-page block: live avg/count + the full public review list."""
+    """Album-page block: live avg/count + the full public rating list.
+
+    Counts rating-bearing rows ONLY. A state with just a private mark is not a
+    평가 and never appears here — see RatingService.album_aggregate.
+    """
     album_id: str
     average: Optional[float] = None  # None when count == 0
     count: int
     reviews: List[AlbumRatingResponse] = Field(default_factory=list)
+
+
+class MyAlbumStateResponse(BaseModel):
+    """The CALLER'S OWN state for one album (FEAT-album-review-authoring Step 1).
+
+    Carries `review_candidate`, which is private (RFC C6 — visible to others it
+    becomes a promise, and a promise can't be marked lightly). This schema is
+    therefore only ever returned on a JWT route, to the row's own author. Never
+    embed it in an album's public list or a public profile.
+
+    `rating: null` is a legitimate state: the mark can be placed before
+    listening. A null rating implies a null comment (DB CHECK).
+    """
+    album_id: str
+    rating: Optional[float] = None
+    comment: Optional[str] = None
+    review_candidate: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class MyAlbumStateListResponse(BaseModel):
+    """Every album the caller has a state for — the album and bucket surfaces
+    read this once and render their marks without a per-cover request."""
+    states: List[MyAlbumStateResponse] = Field(default_factory=list)
 
 
 class MemberRatingResponse(BaseModel):

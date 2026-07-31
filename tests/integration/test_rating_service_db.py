@@ -63,6 +63,41 @@ def engine():
                 CHECK (rating >= 0.5 AND rating <= 5.0 AND mod(rating, 0.5) = 0)
             );
         """))
+        # V50 (FEAT-album-review-authoring Step 1) converging the same table on a
+        # branch that may predate it. Written as ALTERs rather than folded into
+        # the CREATE above so it converges either way: a branch that already has
+        # the table gets the new shape, and a branch that doesn't gets it right
+        # after creation. Each DDL is paired with a DROP ... IF EXISTS so a
+        # re-run is a no-op instead of a duplicate-object error.
+        conn.execute(text("ALTER TABLE album_reviews ALTER COLUMN rating DROP NOT NULL;"))
+        conn.execute(text(
+            "ALTER TABLE album_reviews "
+            "ADD COLUMN IF NOT EXISTS review_candidate BOOLEAN NOT NULL DEFAULT FALSE;"
+        ))
+        conn.execute(text(
+            "ALTER TABLE album_reviews "
+            "DROP CONSTRAINT IF EXISTS ck_album_reviews_rating_halfstep;"
+        ))
+        conn.execute(text("""
+            ALTER TABLE album_reviews ADD CONSTRAINT ck_album_reviews_rating_halfstep
+              CHECK (rating IS NULL OR (rating >= 0.5 AND rating <= 5.0 AND mod(rating, 0.5) = 0));
+        """))
+        conn.execute(text(
+            "ALTER TABLE album_reviews "
+            "DROP CONSTRAINT IF EXISTS ck_album_reviews_comment_needs_rating;"
+        ))
+        conn.execute(text("""
+            ALTER TABLE album_reviews ADD CONSTRAINT ck_album_reviews_comment_needs_rating
+              CHECK (comment IS NULL OR rating IS NOT NULL);
+        """))
+        conn.execute(text(
+            "ALTER TABLE album_reviews "
+            "DROP CONSTRAINT IF EXISTS ck_album_reviews_state_not_empty;"
+        ))
+        conn.execute(text("""
+            ALTER TABLE album_reviews ADD CONSTRAINT ck_album_reviews_state_not_empty
+              CHECK (rating IS NOT NULL OR review_candidate);
+        """))
     yield eng
     eng.dispose()
 
@@ -106,8 +141,8 @@ class TestAggregate:
         album = album_ids[0]
         m1, c1 = _member(1)
         m2, c2 = _member(2)
-        svc.upsert(db, m1, c1, album, 4.0, "great", daily_cap=50)
-        svc.upsert(db, m2, c2, album, 5.0, None, daily_cap=50)
+        svc.upsert(db, m1, c1, album, {"rating": 4.0, "comment": "great"}, daily_cap=50)
+        svc.upsert(db, m2, c2, album, {"rating": 5.0}, daily_cap=50)
 
         avg, count, rows = svc.album_aggregate(db, album)
         assert count == 2
@@ -125,8 +160,8 @@ class TestUpsert:
     def test_edit_updates_rating_not_count(self, db, svc, album_ids):
         album = album_ids[0]
         m1, c1 = _member(1)
-        svc.upsert(db, m1, c1, album, 3.0, "ok", daily_cap=50)
-        svc.upsert(db, m1, c1, album, 4.5, "better on relisten", daily_cap=50)
+        svc.upsert(db, m1, c1, album, {"rating": 3.0, "comment": "ok"}, daily_cap=50)
+        svc.upsert(db, m1, c1, album, {"rating": 4.5, "comment": "better"}, daily_cap=50)
 
         avg, count, _ = svc.album_aggregate(db, album)
         assert count == 1          # still one review — edited in place
@@ -135,20 +170,20 @@ class TestUpsert:
     def test_missing_album_raises(self, db, svc):
         m1, c1 = _member(1)
         with pytest.raises(AlbumNotFoundError):
-            svc.upsert(db, m1, c1, uuid.uuid4(), 5.0, None, daily_cap=50)
+            svc.upsert(db, m1, c1, uuid.uuid4(), {"rating": 5.0}, daily_cap=50)
 
     def test_daily_cap_enforced_across_albums(self, db, svc, album_ids):
         m1, c1 = _member(1)
-        svc.upsert(db, m1, c1, album_ids[0], 4.0, None, daily_cap=1)
+        svc.upsert(db, m1, c1, album_ids[0], {"rating": 4.0}, daily_cap=1)
         with pytest.raises(RatingRateLimitError):
-            svc.upsert(db, m1, c1, album_ids[1], 4.0, None, daily_cap=1)
+            svc.upsert(db, m1, c1, album_ids[1], {"rating": 4.0}, daily_cap=1)
 
 
 class TestProfileAndDelete:
     def test_member_profile_feed(self, db, svc, album_ids):
         m1, c1 = _member(1)
-        svc.upsert(db, m1, c1, album_ids[0], 4.0, "a", daily_cap=50)
-        svc.upsert(db, m1, c1, album_ids[1], 2.5, "b", daily_cap=50)
+        svc.upsert(db, m1, c1, album_ids[0], {"rating": 4.0, "comment": "a"}, daily_cap=50)
+        svc.upsert(db, m1, c1, album_ids[1], {"rating": 2.5, "comment": "b"}, daily_cap=50)
 
         user, rows = svc.member_profile(db, c1["email"].split("@")[0])
         assert user.id == m1
@@ -162,8 +197,8 @@ class TestProfileAndDelete:
 
     def test_list_members_counts_reviews(self, db, svc, album_ids):
         m1, c1 = _member(1)
-        svc.upsert(db, m1, c1, album_ids[0], 4.0, None, daily_cap=50)
-        svc.upsert(db, m1, c1, album_ids[1], 3.0, None, daily_cap=50)
+        svc.upsert(db, m1, c1, album_ids[0], {"rating": 4.0}, daily_cap=50)
+        svc.upsert(db, m1, c1, album_ids[1], {"rating": 3.0}, daily_cap=50)
 
         members = svc.list_members(db)
         mine = [(u, n) for u, n in members if u.id == m1]
@@ -171,9 +206,128 @@ class TestProfileAndDelete:
 
     def test_delete_own_then_gone(self, db, svc, album_ids):
         m1, c1 = _member(1)
-        svc.upsert(db, m1, c1, album_ids[0], 4.0, None, daily_cap=50)
+        svc.upsert(db, m1, c1, album_ids[0], {"rating": 4.0}, daily_cap=50)
         svc.delete_own(db, m1, album_ids[0])
         _, count, _ = svc.album_aggregate(db, album_ids[0])
         assert count == 0
         with pytest.raises(RatingNotFoundError):
             svc.delete_own(db, m1, album_ids[0])
+
+
+class TestPrivateStateStaysPrivate:
+    """FEAT-album-review-authoring Step 1 — the regression net for the one real
+    risk the V50 widening introduces.
+
+    A state that carries only the private editorial mark lives in the same table
+    as the public 평가. The single thing keeping it off other people's screens is
+    that every public read filters `rating IS NOT NULL`. Drop that filter from
+    any one query and the leak is silent — the row simply appears, with a null
+    star, in an album's rating list or on a public profile. So there is one test
+    per public read, against a real engine: the ORM-level mock suite cannot see
+    a missing WHERE clause.
+    """
+
+    def test_mark_only_state_is_absent_from_the_album_aggregate(self, db, svc, album_ids):
+        album = album_ids[0]
+        m1, c1 = _member(1)
+        svc.upsert(db, m1, c1, album, {"review_candidate": True}, daily_cap=50)
+
+        avg, count, rows = svc.album_aggregate(db, album)
+        assert (avg, count, rows) == (None, 0, [])
+
+    def test_a_mark_does_not_skew_a_real_average(self, db, svc, album_ids):
+        album = album_ids[0]
+        m1, c1 = _member(1)
+        m2, c2 = _member(2)
+        svc.upsert(db, m1, c1, album, {"rating": 4.0}, daily_cap=50)
+        svc.upsert(db, m2, c2, album, {"review_candidate": True}, daily_cap=50)
+
+        avg, count, rows = svc.album_aggregate(db, album)
+        assert (avg, count) == (4.0, 1)
+        assert [u.id for _, u in rows] == [m1]
+
+    def test_mark_only_state_is_absent_from_the_public_profile(self, db, svc, album_ids):
+        m1, c1 = _member(1)
+        svc.upsert(db, m1, c1, album_ids[0], {"rating": 4.0}, daily_cap=50)
+        svc.upsert(db, m1, c1, album_ids[1], {"review_candidate": True}, daily_cap=50)
+
+        _user, rows = svc.member_profile(db, c1["email"].split("@")[0])
+        assert [r.album_id for r, _a in rows] == [album_ids[0]]
+
+    def test_mark_only_state_is_absent_from_the_member_index(self, db, svc, album_ids):
+        """list_members feeds the front's static profile prerender. A member who
+        has only marked albums has published nothing and gets no profile page."""
+        m1, c1 = _member(1)
+        svc.upsert(db, m1, c1, album_ids[0], {"review_candidate": True}, daily_cap=50)
+
+        assert [(u, n) for u, n in svc.list_members(db) if u.id == m1] == []
+
+    def test_the_author_can_read_their_own_mark(self, db, svc, album_ids):
+        m1, c1 = _member(1)
+        svc.upsert(db, m1, c1, album_ids[0], {"review_candidate": True}, daily_cap=50)
+        svc.upsert(db, m1, c1, album_ids[1], {"rating": 3.5}, daily_cap=50)
+
+        states = svc.my_states(db, m1)
+        by_album = {s.album_id: s for s in states}
+        assert by_album[album_ids[0]].review_candidate is True
+        assert by_album[album_ids[0]].rating is None
+        assert by_album[album_ids[1]].review_candidate is False
+
+        one = svc.my_states(db, m1, album_ids[0])
+        assert [s.album_id for s in one] == [album_ids[0]]
+
+    def test_nobody_elses_states_come_back(self, db, svc, album_ids):
+        m1, c1 = _member(1)
+        m2, _c2 = _member(2)
+        svc.upsert(db, m1, c1, album_ids[0], {"review_candidate": True}, daily_cap=50)
+
+        assert svc.my_states(db, m2) == []
+
+
+class TestStateInvariantsAgainstTheDatabase:
+    """The V50 CHECKs, exercised through the service. These are invariants the
+    schema enforces — the service is supposed to make them unreachable, and a
+    test that only asserted service behaviour would not notice if a CHECK went
+    missing from a migration."""
+
+    def test_dropping_the_rating_keeps_a_marked_row(self, db, svc, album_ids):
+        album = album_ids[0]
+        m1, c1 = _member(1)
+        svc.upsert(db, m1, c1, album, {"rating": 4.0, "comment": "한 줄"}, daily_cap=50)
+        svc.upsert(db, m1, c1, album, {"review_candidate": True}, daily_cap=50)
+
+        svc.delete_own(db, m1, album)
+
+        states = svc.my_states(db, m1, album)
+        assert len(states) == 1
+        assert states[0].rating is None
+        assert states[0].comment is None       # the one-liner goes with the star
+        assert states[0].review_candidate is True
+        _avg, count, _rows = svc.album_aggregate(db, album)
+        assert count == 0                       # and nothing public survives
+
+    def test_dropping_the_last_facet_removes_the_row(self, db, svc, album_ids):
+        album = album_ids[0]
+        m1, c1 = _member(1)
+        svc.upsert(db, m1, c1, album, {"rating": 4.0}, daily_cap=50)
+
+        state, _user = svc.upsert(db, m1, c1, album, {"rating": None}, daily_cap=50)
+
+        assert state is None
+        assert svc.my_states(db, m1, album) == []
+
+    def test_a_one_liner_cannot_exist_without_a_star(self, db, svc, album_ids):
+        """ck_album_reviews_comment_needs_rating. Asserted against the DB rather
+        than the service so a migration that forgot the CHECK fails here."""
+        from sqlalchemy.exc import IntegrityError
+
+        m1, c1 = _member(1)
+        svc.upsert(db, m1, c1, album_ids[0], {"review_candidate": True}, daily_cap=50)
+
+        with pytest.raises(IntegrityError):
+            db.execute(text(
+                "UPDATE album_reviews SET comment = 'orphan' "
+                "WHERE user_id = :u AND album_id = :a"
+            ), {"u": m1, "a": album_ids[0]})
+            db.flush()
+        db.rollback()

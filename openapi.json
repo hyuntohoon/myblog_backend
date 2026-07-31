@@ -280,7 +280,7 @@
         "type": "object"
       },
       "AlbumRatingAggregateResponse": {
-        "description": "Album-page block: live avg/count + the full public review list.",
+        "description": "Album-page block: live avg/count + the full public rating list.\n\nCounts rating-bearing rows ONLY. A state with just a private mark is not a\n\ud3c9\uac00 and never appears here \u2014 see RatingService.album_aggregate.",
         "properties": {
           "album_id": {
             "title": "Album Id",
@@ -367,11 +367,12 @@
         "type": "object"
       },
       "AlbumRatingUpsertRequest": {
+        "description": "A PARTIAL update of the caller's state for one album.\n\nOnly the fields actually present in the request body are applied, so the\nalbum surface can save a star without knowing about the mark and the bucket\nsurface can flip the mark without knowing the star \u2014 neither can wipe the\nother's facet with a stale value. `rating: null` and `comment: null` are\nreal instructions (\"clear it\"); an explicit `review_candidate: null` is not\nan instruction and is ignored, since the mark has no absent state.",
         "properties": {
           "comment": {
             "anyOf": [
               {
-                "maxLength": 4000,
+                "maxLength": 60,
                 "type": "string"
               },
               {
@@ -381,16 +382,31 @@
             "title": "Comment"
           },
           "rating": {
-            "maximum": 5.0,
-            "minimum": 0.5,
-            "multipleOf": 0.5,
-            "title": "Rating",
-            "type": "number"
+            "anyOf": [
+              {
+                "maximum": 5.0,
+                "minimum": 0.5,
+                "multipleOf": 0.5,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating"
+          },
+          "review_candidate": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Candidate"
           }
         },
-        "required": [
-          "rating"
-        ],
         "title": "AlbumRatingUpsertRequest",
         "type": "object"
       },
@@ -2306,6 +2322,73 @@
           "position"
         ],
         "title": "MoveBucketRequest",
+        "type": "object"
+      },
+      "MyAlbumStateListResponse": {
+        "description": "Every album the caller has a state for \u2014 the album and bucket surfaces\nread this once and render their marks without a per-cover request.",
+        "properties": {
+          "states": {
+            "items": {
+              "$ref": "#/components/schemas/MyAlbumStateResponse"
+            },
+            "title": "States",
+            "type": "array"
+          }
+        },
+        "title": "MyAlbumStateListResponse",
+        "type": "object"
+      },
+      "MyAlbumStateResponse": {
+        "description": "The CALLER'S OWN state for one album (FEAT-album-review-authoring Step 1).\n\nCarries `review_candidate`, which is private (RFC C6 \u2014 visible to others it\nbecomes a promise, and a promise can't be marked lightly). This schema is\ntherefore only ever returned on a JWT route, to the row's own author. Never\nembed it in an album's public list or a public profile.\n\n`rating: null` is a legitimate state: the mark can be placed before\nlistening. A null rating implies a null comment (DB CHECK).",
+        "properties": {
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating"
+          },
+          "review_candidate": {
+            "default": false,
+            "title": "Review Candidate",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "album_id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MyAlbumStateResponse",
         "type": "object"
       },
       "NightlyGrowRequest": {
@@ -7466,6 +7549,61 @@
         ]
       }
     },
+    "/api/me/album-states": {
+      "get": {
+        "description": "The caller's own per-album states (FEAT-album-review-authoring Step 1).\n\nServes both surfaces that can carry a mark: the bucket board reads the whole\nset once, the album overlay filters to one id. Private \u2014 it carries the\neditorial marks \u2014 so it is JWT-only and scoped to the caller's own member id;\nthere is deliberately no way to ask for someone else's.\n\nA GET needs no API Gateway route: authed GETs ride the edge_guard catch-all\nand the JWT is verified here at the Lambda, like GET /api/me. That is why\nStep 1 ships with no infra change.",
+        "operationId": "get_my_album_states_api_me_album_states_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "album_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Album Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyAlbumStateListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get My Album States",
+        "tags": [
+          "me"
+        ]
+      }
+    },
     "/api/me/release-feed": {
       "get": {
         "operationId": "get_release_feed_api_me_release_feed_get",
@@ -8534,6 +8672,7 @@
         ]
       },
       "put": {
+        "description": "Patch the caller's state for one album (rating / one-liner / private mark).\n\nPartial by design \u2014 see AlbumRatingUpsertRequest. The response is the\ncaller's OWN state and carries the private mark, so it must never be handed\nto anyone but its author; this route is JWT-only, which is what makes that\ntrue.",
         "operationId": "put_album_review_api_reviews_albums__album_id__put",
         "parameters": [
           {
@@ -8561,11 +8700,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AlbumRatingResponse"
+                  "$ref": "#/components/schemas/MyAlbumStateResponse"
                 }
               }
             },
             "description": "Successful Response"
+          },
+          "204": {
+            "description": "The state has no facet left and was removed"
           },
           "422": {
             "content": {
