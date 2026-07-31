@@ -2,7 +2,7 @@
 # FEAT-multi-user-accounts Phase 3a/3b — listening/AI integrations.
 # user_integrations is the single connect store (V41); Last.fm uses username-only
 # (public reads, no OAuth); Spotify (3b-c) stores a KMS-enveloped refresh token in
-# `payload`. Mirrors ReviewService: holds a UserService so connecting can be a
+# `payload`. Mirrors RatingService: holds a UserService so connecting can be a
 # member's first-ever authed action (lazy-provision).
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from myblog_shared_db.models import (
 
 from app.core import kms_envelope
 from app.core.config import settings
-from app.services.review_service import MemberNotFoundError
+from app.services.rating_service import MemberNotFoundError
 from app.services.user_service import UserService
 
 logger = logging.getLogger(__name__)

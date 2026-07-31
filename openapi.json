@@ -279,6 +279,121 @@
         "title": "AlbumBrief",
         "type": "object"
       },
+      "AlbumRatingAggregateResponse": {
+        "description": "Album-page block: live avg/count + the full public review list.",
+        "properties": {
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "average": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "reviews": {
+            "items": {
+              "$ref": "#/components/schemas/AlbumRatingResponse"
+            },
+            "title": "Reviews",
+            "type": "array"
+          }
+        },
+        "required": [
+          "album_id",
+          "count"
+        ],
+        "title": "AlbumRatingAggregateResponse",
+        "type": "object"
+      },
+      "AlbumRatingResponse": {
+        "properties": {
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "author": {
+            "$ref": "#/components/schemas/RatingAuthor"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "rating": {
+            "title": "Rating",
+            "type": "number"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "album_id",
+          "author",
+          "rating",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AlbumRatingResponse",
+        "type": "object"
+      },
+      "AlbumRatingUpsertRequest": {
+        "properties": {
+          "comment": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "rating": {
+            "maximum": 5.0,
+            "minimum": 0.5,
+            "multipleOf": 0.5,
+            "title": "Rating",
+            "type": "number"
+          }
+        },
+        "required": [
+          "rating"
+        ],
+        "title": "AlbumRatingUpsertRequest",
+        "type": "object"
+      },
       "AlbumResearchResponse": {
         "properties": {
           "album_id": {
@@ -418,121 +533,6 @@
           "status"
         ],
         "title": "AlbumResearchResponse",
-        "type": "object"
-      },
-      "AlbumReviewAggregateResponse": {
-        "description": "Album-page block: live avg/count + the full public review list.",
-        "properties": {
-          "album_id": {
-            "title": "Album Id",
-            "type": "string"
-          },
-          "average": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Average"
-          },
-          "count": {
-            "title": "Count",
-            "type": "integer"
-          },
-          "reviews": {
-            "items": {
-              "$ref": "#/components/schemas/AlbumReviewResponse"
-            },
-            "title": "Reviews",
-            "type": "array"
-          }
-        },
-        "required": [
-          "album_id",
-          "count"
-        ],
-        "title": "AlbumReviewAggregateResponse",
-        "type": "object"
-      },
-      "AlbumReviewResponse": {
-        "properties": {
-          "album_id": {
-            "title": "Album Id",
-            "type": "string"
-          },
-          "author": {
-            "$ref": "#/components/schemas/ReviewAuthor"
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          },
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "rating": {
-            "title": "Rating",
-            "type": "number"
-          },
-          "updated_at": {
-            "format": "date-time",
-            "title": "Updated At",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "album_id",
-          "author",
-          "rating",
-          "created_at",
-          "updated_at"
-        ],
-        "title": "AlbumReviewResponse",
-        "type": "object"
-      },
-      "AlbumReviewUpsertRequest": {
-        "properties": {
-          "comment": {
-            "anyOf": [
-              {
-                "maxLength": 4000,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          },
-          "rating": {
-            "maximum": 5.0,
-            "minimum": 0.5,
-            "multipleOf": 0.5,
-            "title": "Rating",
-            "type": "number"
-          }
-        },
-        "required": [
-          "rating"
-        ],
-        "title": "AlbumReviewUpsertRequest",
         "type": "object"
       },
       "ArtistBrief": {
@@ -2118,7 +2118,7 @@
           },
           "reviews": {
             "items": {
-              "$ref": "#/components/schemas/MemberReviewResponse"
+              "$ref": "#/components/schemas/MemberRatingResponse"
             },
             "title": "Reviews",
             "type": "array"
@@ -2133,7 +2133,7 @@
         "title": "MemberProfileResponse",
         "type": "object"
       },
-      "MemberReviewResponse": {
+      "MemberRatingResponse": {
         "description": "One row in a member's public profile feed \u2014 the review plus enough album\ncontext to render + link without a second fetch.",
         "properties": {
           "album_cover_url": {
@@ -2215,7 +2215,7 @@
           "created_at",
           "updated_at"
         ],
-        "title": "MemberReviewResponse",
+        "title": "MemberRatingResponse",
         "type": "object"
       },
       "MemberSummary": {
@@ -2900,6 +2900,36 @@
         "title": "PublicBucketsResponse",
         "type": "object"
       },
+      "RatingAuthor": {
+        "description": "The public reviewer identity embedded in an album's review list.\n\nDeliberately NO `id`: users.id IS the Cognito sub, and the old field\npublished every reviewer's sub on an unauthenticated endpoint (2026-07-14\naudit F4.3). `handle` is unique \u2014 clients identify authors (incl. \"my\nreview\") by handle.",
+        "properties": {
+          "avatar_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Url"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          }
+        },
+        "required": [
+          "handle",
+          "display_name"
+        ],
+        "title": "RatingAuthor",
+        "type": "object"
+      },
       "RecentTrackItem": {
         "properties": {
           "album": {
@@ -3310,36 +3340,6 @@
           "today_kst"
         ],
         "title": "RetrospectiveResponse",
-        "type": "object"
-      },
-      "ReviewAuthor": {
-        "description": "The public reviewer identity embedded in an album's review list.\n\nDeliberately NO `id`: users.id IS the Cognito sub, and the old field\npublished every reviewer's sub on an unauthenticated endpoint (2026-07-14\naudit F4.3). `handle` is unique \u2014 clients identify authors (incl. \"my\nreview\") by handle.",
-        "properties": {
-          "avatar_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Avatar Url"
-          },
-          "display_name": {
-            "title": "Display Name",
-            "type": "string"
-          },
-          "handle": {
-            "title": "Handle",
-            "type": "string"
-          }
-        },
-        "required": [
-          "handle",
-          "display_name"
-        ],
-        "title": "ReviewAuthor",
         "type": "object"
       },
       "ReviewedAlbumResponse": {
@@ -8511,7 +8511,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AlbumReviewAggregateResponse"
+                  "$ref": "#/components/schemas/AlbumRatingAggregateResponse"
                 }
               }
             },
@@ -8550,7 +8550,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AlbumReviewUpsertRequest"
+                "$ref": "#/components/schemas/AlbumRatingUpsertRequest"
               }
             }
           },
@@ -8561,7 +8561,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AlbumReviewResponse"
+                  "$ref": "#/components/schemas/AlbumRatingResponse"
                 }
               }
             },

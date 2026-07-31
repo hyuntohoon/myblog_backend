@@ -17,14 +17,14 @@ from app.api.schemas import (
     MemberListResponse,
     MemberNowPlayingResponse,
     MemberProfileResponse,
-    MemberReviewResponse,
+    MemberRatingResponse,
     MemberSummary,
 )
 from app.db.session import get_db
-from app.di import get_integration_service, get_review_service
+from app.di import get_integration_service, get_rating_service
 from app.services.artist_primary import primary_artist_map
 from app.services.integration_service import IntegrationService
-from app.services.review_service import MemberNotFoundError, ReviewService
+from app.services.rating_service import MemberNotFoundError, RatingService
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ router = APIRouter()
 @router.get("", response_model=MemberListResponse)
 def list_members(
     db: Session = Depends(get_db),
-    svc: ReviewService = Depends(get_review_service),
+    svc: RatingService = Depends(get_rating_service),
 ):
     rows = svc.list_members(db)
     return MemberListResponse(
@@ -54,7 +54,7 @@ def list_members(
 def get_member(
     handle: str,
     db: Session = Depends(get_db),
-    svc: ReviewService = Depends(get_review_service),
+    svc: RatingService = Depends(get_rating_service),
 ):
     try:
         user, rows = svc.member_profile(db, handle)
@@ -70,7 +70,7 @@ def get_member(
         created_at=user.created_at,
         review_count=len(rows),
         reviews=[
-            MemberReviewResponse(
+            MemberRatingResponse(
                 id=str(r.id),
                 album_id=str(r.album_id),
                 album_title=a.title,

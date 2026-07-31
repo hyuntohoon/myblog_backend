@@ -1,8 +1,8 @@
-"""FEAT-multi-user-accounts Phase 1 — ReviewService unit tests: upsert
+"""FEAT-multi-user-accounts Phase 1 — RatingService unit tests: upsert
 create-vs-edit branching, the per-member daily create cap, album-existence
 guard, and delete paths. DB is a MagicMock Session (branching logic, not pool
 semantics); the aggregate/profile SQL is exercised in
-tests/integration/test_review_service_db.py against a real engine."""
+tests/integration/test_rating_service_db.py against a real engine."""
 from __future__ import annotations
 
 import uuid
@@ -10,11 +10,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.services.review_service import (
+from app.services.rating_service import (
     AlbumNotFoundError,
-    ReviewNotFoundError,
-    ReviewRateLimitError,
-    ReviewService,
+    RatingNotFoundError,
+    RatingRateLimitError,
+    RatingService,
 )
 
 MEMBER_ID = uuid.UUID("6f1b2f6e-6b1a-4c3e-9a2e-2b7c8d9e0f11")
@@ -22,12 +22,12 @@ ALBUM_ID = uuid.UUID("11111111-2222-3333-4444-555555555555")
 
 
 def _svc_with_user():
-    """ReviewService whose UserService.get_or_create returns a stable member row."""
+    """RatingService whose UserService.get_or_create returns a stable member row."""
     users = MagicMock()
     user = MagicMock()
     user.id = MEMBER_ID
     users.get_or_create.return_value = user
-    return ReviewService(users=users), user
+    return RatingService(users=users), user
 
 
 class TestUpsert:
@@ -54,7 +54,7 @@ class TestUpsert:
         db.get.return_value = MagicMock()          # album exists
         db.scalar.side_effect = [None, 50]         # no existing; already at cap
 
-        with pytest.raises(ReviewRateLimitError):
+        with pytest.raises(RatingRateLimitError):
             svc.upsert(db, MEMBER_ID, {}, ALBUM_ID, 3.0, None, daily_cap=50)
         db.add.assert_not_called()
         db.commit.assert_not_called()
@@ -99,7 +99,7 @@ class TestDeleteOwn:
         db = MagicMock()
         db.scalar.return_value = None
 
-        with pytest.raises(ReviewNotFoundError):
+        with pytest.raises(RatingNotFoundError):
             svc.delete_own(db, MEMBER_ID, ALBUM_ID)
         db.delete.assert_not_called()
 
@@ -120,6 +120,6 @@ class TestDeleteAny:
         db = MagicMock()
         db.get.return_value = None
 
-        with pytest.raises(ReviewNotFoundError):
+        with pytest.raises(RatingNotFoundError):
             svc.delete_any(db, uuid.uuid4())
         db.delete.assert_not_called()

@@ -1208,19 +1208,19 @@ class UpdateMeRequest(BaseModel):
 
 # Comment length ceiling — a lightweight review, not an essay (the owner's
 # long-form editorial stays on the GitHub-MDX path).
-REVIEW_COMMENT_MAX = 4000
+RATING_COMMENT_MAX = 4000
 
 
-class AlbumReviewUpsertRequest(BaseModel):
+class AlbumRatingUpsertRequest(BaseModel):
     model_config = {"extra": "ignore"}
 
     # Mirrors ck_album_reviews_rating_halfstep (V38): 0.5–5.0 in half-steps, so a
     # bad rating 422s at the edge instead of surfacing as a CHECK-violation 500.
     rating: float = Field(..., ge=0.5, le=5.0, multiple_of=0.5)
-    comment: Optional[str] = Field(default=None, max_length=REVIEW_COMMENT_MAX)
+    comment: Optional[str] = Field(default=None, max_length=RATING_COMMENT_MAX)
 
 
-class ReviewAuthor(BaseModel):
+class RatingAuthor(BaseModel):
     """The public reviewer identity embedded in an album's review list.
 
     Deliberately NO `id`: users.id IS the Cognito sub, and the old field
@@ -1232,25 +1232,25 @@ class ReviewAuthor(BaseModel):
     avatar_url: Optional[str] = None
 
 
-class AlbumReviewResponse(BaseModel):
+class AlbumRatingResponse(BaseModel):
     id: str
     album_id: str
-    author: ReviewAuthor
+    author: RatingAuthor
     rating: float
     comment: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
 
-class AlbumReviewAggregateResponse(BaseModel):
+class AlbumRatingAggregateResponse(BaseModel):
     """Album-page block: live avg/count + the full public review list."""
     album_id: str
     average: Optional[float] = None  # None when count == 0
     count: int
-    reviews: List[AlbumReviewResponse] = Field(default_factory=list)
+    reviews: List[AlbumRatingResponse] = Field(default_factory=list)
 
 
-class MemberReviewResponse(BaseModel):
+class MemberRatingResponse(BaseModel):
     """One row in a member's public profile feed — the review plus enough album
     context to render + link without a second fetch."""
     id: str
@@ -1275,7 +1275,7 @@ class MemberProfileResponse(BaseModel):
     avatar_url: Optional[str] = None
     created_at: datetime
     review_count: int
-    reviews: List[MemberReviewResponse] = Field(default_factory=list)
+    reviews: List[MemberRatingResponse] = Field(default_factory=list)
 
 
 class MemberSummary(BaseModel):

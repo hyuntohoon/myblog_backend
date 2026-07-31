@@ -1,5 +1,5 @@
 # Route-level shape guard for the PUBLIC review payload (2026-07-14 audit F4.3):
-# users.id IS the Cognito sub, so ReviewAuthor must never carry an `id` — clients
+# users.id IS the Cognito sub, so RatingAuthor must never carry an `id` — clients
 # identify authors (incl. "my review") by the unique handle instead.
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ _TS = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
 
 def _override(app, svc):
     from app.db.session import get_db
-    from app.di import get_review_service
+    from app.di import get_rating_service
 
-    app.dependency_overrides[get_review_service] = lambda: svc
+    app.dependency_overrides[get_rating_service] = lambda: svc
     app.dependency_overrides[get_db] = lambda: MagicMock()
 
 

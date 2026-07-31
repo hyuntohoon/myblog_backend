@@ -19,7 +19,7 @@ def _override(app, svc):
 
 class TestMemberNowPlaying:
     def test_unknown_handle_404(self, client, app):
-        from app.services.review_service import MemberNotFoundError
+        from app.services.rating_service import MemberNotFoundError
 
         svc = MagicMock()
         svc.public_now_playing.side_effect = MemberNotFoundError("ghost")
@@ -100,7 +100,7 @@ def _svc_db(user, lastfm_row, spotify_row, username="lfm_user"):
 class TestPublicNowPlayingServiceUnit:
     def test_unknown_handle_raises(self):
         from app.services.integration_service import IntegrationService
-        from app.services.review_service import MemberNotFoundError
+        from app.services.rating_service import MemberNotFoundError
 
         db = MagicMock()
         db.scalar.return_value = None  # no user with that handle

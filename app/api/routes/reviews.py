@@ -14,20 +14,20 @@ from sqlalchemy.orm import Session
 
 from app.api.routes.me import _member_id
 from app.api.schemas import (
-    AlbumReviewAggregateResponse,
-    AlbumReviewResponse,
-    AlbumReviewUpsertRequest,
-    ReviewAuthor,
+    AlbumRatingAggregateResponse,
+    AlbumRatingResponse,
+    AlbumRatingUpsertRequest,
+    RatingAuthor,
 )
 from app.core.auth import require_cognito_token, require_owner
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.di import get_review_service
-from app.services.review_service import (
+from app.di import get_rating_service
+from app.services.rating_service import (
     AlbumNotFoundError,
-    ReviewNotFoundError,
-    ReviewRateLimitError,
-    ReviewService,
+    RatingNotFoundError,
+    RatingRateLimitError,
+    RatingService,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,11 +35,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _review_response(review, user) -> AlbumReviewResponse:
-    return AlbumReviewResponse(
+def _review_response(review, user) -> AlbumRatingResponse:
+    return AlbumRatingResponse(
         id=str(review.id),
         album_id=str(review.album_id),
-        author=ReviewAuthor(
+        author=RatingAuthor(
             handle=user.handle,
             display_name=user.display_name,
             avatar_url=user.avatar_url,
@@ -58,15 +58,15 @@ def _parse_album_id(album_id: str) -> uuid.UUID:
         raise HTTPException(status_code=404, detail="Album not found")
 
 
-@router.get("/albums/{album_id}", response_model=AlbumReviewAggregateResponse)
+@router.get("/albums/{album_id}", response_model=AlbumRatingAggregateResponse)
 def get_album_reviews(
     album_id: str,
     db: Session = Depends(get_db),
-    svc: ReviewService = Depends(get_review_service),
+    svc: RatingService = Depends(get_rating_service),
 ):
     aid = _parse_album_id(album_id)
     average, count, rows = svc.album_aggregate(db, aid)
-    return AlbumReviewAggregateResponse(
+    return AlbumRatingAggregateResponse(
         album_id=album_id,
         average=average,
         count=count,
@@ -74,13 +74,13 @@ def get_album_reviews(
     )
 
 
-@router.put("/albums/{album_id}", response_model=AlbumReviewResponse)
+@router.put("/albums/{album_id}", response_model=AlbumRatingResponse)
 def put_album_review(
     album_id: str,
-    payload: AlbumReviewUpsertRequest,
+    payload: AlbumRatingUpsertRequest,
     claims: Dict[str, Any] = Depends(require_cognito_token),
     db: Session = Depends(get_db),
-    svc: ReviewService = Depends(get_review_service),
+    svc: RatingService = Depends(get_rating_service),
 ):
     aid = _parse_album_id(album_id)
     try:
@@ -95,7 +95,7 @@ def put_album_review(
         )
     except AlbumNotFoundError:
         raise HTTPException(status_code=404, detail="Album not found")
-    except ReviewRateLimitError:
+    except RatingRateLimitError:
         raise HTTPException(
             status_code=429, detail="Daily review limit reached — try again later"
         )
@@ -107,12 +107,12 @@ def delete_my_album_review(
     album_id: str,
     claims: Dict[str, Any] = Depends(require_cognito_token),
     db: Session = Depends(get_db),
-    svc: ReviewService = Depends(get_review_service),
+    svc: RatingService = Depends(get_rating_service),
 ):
     aid = _parse_album_id(album_id)
     try:
         svc.delete_own(db, _member_id(claims), aid)
-    except ReviewNotFoundError:
+    except RatingNotFoundError:
         raise HTTPException(status_code=404, detail="Review not found")
     return Response(status_code=204)
 
@@ -122,7 +122,7 @@ def owner_delete_review(
     review_id: str,
     claims: Dict[str, Any] = Depends(require_owner),
     db: Session = Depends(get_db),
-    svc: ReviewService = Depends(get_review_service),
+    svc: RatingService = Depends(get_rating_service),
 ):
     try:
         rid = uuid.UUID(review_id)
@@ -130,6 +130,6 @@ def owner_delete_review(
         raise HTTPException(status_code=404, detail="Review not found")
     try:
         svc.delete_any(db, rid)
-    except ReviewNotFoundError:
+    except RatingNotFoundError:
         raise HTTPException(status_code=404, detail="Review not found")
     return Response(status_code=204)

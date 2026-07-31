@@ -1,6 +1,6 @@
-"""Real-engine integration tests for ReviewService (FEAT-multi-user Phase 1).
+"""Real-engine integration tests for RatingService (FEAT-multi-user Phase 1).
 
-Mock unit tests (tests/test_review_service.py) cover the create-vs-edit + cap
+Mock unit tests (tests/test_rating_service.py) cover the create-vs-edit + cap
 branching but are blind to SQL semantics: the live avg/count aggregate, the
 review⋈users and review⋈albums joins, and the list_members group-by. Those only
 surface against real Postgres.
@@ -20,12 +20,12 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from app.services.review_service import (
+from app.services.rating_service import (
     AlbumNotFoundError,
     MemberNotFoundError,
-    ReviewNotFoundError,
-    ReviewRateLimitError,
-    ReviewService,
+    RatingNotFoundError,
+    RatingRateLimitError,
+    RatingService,
 )
 
 TEST_DB_URL = os.environ.get("TEST_DB_URL")
@@ -92,7 +92,7 @@ def album_ids(db):
 
 @pytest.fixture
 def svc():
-    return ReviewService()
+    return RatingService()
 
 
 def _member(n: int):
@@ -140,7 +140,7 @@ class TestUpsert:
     def test_daily_cap_enforced_across_albums(self, db, svc, album_ids):
         m1, c1 = _member(1)
         svc.upsert(db, m1, c1, album_ids[0], 4.0, None, daily_cap=1)
-        with pytest.raises(ReviewRateLimitError):
+        with pytest.raises(RatingRateLimitError):
             svc.upsert(db, m1, c1, album_ids[1], 4.0, None, daily_cap=1)
 
 
@@ -175,5 +175,5 @@ class TestProfileAndDelete:
         svc.delete_own(db, m1, album_ids[0])
         _, count, _ = svc.album_aggregate(db, album_ids[0])
         assert count == 0
-        with pytest.raises(ReviewNotFoundError):
+        with pytest.raises(RatingNotFoundError):
             svc.delete_own(db, m1, album_ids[0])
