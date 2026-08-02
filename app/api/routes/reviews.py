@@ -11,7 +11,6 @@
 # #11). Reusing this PUT for the whole state — rating, one-liner AND the private
 # editorial mark — is why Step 1 needs no new API Gateway route and no apply.
 import logging
-import uuid
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -27,6 +26,7 @@ from app.api.schemas import (
 )
 from app.core.auth import require_cognito_token, require_owner
 from app.core.config import get_settings
+from app.core.ids import parse_uuid_or_404
 from app.db.session import get_db
 from app.di import get_rating_service
 from app.services.rating_service import (
@@ -69,20 +69,13 @@ def _state_response(state) -> MyAlbumStateResponse:
     )
 
 
-def _parse_album_id(album_id: str) -> uuid.UUID:
-    try:
-        return uuid.UUID(album_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Album not found")
-
-
 @router.get("/albums/{album_id}", response_model=AlbumRatingAggregateResponse)
 def get_album_reviews(
     album_id: str,
     db: Session = Depends(get_db),
     svc: RatingService = Depends(get_rating_service),
 ):
-    aid = _parse_album_id(album_id)
+    aid = parse_uuid_or_404(album_id)
     average, count, rows = svc.album_aggregate(db, aid)
     return AlbumRatingAggregateResponse(
         album_id=album_id,
@@ -111,7 +104,7 @@ def put_album_review(
     to anyone but its author; this route is JWT-only, which is what makes that
     true.
     """
-    aid = _parse_album_id(album_id)
+    aid = parse_uuid_or_404(album_id)
     changes = payload.changes()
     if not changes:
         raise HTTPException(status_code=422, detail="No fields to update")
@@ -142,7 +135,7 @@ def delete_my_album_review(
     db: Session = Depends(get_db),
     svc: RatingService = Depends(get_rating_service),
 ):
-    aid = _parse_album_id(album_id)
+    aid = parse_uuid_or_404(album_id)
     try:
         svc.delete_own(db, _member_id(claims), aid)
     except RatingNotFoundError:
@@ -157,10 +150,7 @@ def owner_delete_review(
     db: Session = Depends(get_db),
     svc: RatingService = Depends(get_rating_service),
 ):
-    try:
-        rid = uuid.UUID(review_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Review not found")
+    rid = parse_uuid_or_404(review_id, detail="Review not found")
     try:
         svc.delete_any(db, rid)
     except RatingNotFoundError:
