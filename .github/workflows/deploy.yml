@@ -13,8 +13,21 @@ permissions:
 
 # Serialize prod deploys so out-of-order pushes can't overwrite a newer Lambda with an older build.
 concurrency:
-  group: backend-deploy-prod
-  cancel-in-progress: false
+  # A PR check and a prod deploy are not the same thing and must not share a queue.
+  # They did until 2026-08-02. Only ONE run may sit *pending* in a concurrency group,
+  # so a PR run that queued while a deploy was in flight was cancelled before it ran a
+  # single job — and a cancelled run reports **no check at all** on the PR, not a red
+  # one. A missing gate reads like "nothing to wait for", which is the dangerous shape:
+  # the merge rule requires green CI, and absent CI can be mistaken for satisfied CI.
+  # (Observed on front #333; the PR run died with zero jobs at 08:02:21Z behind the
+  # deploy of the preceding merge. Rare until now — it needs a deploy in flight at the
+  # moment a PR queues — but concurrent sessions make that ordinary.)
+  #
+  # Prod deploys stay serialized under the single group they always had.
+  # PR runs get one group per PR and supersede themselves, so a fixup push cancels the
+  # older run of the SAME PR (wanted) and nothing else (the bug).
+  group: ${{ github.event_name == 'pull_request' && format('backend-pr-{0}', github.event.number) || 'backend-deploy-prod' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
