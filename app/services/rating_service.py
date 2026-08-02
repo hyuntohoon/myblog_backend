@@ -268,3 +268,32 @@ class RatingService:
         if album_id is not None:
             stmt = stmt.where(AlbumRating.album_id == album_id)
         return list(db.scalars(stmt.order_by(AlbumRating.updated_at.desc())))
+
+    def my_review_candidates(
+        self, db: Session, member_id: uuid.UUID
+    ) -> List[Tuple[AlbumRating, Album]]:
+        """The caller's "평론 쓸 것" queue (Step 2): marked states joined to their
+        albums, most recently touched first.
+
+        Deliberately NOT a client-side filter over my_states. Two reasons:
+
+          1. `review_candidate IS TRUE` is the whole definition of this list. In
+             the query it cannot be forgotten; in the caller it can.
+          2. A mark can sit on an album that is in no bucket and carries no rating,
+             so the row has no other source of a title — hence the album join,
+             which my_states does not need (its callers key by album_id alone).
+
+        Private, like every mark read: scoped to `member_id` by construction, with
+        no parameter that could widen it to someone else. The join is an inner one
+        — album_id is a FK, so a state without an album cannot exist.
+        """
+        rows = db.execute(
+            select(AlbumRating, Album)
+            .join(Album, AlbumRating.album_id == Album.id)
+            .where(
+                AlbumRating.user_id == member_id,
+                AlbumRating.review_candidate.is_(True),
+            )
+            .order_by(AlbumRating.updated_at.desc())
+        ).all()
+        return [(r, a) for r, a in rows]

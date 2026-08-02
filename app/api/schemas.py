@@ -1313,6 +1313,37 @@ class MyAlbumStateListResponse(BaseModel):
     states: List[MyAlbumStateResponse] = Field(default_factory=list)
 
 
+class ReviewCandidateResponse(BaseModel):
+    """One row of the caller's "평론 쓸 것" queue (Step 2 — the harvest side of C6).
+
+    Same private class as MyAlbumStateResponse (it exists only because a mark
+    exists) but a different shape, because it answers a different question. The
+    state response says "what is my state for THIS album", so the caller already
+    knows the album; this one says "which albums did I mark", so it has to carry
+    the album's identity — a mark can sit on an album in no bucket, with no
+    rating, and the row would otherwise be a bare uuid.
+
+    `rating`/`comment` ride along so the queue can show what is already written
+    without a second read: a marked album may be unrated, rated, or rated with a
+    one-liner, and those read as different amounts of work left.
+
+    `updated_at` is the state's last change, not a mark timestamp — there is no
+    separate "marked at" column, and the queue orders by it.
+    """
+    album_id: str
+    album_title: str
+    album_cover_url: Optional[str] = None
+    artist_id: Optional[str] = None
+    artist_name: Optional[str] = None
+    rating: Optional[float] = None
+    comment: Optional[str] = None
+    updated_at: datetime
+
+
+class ReviewCandidateListResponse(BaseModel):
+    candidates: List[ReviewCandidateResponse] = Field(default_factory=list)
+
+
 class MemberRatingResponse(BaseModel):
     """One row in a member's public profile feed — the review plus enough album
     context to render + link without a second fetch."""

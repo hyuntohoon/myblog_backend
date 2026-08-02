@@ -38,12 +38,21 @@ def _state(album_id, rating=4.0, comment=None, review_candidate=False):
     )
 
 
+def _album(album_id, title="어떤 앨범", cover_url="https://img/cover.jpg"):
+    return SimpleNamespace(id=uuid.UUID(album_id), title=title, cover_url=cover_url)
+
+
 def _override(app, svc, *, authed=True):
     from app.db.session import get_db
     from app.di import get_rating_service
 
     app.dependency_overrides[get_rating_service] = lambda: svc
-    app.dependency_overrides[get_db] = lambda: MagicMock()
+    # The candidate route runs primary_artist_map against this db for real (it is
+    # not part of the mocked service), so its query has to resolve to a real,
+    # empty list rather than a MagicMock the route would then try to unpack.
+    db = MagicMock()
+    db.execute.return_value.all.return_value = []
+    app.dependency_overrides[get_db] = lambda: db
     if authed:
         app.dependency_overrides[require_cognito_token] = lambda: {"sub": _SUB}
 
@@ -108,6 +117,104 @@ class TestPrivacyOfTheMark:
         assert resp.status_code == 200
         assert resp.json()["states"] == []
         svc.my_states.assert_not_called()
+        app.dependency_overrides.clear()
+
+
+class TestReviewCandidateQueue:
+    """Step 2 — the harvest side of the mark. Same privacy class as the mark
+    itself, so the scoping tests are repeated here rather than assumed."""
+
+    def test_the_queue_is_scoped_to_the_caller(self, client, app):
+        """No handle parameter exists, and the member id comes from the verified
+        token — the same guarantee as /album-states, re-pinned on a second route
+        that returns the same private class of data."""
+        album_id = str(uuid.uuid4())
+        svc = MagicMock()
+        svc.my_review_candidates.return_value = [
+            (_state(album_id, rating=None, review_candidate=True), _album(album_id))
+        ]
+        _override(app, svc)
+
+        resp = client.get("/api/me/review-candidates")
+
+        assert resp.status_code == 200
+        assert svc.my_review_candidates.call_args.args[1] == uuid.UUID(_SUB)
+        app.dependency_overrides.clear()
+
+    def test_a_queue_row_carries_enough_to_render(self, client, app):
+        """A mark can sit on an album that is in no bucket and has no rating, so
+        the row is the only source of a title — without these fields the queue
+        would need one album fetch per mark."""
+        album_id = str(uuid.uuid4())
+        svc = MagicMock()
+        svc.my_review_candidates.return_value = [
+            (_state(album_id, rating=None, review_candidate=True), _album(album_id))
+        ]
+        _override(app, svc)
+
+        row = client.get("/api/me/review-candidates").json()["candidates"][0]
+
+        assert row["album_id"] == album_id
+        assert row["album_title"] == "어떤 앨범"
+        assert row["album_cover_url"] == "https://img/cover.jpg"
+        assert row["rating"] is None
+        # No artist rows in this fixture — the fields resolve to null, not an error.
+        assert row["artist_id"] is None
+        assert row["artist_name"] is None
+        app.dependency_overrides.clear()
+
+    def test_an_already_rated_candidate_keeps_its_rating(self, client, app):
+        """Marked-and-rated is a real state (mark first, listen, rate, still to
+        write). The queue shows the work already done instead of hiding it."""
+        album_id = str(uuid.uuid4())
+        svc = MagicMock()
+        svc.my_review_candidates.return_value = [
+            (
+                _state(album_id, rating=4.5, comment="한 줄", review_candidate=True),
+                _album(album_id),
+            )
+        ]
+        _override(app, svc)
+
+        row = client.get("/api/me/review-candidates").json()["candidates"][0]
+
+        assert row["rating"] == 4.5
+        assert row["comment"] == "한 줄"
+        app.dependency_overrides.clear()
+
+    def test_an_empty_queue_is_an_empty_list(self, client, app):
+        """The prod state on the day this shipped. Empty is a normal answer, not
+        a 404 — the surface renders its own empty state from it."""
+        svc = MagicMock()
+        svc.my_review_candidates.return_value = []
+        _override(app, svc)
+
+        resp = client.get("/api/me/review-candidates")
+
+        assert resp.status_code == 200
+        assert resp.json()["candidates"] == []
+        app.dependency_overrides.clear()
+
+    def test_the_queue_needs_a_token(self, client, app, monkeypatch):
+        """It is private data, so it must be behind require_cognito_token.
+
+        ENV is 'local' for the whole suite, which is exactly the bypass that
+        would hide a missing guard — the test lifts it for this one call so the
+        assertion is about the route's wiring, not the test environment.
+        """
+        from app.core import auth as auth_mod
+
+        svc = MagicMock()
+        _override(app, svc, authed=False)
+        monkeypatch.setattr(auth_mod.settings, "ENV", "prod")
+        # A configured pool, so the answer is a plain 401 rather than the
+        # fail-closed 503 that a missing pool id (correctly) produces.
+        monkeypatch.setattr(auth_mod.settings, "COGNITO_USER_POOL_ID", "ap-northeast-2_test")
+
+        resp = client.get("/api/me/review-candidates")
+
+        assert resp.status_code == 401
+        svc.my_review_candidates.assert_not_called()
         app.dependency_overrides.clear()
 
 
