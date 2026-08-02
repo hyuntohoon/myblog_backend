@@ -17,6 +17,7 @@ from app.api.schemas import (
     ResearchTriggerRequest,
 )
 from app.core.auth import require_owner
+from app.core.ids import parse_uuid_list_or_400, parse_uuid_or_404
 from app.db.session import get_db
 from app.di import get_research_service
 from app.services.research_service import (
@@ -62,7 +63,9 @@ def get_research_status_map(
     # Cap to keep one board's worth; a huge list would be abusive, not a real board.
     if len(ids) > 500:
         raise HTTPException(status_code=400, detail="too many album_ids (max 500)")
-    return ResearchStatusMapResponse(statuses=svc.status_map(db, ids))
+    # A-3: a non-UUID entry reached the uuid column and 500'd the whole board.
+    parsed = parse_uuid_list_or_400(ids, detail="malformed album_ids")
+    return ResearchStatusMapResponse(statuses=svc.status_map(db, parsed))
 
 
 @router.get("/albums/{album_id}", response_model=AlbumResearchResponse)
@@ -72,7 +75,7 @@ def get_album_research(
     svc: ResearchService = Depends(get_research_service),
 ):
     # 404 when no note yet → the writer GUI shows the "조사하기" button in its place.
-    row = svc.get_research(db, album_id)
+    row = svc.get_research(db, parse_uuid_or_404(album_id))
     if row is None:
         raise HTTPException(status_code=404, detail="No research note for this album")
     return _research_response(row)
@@ -87,7 +90,7 @@ def trigger_album_research(
     _claims: Dict = Depends(require_owner),
 ):
     try:
-        row = svc.trigger(db, album_id, mode=req.mode, instruction=req.instruction)
+        row = svc.trigger(db, parse_uuid_or_404(album_id), mode=req.mode, instruction=req.instruction)
     except AlbumNotFoundError:
         raise HTTPException(status_code=404, detail="Album not found")
     except ResearchStateError as e:

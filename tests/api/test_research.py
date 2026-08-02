@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -11,10 +12,20 @@ from app.services.research_service import (
 )
 
 
-def _row(album_id="alb-1", status="done", result_md="기존 노트", refine_count=0,
+# AUDIT-2026-07-26 A-3: the routes now parse the id before it can reach a uuid
+# column, so route-level tests must use real UUIDs. The service-level tests below
+# call the service directly, bypass the route, and keep their opaque ids.
+ALB1 = "11111111-1111-4111-8111-111111111111"
+ALB2 = "22222222-2222-4222-8222-222222222222"
+ALB3 = "33333333-3333-4333-8333-333333333333"
+ALB_NO_NOTE = "44444444-4444-4444-8444-444444444444"
+ALB_MISSING = "55555555-5555-4555-8555-555555555555"
+
+
+def _row(album_id=None, status="done", result_md="기존 노트", refine_count=0,
          last_instruction=None):
     return SimpleNamespace(
-        album_id=album_id,
+        album_id=album_id or ALB1,
         prompt_version="v2",
         status=status,
         model="claude-opus-4-8",
@@ -46,11 +57,11 @@ class TestGetResearch:
         svc.get_research.return_value = _row()
         _override(app, svc)
 
-        resp = client.get("/api/research/albums/alb-1")
+        resp = client.get(f"/api/research/albums/{ALB1}")
 
         assert resp.status_code == 200
         body = resp.json()
-        assert body["album_id"] == "alb-1"
+        assert body["album_id"] == ALB1
         assert body["status"] == "done"
         assert body["result_md"] == "기존 노트"
         app.dependency_overrides.clear()
@@ -60,7 +71,7 @@ class TestGetResearch:
         svc.get_research.return_value = None
         _override(app, svc)
 
-        resp = client.get("/api/research/albums/no-note")
+        resp = client.get(f"/api/research/albums/{ALB_NO_NOTE}")
 
         assert resp.status_code == 404
         app.dependency_overrides.clear()
@@ -69,22 +80,25 @@ class TestGetResearch:
 class TestResearchStatusMap:
     def test_batched_status_returns_map(self, client, app):
         svc = MagicMock()
-        svc.status_map.return_value = {"alb-1": "done", "alb-2": "queued"}
+        svc.status_map.return_value = {ALB1: "done", ALB2: "queued"}
         _override(app, svc)
 
-        resp = client.get("/api/research/status?album_ids=alb-1,alb-2,alb-3")
+        resp = client.get(f"/api/research/status?album_ids={ALB1},{ALB2},{ALB3}")
 
         assert resp.status_code == 200
-        assert resp.json()["statuses"] == {"alb-1": "done", "alb-2": "queued"}
-        # the route forwards a parsed id list (blanks dropped) to the service.
-        assert svc.status_map.call_args.args[1] == ["alb-1", "alb-2", "alb-3"]
+        assert resp.json()["statuses"] == {ALB1: "done", ALB2: "queued"}
+        # the route forwards a parsed id list (blanks dropped) to the service,
+        # now as UUID objects — status_map str()s them back for the map keys.
+        assert svc.status_map.call_args.args[1] == [
+            uuid.UUID(ALB1), uuid.UUID(ALB2), uuid.UUID(ALB3)
+        ]
         app.dependency_overrides.clear()
 
     def test_too_many_ids_returns_400(self, client, app):
         svc = MagicMock()
         _override(app, svc)
 
-        resp = client.get("/api/research/status?album_ids=" + ",".join(f"a{i}" for i in range(501)))
+        resp = client.get("/api/research/status?album_ids=" + ",".join(str(uuid.uuid4()) for _ in range(501)))
 
         assert resp.status_code == 400
         svc.status_map.assert_not_called()
@@ -106,7 +120,7 @@ class TestTriggerResearch:
         svc.trigger.return_value = _row(status="queued", result_md=None)
         _override(app, svc)
 
-        resp = client.post("/api/research/albums/alb-1", json={})
+        resp = client.post(f"/api/research/albums/{ALB1}", json={})
 
         assert resp.status_code == 200
         assert resp.json()["status"] == "queued"
@@ -120,7 +134,7 @@ class TestTriggerResearch:
         _override(app, svc)
 
         resp = client.post(
-            "/api/research/albums/alb-1",
+            f"/api/research/albums/{ALB1}",
             json={"mode": "refine", "instruction": "샘플 더 조사"},
         )
 
@@ -134,7 +148,7 @@ class TestTriggerResearch:
         svc.trigger.side_effect = ResearchStateError("refine is valid only on a completed note")
         _override(app, svc)
 
-        resp = client.post("/api/research/albums/alb-1", json={"mode": "refine"})
+        resp = client.post(f"/api/research/albums/{ALB1}", json={"mode": "refine"})
 
         assert resp.status_code == 400
         app.dependency_overrides.clear()
@@ -144,14 +158,14 @@ class TestTriggerResearch:
         svc.trigger.side_effect = AlbumNotFoundError("alb-x")
         _override(app, svc)
 
-        resp = client.post("/api/research/albums/alb-x", json={})
+        resp = client.post(f"/api/research/albums/{ALB_MISSING}", json={})
 
         assert resp.status_code == 404
         app.dependency_overrides.clear()
 
     def test_bad_mode_returns_422(self, client, app):
         _override(app, MagicMock())
-        resp = client.post("/api/research/albums/alb-1", json={"mode": "bogus"})
+        resp = client.post(f"/api/research/albums/{ALB1}", json={"mode": "bogus"})
         assert resp.status_code == 422
         app.dependency_overrides.clear()
 
@@ -164,7 +178,7 @@ class TestTriggerResearch:
         fake_settings.COGNITO_REGION = "ap-northeast-2"
 
         with patch.object(auth_module, "settings", fake_settings):
-            resp = client.post("/api/research/albums/alb-1", json={})
+            resp = client.post(f"/api/research/albums/{ALB1}", json={})
 
         assert resp.status_code == 401
 
