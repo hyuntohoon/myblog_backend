@@ -7,6 +7,8 @@
 #                     the DB row (JWT-authorizer route at API GW).
 #   GET    /api/me/album-states — MY per-album states, private facet included
 #                     (rides the GET catch-all; JWT checked here at the Lambda).
+#   GET    /api/me/review-candidates — MY "평론 쓸 것" queue: marked albums joined to
+#                     their identity (same catch-all, same JWT-at-the-Lambda).
 import logging
 import uuid
 from typing import Any, Dict, Optional
@@ -18,6 +20,8 @@ from app.api.schemas import (
     MeResponse,
     MyAlbumStateListResponse,
     MyAlbumStateResponse,
+    ReviewCandidateListResponse,
+    ReviewCandidateResponse,
     UpdateMeRequest,
 )
 from app.clients.cognito_client import CognitoDeleteError, delete_cognito_user
@@ -25,6 +29,7 @@ from app.core.auth import require_cognito_token, require_owner
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.di import get_rating_service, get_user_service
+from app.services.artist_primary import primary_artist_map
 from app.services.rating_service import RatingService
 from app.services.user_service import (
     LOCAL_DEV_USER_ID,
@@ -136,6 +141,42 @@ def get_my_album_states(
                 updated_at=r.updated_at,
             )
             for r in rows
+        ]
+    )
+
+
+@router.get("/review-candidates", response_model=ReviewCandidateListResponse)
+def get_my_review_candidates(
+    claims: Dict[str, Any] = Depends(require_cognito_token),
+    db: Session = Depends(get_db),
+    svc: RatingService = Depends(get_rating_service),
+):
+    """The caller's "평론 쓸 것" queue (FEAT-album-review-authoring Step 2).
+
+    The harvest side of the Step 1 mark: Step 1 shipped placing and clearing it,
+    this is where the marks gather into a list. Private for the same reason the
+    mark is (RFC C6 — a visible mark is a promise), so it is JWT-only and scoped
+    to the caller; there is no handle parameter, by design.
+
+    Like the other authed GETs, it rides the edge_guard catch-all with the JWT
+    checked here at the Lambda — no API Gateway route, no `terraform apply`.
+    """
+    rows = svc.my_review_candidates(db, _member_id(claims))
+    # One batch resolve for the whole queue, mirroring the public member feed.
+    amap = primary_artist_map(db, [a.id for _, a in rows])
+    return ReviewCandidateListResponse(
+        candidates=[
+            ReviewCandidateResponse(
+                album_id=str(r.album_id),
+                album_title=a.title,
+                album_cover_url=a.cover_url,
+                artist_id=(amap.get(str(a.id)) or (None, None))[0],
+                artist_name=(amap.get(str(a.id)) or (None, None))[1],
+                rating=float(r.rating) if r.rating is not None else None,
+                comment=r.comment,
+                updated_at=r.updated_at,
+            )
+            for r, a in rows
         ]
     )
 

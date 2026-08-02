@@ -3425,6 +3425,99 @@
         "title": "RetrospectiveResponse",
         "type": "object"
       },
+      "ReviewCandidateListResponse": {
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewCandidateResponse"
+            },
+            "title": "Candidates",
+            "type": "array"
+          }
+        },
+        "title": "ReviewCandidateListResponse",
+        "type": "object"
+      },
+      "ReviewCandidateResponse": {
+        "description": "One row of the caller's \"\ud3c9\ub860 \uc4f8 \uac83\" queue (Step 2 \u2014 the harvest side of C6).\n\nSame private class as MyAlbumStateResponse (it exists only because a mark\nexists) but a different shape, because it answers a different question. The\nstate response says \"what is my state for THIS album\", so the caller already\nknows the album; this one says \"which albums did I mark\", so it has to carry\nthe album's identity \u2014 a mark can sit on an album in no bucket, with no\nrating, and the row would otherwise be a bare uuid.\n\n`rating`/`comment` ride along so the queue can show what is already written\nwithout a second read: a marked album may be unrated, rated, or rated with a\none-liner, and those read as different amounts of work left.\n\n`updated_at` is the state's last change, not a mark timestamp \u2014 there is no\nseparate \"marked at\" column, and the queue orders by it.",
+        "properties": {
+          "album_cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Cover Url"
+          },
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "album_title": {
+            "title": "Album Title",
+            "type": "string"
+          },
+          "artist_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Id"
+          },
+          "artist_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Name"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "album_id",
+          "album_title",
+          "updated_at"
+        ],
+        "title": "ReviewCandidateResponse",
+        "type": "object"
+      },
       "ReviewedAlbumResponse": {
         "properties": {
           "album": {
@@ -7669,6 +7762,33 @@
         "summary": "Get Release Feed",
         "tags": [
           "release-feed"
+        ]
+      }
+    },
+    "/api/me/review-candidates": {
+      "get": {
+        "description": "The caller's \"\ud3c9\ub860 \uc4f8 \uac83\" queue (FEAT-album-review-authoring Step 2).\n\nThe harvest side of the Step 1 mark: Step 1 shipped placing and clearing it,\nthis is where the marks gather into a list. Private for the same reason the\nmark is (RFC C6 \u2014 a visible mark is a promise), so it is JWT-only and scoped\nto the caller; there is no handle parameter, by design.\n\nLike the other authed GETs, it rides the edge_guard catch-all with the JWT\nchecked here at the Lambda \u2014 no API Gateway route, no `terraform apply`.",
+        "operationId": "get_my_review_candidates_api_me_review_candidates_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewCandidateListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get My Review Candidates",
+        "tags": [
+          "me"
         ]
       }
     },

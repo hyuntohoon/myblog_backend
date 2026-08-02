@@ -284,6 +284,52 @@ class TestPrivateStateStaysPrivate:
         assert svc.my_states(db, m2) == []
 
 
+class TestTheReviewCandidateQueue:
+    """Step 2 — the harvest read. Against a real engine because the two things
+    that can go wrong here are both WHERE-clause shaped: listing an unmarked
+    state, or listing someone else's."""
+
+    def test_only_marked_states_are_in_the_queue(self, db, svc, album_ids):
+        """A plain 평가 is not a promise to write a 평론. If the filter went
+        missing, every rated album would silently become a queue item."""
+        m1, c1 = _member(1)
+        svc.upsert(db, m1, c1, album_ids[0], {"review_candidate": True}, daily_cap=50)
+        svc.upsert(db, m1, c1, album_ids[1], {"rating": 3.5}, daily_cap=50)
+
+        assert [r.album_id for r, _a in svc.my_review_candidates(db, m1)] == [album_ids[0]]
+
+    def test_clearing_the_mark_drops_it_from_the_queue(self, db, svc, album_ids):
+        album = album_ids[0]
+        m1, c1 = _member(1)
+        svc.upsert(db, m1, c1, album, {"rating": 4.0, "review_candidate": True}, daily_cap=50)
+
+        svc.upsert(db, m1, c1, album, {"review_candidate": False}, daily_cap=50)
+
+        assert svc.my_review_candidates(db, m1) == []
+        # …and the 평가 it was sitting on is untouched.
+        _avg, count, _rows = svc.album_aggregate(db, album)
+        assert count == 1
+
+    def test_the_queue_is_per_member(self, db, svc, album_ids):
+        m1, c1 = _member(1)
+        m2, _c2 = _member(2)
+        svc.upsert(db, m1, c1, album_ids[0], {"review_candidate": True}, daily_cap=50)
+
+        assert svc.my_review_candidates(db, m2) == []
+
+    def test_an_unrated_mark_still_carries_its_album(self, db, svc, album_ids):
+        """The queue's whole point: an album marked before listening, in no
+        bucket, with no rating, still renders. The inner join is what guarantees
+        a title is there."""
+        m1, c1 = _member(1)
+        svc.upsert(db, m1, c1, album_ids[0], {"review_candidate": True}, daily_cap=50)
+
+        (state, album), = svc.my_review_candidates(db, m1)
+        assert state.rating is None
+        assert album.id == album_ids[0]
+        assert album.title
+
+
 class TestStateInvariantsAgainstTheDatabase:
     """The V50 CHECKs, exercised through the service. These are invariants the
     schema enforces — the service is supposed to make them unreachable, and a
