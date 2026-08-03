@@ -808,6 +808,114 @@ class TestSystemBucketDeleteGuard:
         assert svc.delete_bucket(db, user_id, str(uuid.uuid4())) is False
 
 
+class TestSystemBucketCascadeGuard:
+    """BUG-playback-system-bucket-cascade.
+
+    The kind check alone was bypassable: `review_buckets.parent_id` is ON DELETE CASCADE, so
+    deleting a PARENT took the system bucket with it. Verified against prod before the fix —
+    direct DELETE answered 409, but nest-then-delete-parent answered 204 and the Playback
+    Bucket came back auto-created with a new id and an empty queue.
+
+    These run against a real engine on purpose: the hole lives in the FK's cascade, which a
+    mocked session cannot express (memory `feedback-sa-session-lifecycle-mock-blind`).
+    """
+
+    def test_parent_of_playback_queue_cannot_be_deleted(self, db, svc, user_id):
+        parent = svc.create_bucket(db, user_id, name="일반")
+        queue = svc.get_or_create_playback_bucket(db, user_id)
+        svc.move_bucket(db, str(queue.id), str(parent.id), 0, user_id)
+        db.flush()
+
+        with pytest.raises(SystemBucketError):
+            svc.delete_bucket(db, user_id, str(parent.id))
+
+        # Both must survive — the point is that the cascade never ran.
+        assert db.get(ReviewBucket, queue.id) is not None
+        assert db.get(ReviewBucket, parent.id) is not None
+
+    def test_guard_reaches_a_grandchild_not_just_a_direct_child(self, db, svc, user_id):
+        # One level of nesting would be a shallow fix; the cascade is unbounded in depth.
+        top = svc.create_bucket(db, user_id, name="위")
+        mid = svc.create_bucket(db, user_id, name="가운데")
+        svc.move_bucket(db, str(mid.id), str(top.id), 0, user_id)
+        queue = svc.get_or_create_playback_bucket(db, user_id)
+        svc.move_bucket(db, str(queue.id), str(mid.id), 0, user_id)
+        db.flush()
+
+        with pytest.raises(SystemBucketError):
+            svc.delete_bucket(db, user_id, str(top.id))
+        assert db.get(ReviewBucket, queue.id) is not None
+
+    @pytest.mark.parametrize("kind", ["spotify_library", "to_listen"])
+    def test_the_two_older_system_kinds_are_covered_too(self, db, svc, user_id, kind):
+        parent = svc.create_bucket(db, user_id, name="일반")
+        sys_b = ReviewBucket(
+            user_id=user_id, name=kind, kind=kind, position=50, parent_id=parent.id
+        )
+        db.add(sys_b)
+        db.flush()
+
+        with pytest.raises(SystemBucketError):
+            svc.delete_bucket(db, user_id, str(parent.id))
+        assert db.get(ReviewBucket, sys_b.id) is not None
+
+    def test_the_error_names_which_bucket_is_in_the_way(self, db, svc, user_id):
+        # "move it out first" is only actionable if the member knows what to move.
+        parent = svc.create_bucket(db, user_id, name="일반")
+        queue = svc.get_or_create_playback_bucket(db, user_id)
+        svc.move_bucket(db, str(queue.id), str(parent.id), 0, user_id)
+        db.flush()
+
+        with pytest.raises(SystemBucketError, match="playback_queue"):
+            svc.delete_bucket(db, user_id, str(parent.id))
+
+    def test_moving_the_system_bucket_back_out_unblocks_the_delete(self, db, svc, user_id):
+        # The guard must be a live subtree check, not a permanent mark on the parent.
+        parent = svc.create_bucket(db, user_id, name="일반")
+        queue = svc.get_or_create_playback_bucket(db, user_id)
+        svc.move_bucket(db, str(queue.id), str(parent.id), 0, user_id)
+        db.flush()
+        with pytest.raises(SystemBucketError):
+            svc.delete_bucket(db, user_id, str(parent.id))
+
+        svc.move_bucket(db, str(queue.id), None, 0, user_id)
+        db.flush()
+        assert svc.delete_bucket(db, user_id, str(parent.id)) is True
+        assert db.get(ReviewBucket, queue.id) is not None
+
+    def test_an_unrelated_parent_still_deletes(self, db, svc, user_id):
+        # The user HAS a system bucket; it just isn't under this tree. Deleting must work,
+        # or the guard would make every bucket undeletable for anyone with a queue.
+        svc.get_or_create_playback_bucket(db, user_id)
+        parent = svc.create_bucket(db, user_id, name="일반")
+        child = svc.create_bucket(db, user_id, name="자식")
+        svc.move_bucket(db, str(child.id), str(parent.id), 0, user_id)
+        db.flush()
+        # Capture ids BEFORE the delete: `child` goes away via the DB-level parent_id
+        # CASCADE, which the ORM session never sees, so reading child.id afterwards would
+        # trigger a refresh of a deleted row (ObjectDeletedError) instead of a clean None.
+        parent_id, child_id = str(parent.id), child.id
+
+        assert svc.delete_bucket(db, user_id, parent_id) is True
+        assert db.get(ReviewBucket, child_id) is None
+
+    def test_another_users_system_bucket_does_not_block_my_delete(self, db, svc, user_id):
+        # The subtree query is user-scoped; a stray cross-user match would be a denial bug.
+        other = uuid.UUID("00000000-0000-0000-0000-0000000000b3")
+        db.execute(
+            text(
+                "INSERT INTO users (id, handle, display_name) VALUES (:id, :h, :d) "
+                "ON CONFLICT (id) DO NOTHING"
+            ),
+            {"id": str(other), "h": "test-bucketsvc-3", "d": "Test BucketSvc 3"},
+        )
+        db.flush()
+        svc.get_or_create_playback_bucket(db, other)
+
+        parent = svc.create_bucket(db, user_id, name="일반")
+        assert svc.delete_bucket(db, user_id, str(parent.id)) is True
+
+
 class TestPlaybackTypeGate:
     def test_album_row_rejected_on_the_single_row_path(self, db, svc, album_ids, user_id):
         b = svc.get_or_create_playback_bucket(db, user_id)
