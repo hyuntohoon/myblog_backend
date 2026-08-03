@@ -200,13 +200,33 @@ class AddBucketItemRequest(BaseModel):
     # server EXPANDS into its credited artists — the source itself is never stored). The
     # validator below enforces the either/or.
     artist_id: Optional[str] = None            # a direct artist add (item_type='artist')
-    source_album_id: Optional[str] = None      # expand this album's credited artists
+    # source_* triggers a server-side EXPANSION of the named source; the source row itself is
+    # never stored. Two expansions share these fields, discriminated by item_type:
+    #   item_type='artist'   → the source's credited ARTISTS   (FEAT-my-buckit-artist V32)
+    #   item_type='playback' → source_album_id's TRACKS, in album order
+    #                          (FEAT-playback-bucket-player — album dropped on the queue)
+    source_album_id: Optional[str] = None      # expand this album (artists, or tracks)
     source_track_id: Optional[str] = None      # expand this track's credited artists
 
     @model_validator(mode="after")
     def _require_typed_target(self) -> "AddBucketItemRequest":
         # Reject a write that names a kind but omits its typed target up front (422) rather
         # than leaking a downstream IntegrityError / NOT-NULL violation.
+        if self.item_type == "playback":
+            # FEAT-playback-bucket-player: a queue write is EITHER one track (track_id) OR an
+            # album to expand into its tracks (source_album_id) — exactly one, mirroring the
+            # artist either/or below. source_track_id is not a playback source: a track needs
+            # no expansion, it is already the unit the queue holds.
+            if self.source_track_id:
+                raise ValueError(
+                    "playback item does not accept source_track_id; use track_id"
+                )
+            provided = [v for v in (self.track_id, self.source_album_id) if v]
+            if len(provided) != 1:
+                raise ValueError(
+                    "playback item requires exactly one of track_id / source_album_id"
+                )
+            return self
         if self.item_type == "artist":
             # Exactly one of {artist_id, source_album_id, source_track_id}. A direct add names
             # the artist; a source_* triggers server-side expansion (mutually exclusive).
@@ -219,10 +239,10 @@ class AddBucketItemRequest(BaseModel):
                     "source_track_id"
                 )
             return self
+        # 'artist' and 'playback' returned above (each has its own either/or rule).
         required = {
             "album": self.album_id,
             "track": self.track_id,
-            "playback": self.track_id,
             "review": self.review_target_id,
             "snapshot": self.snapshot,
         }[self.item_type]
@@ -329,6 +349,25 @@ class ArtistExpansionResponse(BaseModel):
     `expansion` (only this shape carries it)."""
     item_type: Literal["artist"] = "artist"
     expansion: BucketItemExpansion
+
+
+class TrackExpansion(BaseModel):
+    """FEAT-playback-bucket-player: the tracks an album drop appended to the Playback Bucket.
+
+    No `skipped` list, unlike BucketItemExpansion: the queue allows duplicates by design
+    (FEAT-pocket-buckit D8 — no partial unique on item_type='playback'), so every track of the
+    album is appended and nothing is dropped. `added` is in the order the rows were appended
+    (album order), so the front can render the new queue tail without a re-read."""
+    added: List[TrackBrief] = Field(default_factory=list)
+
+
+class TrackExpansionResponse(BaseModel):
+    """FEAT-playback-bucket-player: the add-item response for an album dropped on the Playback
+    Bucket. Like ArtistExpansionResponse this is a DISTINCT shape from BucketItemResponse (there
+    is no single membership row to echo), so POST /items returns a Union of the three and the
+    front discriminates on the presence of `expansion` (+ item_type to tell the two apart)."""
+    item_type: Literal["playback"] = "playback"
+    expansion: TrackExpansion
 
 
 class BucketItemResponse(BaseModel):

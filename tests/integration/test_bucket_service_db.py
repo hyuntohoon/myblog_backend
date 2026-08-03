@@ -22,11 +22,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.services.bucket_service import (
+    AlbumNotFoundError,
     ArtistNotFoundError,
     BucketNotFoundError,
     BucketService,
     BucketTypeError,
     DuplicateItemError,
+    SystemBucketError,
 )
 from app.services.distribution import VARIOUS_ARTISTS
 from myblog_shared_db.models import (
@@ -690,3 +692,295 @@ class TestArtistBuckit:
         )
         with pytest.raises(IntegrityError):
             db.flush()
+
+
+# ── FEAT-playback-bucket-player Step 3 ────────────────────────────────────────────
+# Real-engine only, deliberately: every assertion below turns on something a mock
+# cannot see — the V51 partial UNIQUE index, the widened ck_review_buckets_type
+# CHECK, and above all the ORDER BY that decides queue order. A mock returning a
+# pre-sorted list would make the ordering test pass while the SQL was wrong.
+
+
+def _mk_album(db, title="Queue Album"):
+    alb = Album(title=title, spotify_id=f"sp-alb-{uuid.uuid4().hex}")
+    db.add(alb)
+    db.flush()
+    return alb
+
+
+def _mk_track(db, album, title, track_no):
+    trk = Track(
+        album_id=album.id,
+        title=title,
+        track_no=track_no,
+        spotify_id=f"sp-trk-{uuid.uuid4().hex}",
+    )
+    db.add(trk)
+    db.flush()
+    return trk
+
+
+def _queue_track_ids(db, bucket_id):
+    """The bucket's playback rows as (position, track_id), position-ordered."""
+    rows = db.execute(
+        select(ReviewBucketItem.position, ReviewBucketItem.track_id)
+        .where(ReviewBucketItem.bucket_id == bucket_id)
+        .order_by(ReviewBucketItem.position)
+    ).all()
+    return [(r[0], str(r[1])) for r in rows]
+
+
+class TestPlaybackBucketCreation:
+    def test_get_or_create_is_idempotent(self, db, svc, user_id):
+        first = svc.get_or_create_playback_bucket(db, user_id)
+        second = svc.get_or_create_playback_bucket(db, user_id)
+        assert str(first.id) == str(second.id)
+
+    def test_created_bucket_has_system_kind_and_playback_type(self, db, svc, user_id):
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        row = db.get(ReviewBucket, b.id)
+        assert row.kind == "playback_queue"
+        # 'playback' only became a legal type in V51 — this asserts the widened
+        # ck_review_buckets_type CHECK actually admits it on the test branch.
+        assert row.type == "playback"
+
+    def test_second_queue_rejected_by_unique_index(self, db, svc, user_id):
+        # The Python get-or-create guard is not the constraint; idx_review_buckets_single_playback
+        # is. Insert a second queue directly to prove the INDEX rejects it, so a concurrent
+        # double-create can never produce two queues for one user.
+        svc.get_or_create_playback_bucket(db, user_id)
+        db.add(
+            ReviewBucket(
+                user_id=user_id,
+                name="second queue",
+                kind="playback_queue",
+                type="playback",
+                position=99,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db.flush()
+
+    def test_a_different_user_gets_their_own_queue(self, db, svc, user_id):
+        # The index is UNIQUE (user_id) WHERE kind='playback_queue' — per-user, not global.
+        other = uuid.UUID("00000000-0000-0000-0000-0000000000b2")
+        db.execute(
+            text(
+                "INSERT INTO users (id, handle, display_name) VALUES (:id, :h, :d) "
+                "ON CONFLICT (id) DO NOTHING"
+            ),
+            {"id": str(other), "h": "test-bucketsvc-2", "d": "Test BucketSvc 2"},
+        )
+        db.flush()
+        mine = svc.get_or_create_playback_bucket(db, user_id)
+        theirs = svc.get_or_create_playback_bucket(db, other)
+        assert str(mine.id) != str(theirs.id)
+
+
+class TestSystemBucketDeleteGuard:
+    """The guard this step adds. Before it, delete_bucket checked ownership only —
+    so all three of these DELETEs succeeded and cascaded their items away."""
+
+    def test_playback_queue_cannot_be_deleted(self, db, svc, user_id):
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        with pytest.raises(SystemBucketError):
+            svc.delete_bucket(db, user_id, str(b.id))
+        assert db.get(ReviewBucket, b.id) is not None
+
+    @pytest.mark.parametrize("kind", ["spotify_library", "to_listen"])
+    def test_preexisting_system_buckets_cannot_be_deleted(self, db, svc, user_id, kind):
+        # The pattern half of the fix: these two predate this RFC and were deletable.
+        b = ReviewBucket(user_id=user_id, name=kind, kind=kind, position=50)
+        db.add(b)
+        db.flush()
+        with pytest.raises(SystemBucketError):
+            svc.delete_bucket(db, user_id, str(b.id))
+        assert db.get(ReviewBucket, b.id) is not None
+
+    def test_ordinary_bucket_still_deletes(self, db, svc, user_id):
+        # The guard must not have made every bucket undeletable.
+        b = svc.create_bucket(db, user_id, name="일반")
+        assert svc.delete_bucket(db, user_id, str(b.id)) is True
+        assert db.get(ReviewBucket, b.id) is None
+
+    def test_missing_bucket_still_returns_false(self, db, svc, user_id):
+        # 404 (not 409) is still the answer for a bucket that isn't there.
+        assert svc.delete_bucket(db, user_id, str(uuid.uuid4())) is False
+
+
+class TestPlaybackTypeGate:
+    def test_album_row_rejected_on_the_single_row_path(self, db, svc, album_ids, user_id):
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        with pytest.raises(BucketTypeError):
+            svc.add_item(db, user_id, str(b.id), item_type="album", album_id=album_ids[0])
+
+    def test_artist_row_rejected(self, db, svc, user_id):
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        artist = _mk_artist(db, "Queue Reject")
+        with pytest.raises(BucketTypeError):
+            svc.add_item(db, user_id, str(b.id), item_type="artist", artist_id=str(artist.id))
+
+    def test_playback_row_accepted(self, db, svc, user_id):
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        album = _mk_album(db)
+        trk = _mk_track(db, album, "Only", 1)
+        item = svc.add_item(
+            db, user_id, str(b.id), item_type="playback", track_id=str(trk.id)
+        )
+        assert item.item_type == "playback"
+        assert str(item.track_id) == str(trk.id)
+
+    def test_duplicate_playback_rows_allowed(self, db, svc, user_id):
+        # D8: the queue deliberately has no unique index on item_type='playback',
+        # so queueing the same track twice is two rows, not a 409.
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        album = _mk_album(db)
+        trk = _mk_track(db, album, "Twice", 1)
+        svc.add_item(db, user_id, str(b.id), item_type="playback", track_id=str(trk.id))
+        svc.add_item(db, user_id, str(b.id), item_type="playback", track_id=str(trk.id))
+        assert len(_queue_track_ids(db, b.id)) == 2
+
+
+class TestExpandAlbumTracks:
+    def test_appends_in_album_order_not_insertion_order(self, db, svc, user_id):
+        """The assertion this step exists to make.
+
+        Tracks are INSERTED deliberately scrambled (3, 1, 4, 2) so that any
+        implementation relying on insertion order, PK order, or an unordered
+        SELECT produces a different sequence than track_no order. If the ORDER BY
+        were dropped this test fails; a mocked session could not catch that.
+        """
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        album = _mk_album(db)
+        t3 = _mk_track(db, album, "third", 3)
+        t1 = _mk_track(db, album, "first", 1)
+        t4 = _mk_track(db, album, "fourth", 4)
+        t2 = _mk_track(db, album, "second", 2)
+
+        added = svc.expand_album_tracks(
+            db, user_id, str(b.id), source_album_id=str(album.id)
+        )
+
+        expected = [str(t1.id), str(t2.id), str(t3.id), str(t4.id)]
+        # Returned order …
+        assert [str(t.id) for t in added] == expected
+        # … and persisted position order agree.
+        assert [tid for _pos, tid in _queue_track_ids(db, b.id)] == expected
+        assert [pos for pos, _tid in _queue_track_ids(db, b.id)] == [0, 1, 2, 3]
+
+    def test_null_track_no_sorts_last(self, db, svc, user_id):
+        # track_no is nullable; an unnumbered track must not sort to the front and
+        # displace a real track 1 (ORDER BY … NULLS LAST).
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        album = _mk_album(db)
+        t_null = _mk_track(db, album, "untitled", None)
+        t1 = _mk_track(db, album, "first", 1)
+        added = svc.expand_album_tracks(
+            db, user_id, str(b.id), source_album_id=str(album.id)
+        )
+        assert [str(t.id) for t in added] == [str(t1.id), str(t_null.id)]
+
+    def test_appends_after_existing_queue_rows(self, db, svc, user_id):
+        # Expansion appends to the tail — it never renumbers or displaces what is
+        # already queued (and possibly playing).
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        first_album = _mk_album(db, "Already")
+        sitting = _mk_track(db, first_album, "sitting", 1)
+        svc.add_item(db, user_id, str(b.id), item_type="playback", track_id=str(sitting.id))
+
+        album = _mk_album(db, "Dropped")
+        t1 = _mk_track(db, album, "a", 1)
+        t2 = _mk_track(db, album, "b", 2)
+        svc.expand_album_tracks(db, user_id, str(b.id), source_album_id=str(album.id))
+
+        assert [tid for _pos, tid in _queue_track_ids(db, b.id)] == [
+            str(sitting.id),
+            str(t1.id),
+            str(t2.id),
+        ]
+
+    def test_rows_are_playback_kind_carrying_track_id(self, db, svc, user_id):
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        album = _mk_album(db)
+        _mk_track(db, album, "a", 1)
+        svc.expand_album_tracks(db, user_id, str(b.id), source_album_id=str(album.id))
+        rows = (
+            db.query(ReviewBucketItem)
+            .filter(ReviewBucketItem.bucket_id == b.id)
+            .all()
+        )
+        assert rows and all(r.item_type == "playback" for r in rows)
+        assert all(r.track_id is not None and r.album_id is None for r in rows)
+
+    def test_redrop_duplicates_rather_than_dedupes(self, db, svc, user_id):
+        # Unlike expand_artist_source (which skips), re-dropping an album queues it
+        # again — the queue allows duplicates by design.
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        album = _mk_album(db)
+        _mk_track(db, album, "a", 1)
+        _mk_track(db, album, "b", 2)
+        svc.expand_album_tracks(db, user_id, str(b.id), source_album_id=str(album.id))
+        svc.expand_album_tracks(db, user_id, str(b.id), source_album_id=str(album.id))
+        assert len(_queue_track_ids(db, b.id)) == 4
+
+    def test_album_with_no_tracks_is_a_noop(self, db, svc, user_id):
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        album = _mk_album(db, "Unsynced")
+        assert svc.expand_album_tracks(
+            db, user_id, str(b.id), source_album_id=str(album.id)
+        ) == []
+        assert _queue_track_ids(db, b.id) == []
+
+    def test_unknown_album_raises(self, db, svc, user_id):
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        with pytest.raises(AlbumNotFoundError):
+            svc.expand_album_tracks(
+                db, user_id, str(b.id), source_album_id=str(uuid.uuid4())
+            )
+
+    def test_missing_bucket_raises(self, db, svc, user_id):
+        album = _mk_album(db)
+        with pytest.raises(BucketNotFoundError):
+            svc.expand_album_tracks(
+                db, user_id, str(uuid.uuid4()), source_album_id=str(album.id)
+            )
+
+    def test_rejected_on_an_artist_bucket(self, db, svc, user_id):
+        # Expansion produces playback rows, so it must clear the same type gate the
+        # single-row path clears.
+        b = svc.create_bucket(db, user_id, name="아티스트", type="artist")
+        album = _mk_album(db)
+        _mk_track(db, album, "a", 1)
+        with pytest.raises(BucketTypeError):
+            svc.expand_album_tracks(
+                db, user_id, str(b.id), source_album_id=str(album.id)
+            )
+
+    def test_works_on_a_general_bucket(self, db, svc, user_id):
+        # A General bucket accepts every kind (today's behaviour), so an album drop
+        # expands there too — the gate is on Artist/Playback buckets, not on this method.
+        b = svc.create_bucket(db, user_id, name="일반")
+        album = _mk_album(db)
+        _mk_track(db, album, "a", 1)
+        added = svc.expand_album_tracks(
+            db, user_id, str(b.id), source_album_id=str(album.id)
+        )
+        assert len(added) == 1
+
+
+class TestSystemBucketPublishGuard:
+    @pytest.mark.parametrize("kind", ["playback_queue", "spotify_library", "to_listen"])
+    def test_system_bucket_cannot_be_published(self, db, svc, user_id, kind):
+        b = ReviewBucket(user_id=user_id, name=kind, kind=kind, position=60)
+        db.add(b)
+        db.flush()
+        with pytest.raises(ValueError):
+            svc.update_bucket(db, user_id, str(b.id), is_public=True)
+
+
+class TestPlaybackBucketCreateGuard:
+    def test_user_cannot_create_a_playback_typed_bucket(self, db, svc, user_id):
+        # A user-minted type='playback' bucket would have kind='review': outside the
+        # singleton index and outside the delete guard. Rejected at the service.
+        with pytest.raises(ValueError):
+            svc.create_bucket(db, user_id, name="가짜 대기열", type="playback")
