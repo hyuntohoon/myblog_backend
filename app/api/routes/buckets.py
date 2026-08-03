@@ -30,6 +30,8 @@ from app.api.schemas import (
     SpotifyLibraryStateResponse,
     SpotifyLibrarySyncResponse,
     TrackBrief,
+    TrackExpansion,
+    TrackExpansionResponse,
     UpdateBucketItemRequest,
     UpdateBucketRequest,
 )
@@ -57,6 +59,7 @@ from app.services.bucket_service import (
     GrowPostNotFoundError,
     ItemNotFoundError,
     ReviewTargetNotFoundError,
+    SystemBucketError,
     TrackNotFoundError,
 )
 from app.services.enqueue import (
@@ -212,6 +215,12 @@ def list_buckets(
     genre_svc: GenreService = Depends(get_genre_service),
     member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
+    # FEAT-playback-bucket-player: the Playback Bucket is created lazily, here, on the member's
+    # first bucket-tree read — not by a migration backfill. Idempotent, and it must run BEFORE
+    # list_buckets so a first-time member gets the queue in the same response rather than only
+    # on their second load. Eligibility gates PLAYING, not EXISTING (T1), so there is no Spotify
+    # check here — every member gets the bucket.
+    svc.get_or_create_playback_bucket(db, member_id)
     roots = svc.list_buckets(db, member_id)
     # Batch the already_reviewed + research-status + genre-label lookups across every
     # album in the whole tree (one query each), then serialize roots recursively.
@@ -446,14 +455,25 @@ def update_bucket(
     return resp
 
 
-@router.delete("/{bucket_id}", status_code=204)
+@router.delete(
+    "/{bucket_id}",
+    status_code=204,
+    responses={409: {"description": "System bucket — cannot be deleted"}},
+)
 def delete_bucket(
     bucket_id: str,
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
     member_id: uuid.UUID = Depends(provisioned_member_id),
 ):
-    if not svc.delete_bucket(db, member_id, bucket_id):
+    try:
+        deleted = svc.delete_bucket(db, member_id, bucket_id)
+    except SystemBucketError as e:
+        # FEAT-playback-bucket-player Step 3: 409, not 403 — the caller DOES own the bucket
+        # (404 already covers "not yours"); the request conflicts with the bucket's
+        # system-owned state. Covers playback_queue / spotify_library / to_listen alike.
+        raise HTTPException(status_code=409, detail=str(e))
+    if not deleted:
         raise HTTPException(status_code=404, detail="Bucket not found")
     return Response(status_code=204)
 
@@ -523,7 +543,7 @@ def move_bucket(
 
 @router.post(
     "/{bucket_id}/items",
-    response_model=Union[BucketItemResponse, ArtistExpansionResponse],
+    response_model=Union[BucketItemResponse, ArtistExpansionResponse, TrackExpansionResponse],
     status_code=201,
     responses={409: {"description": "Item already in this bucket"}},
 )
@@ -573,6 +593,38 @@ def add_item(
                 added=[_artist_brief(a) for a in added],
                 skipped=[_artist_brief(a) for a in skipped],
             ),
+        )
+
+    # FEAT-playback-bucket-player: an ALBUM dropped on the Playback Bucket expands into its
+    # tracks, in album order — the same source-expansion idiom as the artist branch above (one
+    # POST /items, a source_* id, an expansion summary back), so it rides this existing route
+    # and needs no new API Gateway entry. The album row itself is never stored; the single-row
+    # album path into a playback bucket is a 400 from the service type gate.
+    if req.item_type == "playback" and req.source_album_id:
+        try:
+            tracks = svc.expand_album_tracks(
+                db,
+                member_id,
+                bucket_id,
+                source_album_id=req.source_album_id,
+                daily_cap=get_settings().BUCKET_ITEM_DAILY_CAP,
+            )
+        except BucketNotFoundError:
+            raise HTTPException(status_code=404, detail="Bucket not found")
+        except AlbumNotFoundError:
+            raise HTTPException(status_code=404, detail="Album not found")
+        except BucketTypeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except BucketItemRateLimitError:
+            raise HTTPException(
+                status_code=429,
+                detail="Daily bucket item limit reached — try again later",
+            )
+        # 200 on a no-op (an album whose tracks were never synced → nothing queued),
+        # 201 when rows were appended — the artist-expansion convention.
+        response.status_code = 201 if tracks else 200
+        return TrackExpansionResponse(
+            expansion=TrackExpansion(added=[_track_brief(t) for t in tracks]),
         )
 
     try:

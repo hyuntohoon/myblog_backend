@@ -73,6 +73,16 @@ class BucketTypeError(Exception):
     to 400. FEAT-my-buckit-artist (V32)."""
 
 
+class SystemBucketError(Exception):
+    """Raised when a write targets a SYSTEM-owned bucket in a way only user buckets allow —
+    today, deleting one. Route maps to 409. FEAT-playback-bucket-player Step 3.
+
+    Note this guard did not exist before: `delete_bucket` checked ownership only, so the two
+    pre-existing system buckets (spotify_library / to_listen) were deletable by their owner
+    even though nothing in the product offers that action. The playback queue made the gap
+    worth closing for all three kinds at once rather than for the new one alone."""
+
+
 class BucketRateLimitError(Exception):
     """Per-member daily bucket create cap hit. Route maps to 429."""
 
@@ -107,6 +117,19 @@ SPOTIFY_LIBRARY_BUCKET_NAME = "Spotify 라이브러리"
 # Server-side debounce: ignore a sync POST if one ran within this window (derived
 # from max(spotify_library_albums.last_synced_at)). ~30s per the interface spec.
 LIBRARY_SYNC_DEBOUNCE_SECONDS = 30
+
+# FEAT-playback-bucket-player (V51): the per-user Playback Bucket — the system-owned bucket
+# whose ordered item list IS the playback queue. `kind` marks it system-owned (the free-TEXT
+# role axis, matching spotify_library); `type` is the third value of the closed discriminator
+# enum (ck_review_buckets_type), so the type gate can reject non-queue drops.
+PLAYBACK_BUCKET_KIND = "playback_queue"
+PLAYBACK_BUCKET_TYPE = "playback"
+PLAYBACK_BUCKET_NAME = "재생 대기열"
+
+# Every SYSTEM-owned bucket kind. These are seeded by the server, not by create_bucket, and
+# the product offers no delete action for any of them — see SystemBucketError for why the
+# guard covers all three rather than only the new one.
+SYSTEM_BUCKET_KINDS = ("playback_queue", "spotify_library", "to_listen")
 
 
 class BucketService:
@@ -333,8 +356,15 @@ class BucketService:
             raise ValueError("name required")
         # FEAT-my-buckit-artist (V32): the bucket-level type discriminator. create_bucket only
         # ever mints user buckets (kind defaults 'review'); system buckets (spotify_library /
-        # to_listen) are seeded elsewhere and stay 'general'. Guard the enum here for direct
+        # to_listen / playback_queue) are seeded elsewhere. Guard the enum here for direct
         # callers (the request Literal already gates the route).
+        #
+        # FEAT-playback-bucket-player: 'playback' is a valid DB value (V51 widened
+        # ck_review_buckets_type) but is deliberately NOT accepted from user input — the queue
+        # is minted only by get_or_create_playback_bucket, which also sets kind='playback_queue'
+        # and is covered by the per-user unique index. Letting a user create one here would
+        # produce a type='playback' bucket with kind='review': a queue the singleton index does
+        # not constrain and the delete guard does not protect.
         if type not in ("general", "artist"):
             raise ValueError("type must be general|artist")
         if daily_cap is not None:
@@ -416,11 +446,14 @@ class BucketService:
             # the route maps it to 409.
             bucket.is_done = bool(is_done)
         if is_public is not None:
-            # FEAT-public-bucket-multiuser Scope A: opt-in public visibility. The
-            # spotify_library bucket must never be published — guard here so a direct
-            # PATCH can't expose the owner's Spotify library through the public viewer.
-            if bool(is_public) and bucket.kind == "spotify_library":
-                raise ValueError("the Spotify library bucket cannot be made public")
+            # FEAT-public-bucket-multiuser Scope A: opt-in public visibility. A SYSTEM bucket
+            # must never be published — guard here so a direct PATCH can't expose the owner's
+            # Spotify library, to-listen queue, or now-playing queue through the public viewer.
+            # (list_public_buckets also filters kind='review', so this is the second of two
+            # gates; it was previously spotify_library-only — same per-kind drift as the
+            # missing delete guard, fixed in the same pass.)
+            if bool(is_public) and getattr(bucket, "kind", None) in SYSTEM_BUCKET_KINDS:
+                raise ValueError("a system bucket cannot be made public")
             bucket.is_public = bool(is_public)
         db.commit()
         db.refresh(bucket)
@@ -465,6 +498,15 @@ class BucketService:
         bucket = self.get_bucket(db, bucket_id, user_id)
         if bucket is None:
             return False
+        # FEAT-playback-bucket-player Step 3 — pattern fix, not a new feature. System-owned
+        # buckets are seeded by the server and have no delete affordance in the product; the
+        # ownership check above was the ONLY gate, so a direct DELETE removed them (and
+        # cascaded their items) for all three kinds. Rejected here so the guard cannot drift
+        # per-kind. getattr default keeps partial unit-test mocks (no `kind`) deletable.
+        if getattr(bucket, "kind", None) in SYSTEM_BUCKET_KINDS:
+            raise SystemBucketError(
+                f"'{bucket.kind}' is a system bucket and cannot be deleted"
+            )
         db.delete(bucket)  # items cascade (FK ondelete + relationship cascade)
         db.commit()
         return True
@@ -514,12 +556,7 @@ class BucketService:
         if bucket is None:
             raise BucketNotFoundError(bucket_id)
 
-        # getattr default mirrors the serializer's defensive item_type read — a partial test
-        # mock / pre-V32 row reads as 'general' (no gate); the real ORM column is NOT NULL.
-        if getattr(bucket, "type", "general") == "artist" and item_type != "artist":
-            raise BucketTypeError(
-                "this bucket only holds artists; non-artist items are rejected"
-            )
+        self._assert_item_type_allowed(bucket, item_type)
 
         if item_type == "album":
             return self._add_album_item(
@@ -543,6 +580,36 @@ class BucketService:
             snapshot=snapshot,
             daily_cap=daily_cap,
         )
+
+    @staticmethod
+    def _assert_item_type_allowed(bucket: ReviewBucket, item_type: str) -> None:
+        """The bucket-`type` membership gate, in ONE place so the single-row path and the
+        source-expansion paths cannot drift apart.
+
+        - ``artist`` bucket → artist rows only (FEAT-my-buckit-artist V32).
+        - ``playback`` bucket → playback rows only (FEAT-playback-bucket-player). An artist
+          drop is rejected outright; an ALBUM drop is rejected on this single-row path
+          specifically because albums enter the queue through :meth:`expand_album_tracks`,
+          which produces playback rows and therefore passes this same gate.
+        - ``general`` bucket → every kind, unchanged.
+
+        getattr default mirrors the serializer's defensive item_type read — a partial test
+        mock / pre-V32 row reads as 'general' (no gate); the real ORM column is NOT NULL.
+        """
+        bucket_type = getattr(bucket, "type", "general")
+        if bucket_type == "artist" and item_type != "artist":
+            raise BucketTypeError(
+                "this bucket only holds artists; non-artist items are rejected"
+            )
+        if bucket_type == PLAYBACK_BUCKET_TYPE and item_type != "playback":
+            if item_type == "album":
+                raise BucketTypeError(
+                    "the playback queue holds tracks; drop an album to expand it into its "
+                    "tracks (source_album_id) instead of adding the album itself"
+                )
+            raise BucketTypeError(
+                "the playback queue only holds tracks; other items are rejected"
+            )
 
     @staticmethod
     def _check_item_rate_limit(
@@ -836,6 +903,91 @@ class BucketService:
         db.commit()
         return added, skipped
 
+    def expand_album_tracks(
+        self,
+        db: Session,
+        user_id: uuid.UUID,
+        bucket_id: str,
+        *,
+        source_album_id: str,
+        daily_cap: Optional[int] = None,
+    ) -> List[Track]:
+        """FEAT-playback-bucket-player Step 3: expand an album into its tracks, appended to the
+        bucket as ``item_type='playback'`` rows **in album order**. Returns the tracks added, in
+        the order they were appended. The SOURCE album row is never stored — dropping an album
+        on the queue enqueues its tracks, not the album.
+
+        Sibling of :meth:`expand_artist_source`, not a replacement: same source-expansion idiom
+        (one POST /items call, the source is a `source_*` id, the response is an expansion
+        summary), different produced kind. Unlike the artist expansion there is NO dedup and so
+        no `skipped` list — the queue deliberately allows duplicates (FEAT-pocket-buckit D8: no
+        partial unique on `item_type='playback'`), because re-queueing a track you already
+        queued is a legitimate act, not a mistake to swallow.
+
+        **Ordering.** ``tracks.track_no ASC NULLS LAST``, then ``created_at``/``id`` as a stable
+        tiebreak so the append order is deterministic rather than whatever the planner returns.
+        `track_no` is Spotify's `track_number`, written by the worker sync and by the music
+        service's track repo, and `track_no ASC NULLS LAST` is already the canonical album-track
+        order elsewhere in the system (myblog_music `track_repo.py`) — this reuses it rather
+        than inventing a second one.
+
+        **Known limit, stated rather than hidden**: the schema has NO disc-number column
+        (`tracks` carries `track_no` only). Spotify's `track_number` restarts at 1 on each disc,
+        so a multi-disc album interleaves its discs here. That is a pre-existing modelling gap
+        shared by every album-track read in the product, not something this method introduces;
+        fixing it means a `disc_no` column and a backfill, which is out of this step's scope.
+        """
+        bucket = self.get_bucket(db, bucket_id, user_id)
+        if bucket is None:
+            raise BucketNotFoundError(bucket_id)
+        # Produces playback rows, so it must clear the same gate the single-row path clears —
+        # an album dropped on an Artist bucket is still rejected.
+        self._assert_item_type_allowed(bucket, "playback")
+
+        album = db.query(Album).filter(Album.id == source_album_id).first()
+        if album is None:
+            raise AlbumNotFoundError(source_album_id)
+
+        tracks = (
+            db.query(Track)
+            # The route serializes each returned track through _track_brief, which reads
+            # track.artists — eager-load it so a 20-track album is one extra SELECT, not 20.
+            .options(selectinload(Track.artists))
+            .filter(Track.album_id == album.id)
+            .order_by(
+                Track.track_no.asc().nullslast(),
+                Track.created_at.asc(),
+                Track.id.asc(),
+            )
+            .all()
+        )
+        if not tracks:
+            # A catalog album whose tracks were never synced. Nothing to queue; the route
+            # answers 200 (no-op) exactly as it does for a zero-artist VA compilation.
+            return []
+
+        self._check_item_rate_limit(db, user_id, daily_cap, rows_to_create=len(tracks))
+
+        next_pos = db.execute(
+            select(func.coalesce(func.max(ReviewBucketItem.position), -1)).where(
+                ReviewBucketItem.bucket_id == bucket.id
+            )
+        ).scalar_one()
+        next_pos = int(next_pos) + 1
+
+        for track in tracks:
+            db.add(
+                ReviewBucketItem(
+                    bucket_id=bucket.id,
+                    item_type="playback",
+                    track_id=track.id,
+                    position=next_pos,
+                )
+            )
+            next_pos += 1
+        db.commit()
+        return tracks
+
     @staticmethod
     def _credited_artists(source: Album | Track) -> List[Artist]:
         """Return a source's distinct catalog credits, excluding the VA sentinel.
@@ -1097,6 +1249,62 @@ class BucketService:
                 item.position = pos
 
         db.commit()
+
+    # ── the Playback Bucket (FEAT-playback-bucket-player) ─────────────────────────
+
+    def get_or_create_playback_bucket(
+        self, db: Session, user_id: uuid.UUID
+    ) -> ReviewBucket:
+        """Return the member's Playback Bucket, creating it (as a root column appended after
+        their existing buckets) if it does not exist yet. Idempotent; safe to call on every
+        bucket-tree read, which is exactly how it gets created — lazily, on first read, rather
+        than by a migration backfill (Step 2 rationale).
+
+        Verbatim the :meth:`get_or_create_spotify_library_bucket` idiom, including the
+        IntegrityError race arm: two concurrent reads can both pass the ``.first()`` guard, and
+        ``idx_review_buckets_single_playback`` (UNIQUE (user_id) WHERE kind='playback_queue',
+        V51) rejects the loser, which then returns the winner's row.
+
+        Eligibility gates PLAYING, never EXISTING (T1) — so no Spotify capability check happens
+        here. A member who loses Spotify permission keeps the bucket and every queued row.
+        """
+        bucket = (
+            db.query(ReviewBucket)
+            .filter(
+                ReviewBucket.kind == PLAYBACK_BUCKET_KIND,
+                ReviewBucket.user_id == user_id,
+            )
+            .first()
+        )
+        if bucket is not None:
+            return bucket
+        next_pos = db.execute(
+            select(func.coalesce(func.max(ReviewBucket.position), -1)).where(
+                ReviewBucket.user_id == user_id
+            )
+        ).scalar_one()
+        bucket = ReviewBucket(
+            user_id=user_id,
+            name=PLAYBACK_BUCKET_NAME,
+            kind=PLAYBACK_BUCKET_KIND,
+            type=PLAYBACK_BUCKET_TYPE,
+            position=int(next_pos) + 1,
+        )
+        db.add(bucket)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            return (
+                db.query(ReviewBucket)
+                .filter(
+                    ReviewBucket.kind == PLAYBACK_BUCKET_KIND,
+                    ReviewBucket.user_id == user_id,
+                )
+                .one()
+            )
+        db.refresh(bucket)
+        return bucket
 
     # ── Spotify Library sync (FEAT-spotify-library-sync) ──────────────────────────
     # The single kind='spotify_library' bucket mirrors the owner's Spotify saved
