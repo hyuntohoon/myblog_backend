@@ -507,9 +507,54 @@ class BucketService:
             raise SystemBucketError(
                 f"'{bucket.kind}' is a system bucket and cannot be deleted"
             )
+        # BUG-playback-system-bucket-cascade — the check above is NOT sufficient on its own.
+        # `review_buckets.parent_id` is ON DELETE CASCADE, so deleting a user bucket takes its
+        # whole subtree with it. Checking only the target's own kind therefore left the guard
+        # trivially bypassable: nest a system bucket under a user crate (which the product
+        # allows on purpose — system buckets are non-deletable but fully position-movable,
+        # RFC T1) and delete that crate. Measured before the fix: direct DELETE → 409, but
+        # nest-then-delete-parent → 204, and the Playback Bucket came back auto-created with a
+        # new id and an empty queue. The realistic failure is not abuse — it is a member losing
+        # a whole queue or Library to an ordinary 삭제 they thought applied to one crate.
+        #
+        # Enforced by walking UP from each system bucket rather than down from the target: the
+        # user owns at most three, so this is ≤3 short ancestor walks and it reuses
+        # `_walk_ancestors` (the same primitive move_bucket's cycle guard uses) instead of
+        # introducing a second, drift-prone tree traversal.
+        blocked = self._system_bucket_in_subtree(db, user_id, bucket_id)
+        if blocked is not None:
+            raise SystemBucketError(
+                f"this bucket contains the system bucket '{blocked}'; move it out first"
+            )
         db.delete(bucket)  # items cascade (FK ondelete + relationship cascade)
         db.commit()
         return True
+
+    def _system_bucket_in_subtree(
+        self, db: Session, user_id: uuid.UUID, bucket_id: str
+    ) -> Optional[str]:
+        """The `kind` of a system bucket living under ``bucket_id`` (at any depth), or None.
+
+        Returns the kind rather than a bool so the 409 can name what is in the way — "move it
+        out first" is only actionable if the member knows which bucket to move.
+        """
+        system_buckets = (
+            db.query(ReviewBucket.id, ReviewBucket.kind)
+            .filter(
+                ReviewBucket.user_id == user_id,
+                ReviewBucket.kind.in_(SYSTEM_BUCKET_KINDS),
+            )
+            .all()
+        )
+        target = str(bucket_id)
+        for sys_id, sys_kind in system_buckets:
+            if str(sys_id) == target:
+                # Defensive: the caller already rejected this, but a direct call must not
+                # report "no system bucket below" for a system bucket itself.
+                return sys_kind
+            if any(anc == target for anc in self._walk_ancestors(db, str(sys_id))):
+                return sys_kind
+        return None
 
     # ── item operations ─────────────────────────────────────────────────────────
 
