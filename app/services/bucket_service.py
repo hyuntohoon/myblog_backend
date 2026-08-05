@@ -602,6 +602,7 @@ class BucketService:
             raise BucketNotFoundError(bucket_id)
 
         self._assert_item_type_allowed(bucket, item_type)
+        self._assert_manual_add_allowed(bucket)
 
         if item_type == "album":
             return self._add_album_item(
@@ -654,6 +655,23 @@ class BucketService:
                 )
             raise BucketTypeError(
                 "the playback queue only holds tracks; other items are rejected"
+            )
+
+    @staticmethod
+    def _assert_manual_add_allowed(bucket: ReviewBucket) -> None:
+        """BUG-20 follow-up: the frontend's `isManualAddTarget()` (lib/buckets.ts) was the
+        ONLY thing stopping a manual add into the sync-owned `kind='spotify_library'` mirror
+        bucket — this service had no matching gate, so a direct API call bypassed it entirely
+        (`_assert_item_type_allowed` above keys on `bucket.type`, never `kind`). Mirrors the
+        frontend predicate exactly: `spotify_library` only, NOT the other two
+        `SYSTEM_BUCKET_KINDS` (`playback_queue` accepts manual queue-adds by design;
+        `to_listen` isn't add-restricted, only delete-protected). The worker's own sync writes
+        (library_sync_service.py) go straight to `review_bucket_items` via raw SQL, not this
+        method, so they are unaffected.
+        """
+        if getattr(bucket, "kind", None) == SPOTIFY_LIBRARY_BUCKET_KIND:
+            raise SystemBucketError(
+                "spotify_library is sync-owned and cannot receive a manual add"
             )
 
     @staticmethod
@@ -874,6 +892,9 @@ class BucketService:
         bucket = self.get_bucket(db, bucket_id, user_id)
         if bucket is None:
             raise BucketNotFoundError(bucket_id)
+        # Sibling gap to add_item's (BUG-20 follow-up): this expansion path had no kind check
+        # either, so a direct call could seed artist rows into the spotify_library mirror.
+        self._assert_manual_add_allowed(bucket)
         # Exactly one source. The request validator guarantees this; guard direct callers.
         if bool(source_album_id) == bool(source_track_id):
             raise ValueError("exactly one of source_album_id / source_track_id required")
@@ -988,6 +1009,9 @@ class BucketService:
         # Produces playback rows, so it must clear the same gate the single-row path clears —
         # an album dropped on an Artist bucket is still rejected.
         self._assert_item_type_allowed(bucket, "playback")
+        # Sibling gap to add_item's (BUG-20 follow-up): without this, a direct call could seed
+        # track rows into the spotify_library mirror via the album→tracks expansion path.
+        self._assert_manual_add_allowed(bucket)
 
         album = db.query(Album).filter(Album.id == source_album_id).first()
         if album is None:
@@ -1246,13 +1270,14 @@ class BucketService:
         """
         # Validate target buckets up front, capturing each one's type for the gate below.
         bucket_ids = [b["id"] for b in buckets]
-        bucket_type_by_id = {
-            str(bid): btype
-            for bid, btype in db.query(ReviewBucket.id, ReviewBucket.type)
+        bucket_rows = (
+            db.query(ReviewBucket.id, ReviewBucket.type, ReviewBucket.kind)
             .filter(ReviewBucket.id.in_(bucket_ids))
             .filter(ReviewBucket.user_id == user_id)
             .all()
-        }
+        )
+        bucket_type_by_id = {str(bid): btype for bid, btype, _ in bucket_rows}
+        bucket_kind_by_id = {str(bid): bkind for bid, _, bkind in bucket_rows}
         missing = [bid for bid in bucket_ids if str(bid) not in bucket_type_by_id]
         if missing:
             raise BucketNotFoundError(missing[0])
@@ -1285,6 +1310,20 @@ class BucketService:
                 if item.item_type != "artist":
                     raise BucketTypeError(
                         "this bucket only holds artists; non-artist items are rejected"
+                    )
+
+        # Sibling gap to add_item's (BUG-20 follow-up): a drag-driven cross-bucket move is a
+        # second "add" path this guard must also cover — a reorder call can relocate a foreign
+        # item into spotify_library just as easily as add_item could. Items already resident
+        # there (being reordered in place, not moved in) are unaffected.
+        for b in buckets:
+            if bucket_kind_by_id.get(str(b["id"])) != SPOTIFY_LIBRARY_BUCKET_KIND:
+                continue
+            for item_id in b.get("item_ids", []):
+                item = items_by_id[str(item_id)]
+                if str(item.bucket_id) != str(b["id"]):
+                    raise SystemBucketError(
+                        "spotify_library is sync-owned and cannot receive a manual add"
                     )
 
         for b in buckets:
