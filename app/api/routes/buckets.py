@@ -499,6 +499,8 @@ def reorder(
         # FEAT-my-buckit-artist (V32): a cross-bucket move of a non-artist item into an Artist
         # bucket is rejected (the move path's artist-only gate).
         raise HTTPException(status_code=400, detail=str(e))
+    except SystemBucketError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     # Auto-research: dragging an album INTO an 'all'-mode bucket persists through
     # this cross-bucket reorder (bucket_id reassigned), which add_item's enqueue
     # never sees — so a moved-in album would otherwise never get a research row.
@@ -587,6 +589,10 @@ def add_item(
                 status_code=429,
                 detail="Daily bucket item limit reached — try again later",
             )
+        except SystemBucketError as e:
+            # Same convention as delete_bucket: 409, the caller owns the bucket but the
+            # request conflicts with its system-owned (sync-only) state.
+            raise HTTPException(status_code=409, detail=str(e))
         response.status_code = 201 if added else 200
         return ArtistExpansionResponse(
             expansion=BucketItemExpansion(
@@ -620,6 +626,8 @@ def add_item(
                 status_code=429,
                 detail="Daily bucket item limit reached — try again later",
             )
+        except SystemBucketError as e:
+            raise HTTPException(status_code=409, detail=str(e))
         # 200 on a no-op (an album whose tracks were never synced → nothing queued),
         # 201 when rows were appended — the artist-expansion convention.
         response.status_code = 201 if tracks else 200
@@ -660,6 +668,8 @@ def add_item(
             status_code=429,
             detail="Daily bucket item limit reached — try again later",
         )
+    except SystemBucketError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     # Album-only enrichments — skip for non-album rows (album_id NULL) so the UUID-typed
     # .in_() lookups never receive a "None" string (the same guard as list_buckets/update_item).
     album_ids = [str(item.album_id)] if item.album_id is not None else []

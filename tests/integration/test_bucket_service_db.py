@@ -916,6 +916,91 @@ class TestSystemBucketCascadeGuard:
         assert svc.delete_bucket(db, user_id, str(parent.id)) is True
 
 
+class TestSpotifyLibraryManualAddGuard:
+    """External-review follow-up to BUG-20 (front #355): `isManualAddTarget()` was the ONLY
+    thing stopping a manual add into the sync-owned `kind='spotify_library'` bucket —
+    `_assert_item_type_allowed` keys on `bucket.type`, never `kind`, so a direct API call
+    bypassed it entirely on every one of add_item's four sibling entry points. All four
+    covered here; before this guard, all four succeeded.
+    """
+
+    def _spotify_library_bucket(self, db, user_id):
+        b = ReviewBucket(
+            user_id=user_id, name="spotify_library", kind="spotify_library", position=50
+        )
+        db.add(b)
+        db.flush()
+        return b
+
+    def test_add_item_rejected(self, db, svc, album_ids, user_id):
+        b = self._spotify_library_bucket(db, user_id)
+        with pytest.raises(SystemBucketError):
+            svc.add_item(db, user_id, str(b.id), item_type="album", album_id=album_ids[0])
+        assert (
+            db.query(ReviewBucketItem).filter(ReviewBucketItem.bucket_id == b.id).count() == 0
+        )
+
+    def test_ordinary_bucket_add_still_works(self, db, svc, album_ids, user_id):
+        # The guard must be spotify_library-specific, not a blanket regression.
+        b = svc.create_bucket(db, user_id, name="일반")
+        item = svc.add_item(db, user_id, str(b.id), album_id=album_ids[0])
+        assert item is not None
+
+    def test_playback_queue_add_still_works(self, db, svc, user_id):
+        # SYSTEM_BUCKET_KINDS has three members; only spotify_library is add-restricted —
+        # playback_queue accepts manual queue-adds by product design (drag-to-queue).
+        album = _mk_album(db)
+        t = _mk_track(db, album, "q", 1)
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        item = svc.add_item(db, user_id, str(b.id), item_type="playback", track_id=str(t.id))
+        assert item is not None
+
+    def test_expand_artist_source_rejected(self, db, svc, user_id):
+        b = self._spotify_library_bucket(db, user_id)
+        artist = _mk_artist(db, "Blocked")
+        album = _mk_album_with_artists(db, [artist])
+        with pytest.raises(SystemBucketError):
+            svc.expand_artist_source(db, user_id, str(b.id), source_album_id=str(album.id))
+        assert (
+            db.query(ReviewBucketItem).filter(ReviewBucketItem.bucket_id == b.id).count() == 0
+        )
+
+    def test_expand_album_tracks_rejected(self, db, svc, user_id):
+        b = self._spotify_library_bucket(db, user_id)
+        album = _mk_album(db)
+        _mk_track(db, album, "t", 1)
+        with pytest.raises(SystemBucketError):
+            svc.expand_album_tracks(db, user_id, str(b.id), source_album_id=str(album.id))
+        assert (
+            db.query(ReviewBucketItem).filter(ReviewBucketItem.bucket_id == b.id).count() == 0
+        )
+
+    def test_reorder_move_in_rejected(self, db, svc, album_ids, user_id):
+        # The drag/move path is a second "add" this guard must also cover.
+        src = svc.create_bucket(db, user_id, name="from")
+        dst = self._spotify_library_bucket(db, user_id)
+        item = svc.add_item(db, user_id, str(src.id), album_id=album_ids[0])
+        with pytest.raises(SystemBucketError):
+            svc.reorder(db, user_id, [{"id": str(dst.id), "item_ids": [str(item.id)]}])
+        # Rejected atomically — the item never actually moved.
+        assert str(db.get(ReviewBucketItem, item.id).bucket_id) == str(src.id)
+
+    def test_reorder_within_spotify_library_still_allowed(self, db, svc, album_ids, user_id):
+        # Reordering items ALREADY resident there (not a move-in) must not false-positive.
+        b = self._spotify_library_bucket(db, user_id)
+        i0 = ReviewBucketItem(
+            bucket_id=b.id, item_type="album", album_id=album_ids[0], position=0
+        )
+        i1 = ReviewBucketItem(
+            bucket_id=b.id, item_type="album", album_id=album_ids[1], position=1
+        )
+        db.add_all([i0, i1])
+        db.flush()
+        svc.reorder(db, user_id, [{"id": str(b.id), "item_ids": [str(i1.id), str(i0.id)]}])
+        assert db.get(ReviewBucketItem, i0.id).position == 1
+        assert db.get(ReviewBucketItem, i1.id).position == 0
+
+
 class TestPlaybackTypeGate:
     def test_album_row_rejected_on_the_single_row_path(self, db, svc, album_ids, user_id):
         b = svc.get_or_create_playback_bucket(db, user_id)
