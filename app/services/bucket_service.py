@@ -805,15 +805,33 @@ class BucketService:
         if item_type in ("track", "playback"):
             if not track_id:
                 raise ValueError("track_id required")
-            if db.query(Track).filter(Track.id == track_id).first() is None:
+            # ARCH-entity-interaction-v2 Step 5 — a source that only knows the Spotify
+            # track id (e.g. the liked-tracks mirror, which has no internal Track row
+            # reference) sends that instead of our UUID PK. Resolve either: try the PK
+            # first (the common case — every existing caller already had our id), fall
+            # back to spotify_id. A raw non-UUID string reaching `Track.id ==` used to
+            # be an unhandled DB type error (500) rather than the intended 404.
+            try:
+                track_uuid: Optional[uuid.UUID] = uuid.UUID(track_id)
+            except ValueError:
+                track_uuid = None
+            track = (
+                db.query(Track).filter(Track.id == track_uuid).first()
+                if track_uuid is not None
+                else None
+            )
+            if track is None:
+                track = db.query(Track).filter(Track.spotify_id == track_id).first()
+            if track is None:
                 raise TrackNotFoundError(track_id)
-            kwargs["track_id"] = track_id
+            resolved_track_id = track.id
+            kwargs["track_id"] = resolved_track_id
             # 'track' collections de-dupe (uq_..._track); 'playback' (queue) allows dups (D8).
             if item_type == "track" and any(
-                it.item_type == "track" and str(it.track_id) == str(track_id)
+                it.item_type == "track" and str(it.track_id) == str(resolved_track_id)
                 for it in existing
             ):
-                raise DuplicateItemError(track_id)
+                raise DuplicateItemError(resolved_track_id)
         elif item_type == "review":
             if not review_target_id:
                 raise ValueError("review_target_id required")
