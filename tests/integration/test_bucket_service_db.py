@@ -29,6 +29,7 @@ from app.services.bucket_service import (
     BucketTypeError,
     DuplicateItemError,
     SystemBucketError,
+    TrackNotFoundError,
 )
 from app.services.distribution import VARIOUS_ARTISTS
 from myblog_shared_db.models import (
@@ -1032,6 +1033,28 @@ class TestPlaybackTypeGate:
         svc.add_item(db, user_id, str(b.id), item_type="playback", track_id=str(trk.id))
         svc.add_item(db, user_id, str(b.id), item_type="playback", track_id=str(trk.id))
         assert len(_queue_track_ids(db, b.id)) == 2
+
+    def test_playback_row_accepts_spotify_track_id(self, db, svc, user_id):
+        # ARCH-entity-interaction-v2 Step 5 — a source with no internal Track row
+        # reference (the liked-tracks mirror) sends the Spotify id instead of our
+        # UUID PK. `Track.id ==` on a non-UUID string used to be an unhandled DB
+        # error (500); this must resolve via `Track.spotify_id` instead and store
+        # OUR id on the membership row.
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        album = _mk_album(db)
+        trk = _mk_track(db, album, "By Spotify Id", 1)
+        item = svc.add_item(
+            db, user_id, str(b.id), item_type="playback", track_id=trk.spotify_id
+        )
+        assert item.item_type == "playback"
+        assert str(item.track_id) == str(trk.id)
+
+    def test_unknown_track_id_raises_not_found_not_a_db_error(self, db, svc, user_id):
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        with pytest.raises(TrackNotFoundError):
+            svc.add_item(
+                db, user_id, str(b.id), item_type="playback", track_id="not-a-real-id"
+            )
 
 
 class TestExpandAlbumTracks:
