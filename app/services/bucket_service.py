@@ -1502,14 +1502,27 @@ class BucketService:
         )
 
     def get_spotify_library_state(
-        self, db: Session
+        self, db: Session, owner_id: uuid.UUID
     ) -> Tuple[Optional[ReviewBucket], Optional[datetime], List[SpotifyLibraryAlbum]]:
-        """Read the special bucket (if any), the last-synced timestamp, and the
-        spotify_library_albums rows for the GET /state endpoint. Pure read — the
-        bucket is NOT created here (only the POST sync get-or-creates it)."""
+        """Read the caller's spotify_library bucket (if any), the last-synced
+        timestamp, and the spotify_library_albums rows for the GET /state
+        endpoint. Pure read — the bucket is NOT created here (only the POST
+        sync get-or-creates it).
+
+        BUG-25: the bucket lookup used to omit the user_id filter that
+        get_or_create_spotify_library_bucket already applies a few lines above
+        — harmless today (Spotify sync writes are owner-only, so exactly one
+        bucket of this kind exists) but wrong once Phase 3b opens the sync lane
+        to other members. spotify_library_albums itself still has no user_id
+        column (BUG-25's deferred half — see plan.md), so `albums`/
+        `last_synced_at` stay a global read until that schema work lands.
+        """
         bucket = (
             db.query(ReviewBucket)
-            .filter(ReviewBucket.kind == SPOTIFY_LIBRARY_BUCKET_KIND)
+            .filter(
+                ReviewBucket.kind == SPOTIFY_LIBRARY_BUCKET_KIND,
+                ReviewBucket.user_id == owner_id,
+            )
             .first()
         )
         last_synced_at = self.library_last_synced_at(db)

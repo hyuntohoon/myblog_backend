@@ -301,19 +301,27 @@ def list_public_buckets(
 
 # ── Spotify Library sync (FEAT-spotify-library-sync) ────────────────────────────
 # The single kind='spotify_library' bucket mirrors the owner's Spotify saved albums.
-# State GET rides the edge_guard catch-all (no apigateway route); the sync POST is
-# Cognito-JWT (matching apigateway route added in infra/apigateway.tf). Declared with
-# literal /spotify-library/* paths (unambiguous vs the /{bucket_id} patterns below).
+# Both the state GET and the sync POST are Cognito-JWT, owner-only
+# (provisioned_owner_id), with matching apigateway routes in infra/apigateway.tf
+# (BUG-25 fixed the GET's missing auth + missing route). Declared with literal
+# /spotify-library/* paths (unambiguous vs the /{bucket_id} patterns below).
 
 
 @router.get("/spotify-library/state", response_model=SpotifyLibraryStateResponse)
 def spotify_library_state(
     db: Session = Depends(get_db),
     svc: BucketService = Depends(get_bucket_service),
+    owner_id: uuid.UUID = Depends(provisioned_owner_id),
 ):
+    # BUG-25: this GET had no auth dependency at all (unlike the sibling POST
+    # below), so it rode the unauthenticated api_get_proxy catch-all — anyone
+    # could read the owner's synced Spotify library state without logging in.
+    # Matches the POST's tier (provisioned_owner_id): the Spotify lane is
+    # owner-only until Phase 3b, same as get_or_create_spotify_library_bucket.
+    #
     # Pure read of the worker-written spotify_library_albums table (rule #9 — no
     # Spotify call). The bucket is NOT created here (only the sync POST get-or-creates).
-    bucket, last_synced_at, albums = svc.get_spotify_library_state(db)
+    bucket, last_synced_at, albums = svc.get_spotify_library_state(db, owner_id)
     conn = get_spotify_connection_status()
     return SpotifyLibraryStateResponse(
         bucket_id=str(bucket.id) if bucket is not None else None,
