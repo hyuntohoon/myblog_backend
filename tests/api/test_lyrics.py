@@ -98,12 +98,16 @@ class TestLyricsRoute:
 
 
 class TestLyricsOwnerGate:
-    """Owner-only since 2026-07-28 (RFC §6.9 O2).
+    """GET is member-legitimate again since 2026-08-09 (CHORE-lyrics-member-guard-reopen,
+    owner decision 2026-08-03) — it was briefly owner-only (2026-07-28, RFC §6.9 O2).
+    POST translation-request stays owner-only throughout, for a separate reason
+    (LLM cost/quota control), unaffected by this change.
 
     These have to flip ENV to prod and stub the verified claims: conftest forces
-    ENV=local, and BOTH require_cognito_token and require_owner bypass there — so
-    the whole suite stayed green when the gate was tightened, which is exactly why
-    the distinction needs its own tests rather than trusting the pass count.
+    ENV=local, and both require_cognito_token and require_owner bypass there — so
+    the whole suite stayed green when the read gate was tightened in 07-28, which
+    is exactly why the distinction needs its own tests rather than trusting the
+    pass count.
     """
 
     def _run(self, client, app, *, sub, path, method="get"):
@@ -131,15 +135,15 @@ class TestLyricsOwnerGate:
         app.dependency_overrides.clear()
         return resp, svc
 
-    def test_member_cannot_read_lyrics(self, client, app):
+    def test_member_can_read_lyrics(self, client, app):
         resp, svc = self._run(client, app, sub="member-sub-not-the-owner",
                               path=f"/api/lyrics/{_SPOTIFY_ID}")
-        assert resp.status_code == 403
-        svc.get_normalized.assert_not_called(), "the corpus must not be read for a non-owner"
+        assert resp.status_code == 200, "reopened 2026-08-09 — any signed-in member reads"
+        svc.get_normalized.assert_called_once()
 
     def test_owner_can_read_lyrics(self, client, app):
         resp, svc = self._run(client, app, sub=_OWNER_SUB, path=f"/api/lyrics/{_SPOTIFY_ID}")
-        assert resp.status_code == 200, "tightening must not lock the owner out"
+        assert resp.status_code == 200
         svc.get_normalized.assert_called_once()
 
     def test_member_cannot_queue_a_translation(self, client, app):
@@ -158,8 +162,11 @@ class TestLyricsOwnerGate:
         assert resp.status_code == 200
         svc.request_translation.assert_called_once()
 
-    def test_unset_owner_sub_fails_closed(self, client, app):
-        # Missing config must be 503, never a silent bypass (house rule).
+    def test_unset_owner_sub_fails_closed_for_translation_request(self, client, app):
+        # POST still gates on require_owner — missing config must be 503, never a
+        # silent bypass (house rule). GET no longer depends on OWNER_SUB at all
+        # (see test_get_lyrics_ignores_unset_owner_sub below), so this only pins
+        # the still-owner-gated route.
         import app.core.auth as auth_module
 
         svc = MagicMock()
@@ -170,9 +177,28 @@ class TestLyricsOwnerGate:
         fake.OWNER_SUB = ""
         with patch.object(auth_module, "settings", fake):
             app.dependency_overrides[auth_module.require_cognito_token] = lambda: {"sub": _OWNER_SUB}
-            resp = client.get(f"/api/lyrics/{_SPOTIFY_ID}")
+            resp = client.post(f"/api/lyrics/{_SPOTIFY_ID}/translation-request")
         assert resp.status_code == 503
-        svc.get_normalized.assert_not_called()
+        svc.request_translation.assert_not_called()
+
+    def test_get_lyrics_ignores_unset_owner_sub(self, client, app):
+        # GET dropped require_owner entirely — an unset OWNER_SUB must not block a
+        # member's read (it would if the route still resolved through require_owner).
+        import app.core.auth as auth_module
+
+        svc = MagicMock()
+        svc.get_normalized.return_value = LyricsResponse(availability="unavailable")
+        _override(app, svc)
+        _override_db(app)
+        fake = MagicMock()
+        fake.ENV = "prod"
+        fake.OWNER_SUB = ""
+        with patch.object(auth_module, "settings", fake):
+            app.dependency_overrides[auth_module.require_cognito_token] = \
+                lambda: {"sub": "member-sub-not-the-owner"}
+            resp = client.get(f"/api/lyrics/{_SPOTIFY_ID}")
+        assert resp.status_code == 200
+        svc.get_normalized.assert_called_once()
         app.dependency_overrides.clear()
 
 
@@ -244,8 +270,9 @@ class TestLyricsPrivacyGate:
 
         lyric_schemas = {n for n in spec["components"]["schemas"] if "lyric" in n.lower()}
         # LyricsAnnotation (FEAT-lyrics-annotations) carries Genius commentary keyed to
-        # lyric positions — same owner-only bar, so it joins the inventory and therefore
-        # the leak check below.
+        # lyric positions — same authenticated-only bar (member-legitimate since
+        # 2026-08-09, never public), so it joins the inventory and therefore the leak
+        # check below.
         assert lyric_schemas == {
             "LyricsAnnotation", "LyricsResponse", "LyricsSegment", "LyricsTranslationInfo",
         }

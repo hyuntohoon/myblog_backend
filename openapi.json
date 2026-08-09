@@ -7500,7 +7500,7 @@
     },
     "/api/lyrics/{spotify_track_id}": {
       "get": {
-        "description": "Normalized lyric segments for one catalog track (authenticated users only).\n\nUnknown spotify_track_id \u2192 404 (no catalog track). A known track without viewable\nlyrics is NOT a 404 \u2014 it returns availability \"no_lyrics\" / \"unavailable\" so the\nviewer can render the correct empty state.",
+        "description": "Normalized lyric segments for one catalog track (any signed-in member).\n\nUnknown spotify_track_id \u2192 404 (no catalog track). A known track without viewable\nlyrics is NOT a 404 \u2014 it returns availability \"no_lyrics\" / \"unavailable\" so the\nviewer can render the correct empty state.",
         "operationId": "get_lyrics_api_lyrics__spotify_track_id__get",
         "parameters": [
           {
