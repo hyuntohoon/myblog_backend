@@ -94,8 +94,26 @@ class TestGetSpotifyLibraryState:
         svc.library_last_synced_at = MagicMock(return_value=last)
         svc.list_spotify_library_albums = MagicMock(return_value=rows)
 
-        got_bucket, got_last, got_rows = svc.get_spotify_library_state(db)
+        got_bucket, got_last, got_rows = svc.get_spotify_library_state(db, OWNER_ID)
 
         assert got_bucket is bucket
         assert got_last is last
         assert got_rows is rows
+
+    def test_bucket_lookup_is_scoped_to_the_caller(self):
+        # BUG-25 regression: the bucket query must filter on the caller's
+        # owner_id, not just kind — a bare kind-only filter would hand back
+        # whichever spotify_library bucket happens to be .first(), which is
+        # exactly the "no scoping" bug this fix closes.
+        svc = BucketService()
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+        svc.library_last_synced_at = MagicMock(return_value=None)
+        svc.list_spotify_library_albums = MagicMock(return_value=[])
+
+        svc.get_spotify_library_state(db, OWNER_ID)
+
+        filter_args = db.query.return_value.filter.call_args.args
+        assert len(filter_args) == 2, (
+            "expected both a kind filter and a user_id filter on the bucket lookup"
+        )

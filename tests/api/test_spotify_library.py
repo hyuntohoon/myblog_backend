@@ -178,24 +178,16 @@ class TestSpotifyLibraryState:
         assert body["albums"] == []
         app.dependency_overrides.clear()
 
-    def test_state_does_not_require_jwt(self, client, app):
-        # GET state rides edge_guard (catch-all), not the Cognito authorizer — it
-        # must NOT 401 even in prod ENV (edge_guard is bypassed in local tests).
+    def test_state_requires_jwt_in_prod(self, client):
+        # BUG-25 regression: this GET used to have no auth dependency at all and
+        # rode the unauthenticated edge_guard catch-all. It now requires the same
+        # owner-tier JWT as the sibling POST (test_requires_jwt_in_prod above) —
+        # must 401 with no Authorization header in prod ENV.
         import app.core.auth as auth_module
 
-        svc = MagicMock()
-        svc.get_spotify_library_state.return_value = (None, None, [])
-        _override(app, svc)
-
         with patch.object(auth_module, "settings", _prod_settings()):
-            with self._patch_conn(_conn_status(connected=False)):
-                with patch(
-                    "app.api.routes.buckets.get_settings",
-                    return_value=MagicMock(SPOTIFY_LIBRARY_WRITES_ENABLED=False),
-                ):
-                    resp = client.get("/api/buckets/spotify-library/state")
-        assert resp.status_code == 200
-        app.dependency_overrides.clear()
+            resp = client.get("/api/buckets/spotify-library/state")
+        assert resp.status_code == 401
 
 
 class TestBucketKindField:
