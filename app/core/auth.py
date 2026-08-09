@@ -140,13 +140,16 @@ def require_owner(
     longer implies the owner. Single-owner routes — editorial authoring/publish,
     genre taxonomy, and the owner's buckets/library/playback (none per-user scoped
     until Phase 2/3) — must additionally verify identity. Member-legitimate routes
-    (`/api/me`, music search) keep plain `require_cognito_token`.
+    (`/api/me`, music search, `GET /api/lyrics/{id}`) keep plain
+    `require_cognito_token`.
 
-    **`/api/lyrics` moved out of that member-legitimate list on 2026-07-28.** It was
-    listed here when it served lyric text alone; it now also serves the Genius
-    annotation store, and `track_lyrics` is documented owner-only research data
-    (`models.py`). Leaving this sentence unedited would have made the classification
-    read as current while the route said otherwise.
+    **`/api/lyrics` left this list 2026-07-28, rejoined it 2026-08-09**
+    (`CHORE-lyrics-member-guard-reopen`, owner decision 2026-08-03). The
+    07-28 tightening reasoned from the Genius annotation store the route now
+    also serves; the owner reverted that call. `POST
+    /api/lyrics/{id}/translation-request` still uses `require_owner` — a
+    separate, still-standing reason (LLM cost/quota control), not a leftover
+    of this one.
 
     Fail closed: local/dev keeps the `require_cognito_token` bypass (claims `{}`) so
     local admin work is unblocked; in prod an unset `OWNER_SUB` is a
