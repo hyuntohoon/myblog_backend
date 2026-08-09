@@ -5470,6 +5470,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Spotify Library State",
         "tags": [
           "buckets"
