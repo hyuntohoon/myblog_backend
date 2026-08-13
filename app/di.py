@@ -87,6 +87,12 @@ def get_rating_service():
     return RatingService()
 
 
+def get_planned_rating_service():
+    from app.services.planned_rating_service import PlannedRatingService
+
+    return PlannedRatingService()
+
+
 _metrics_repo: MetricsRepository = SqlMetricsRepository()
 
 
