@@ -1383,6 +1383,27 @@ class ReviewCandidateListResponse(BaseModel):
     candidates: List[ReviewCandidateResponse] = Field(default_factory=list)
 
 
+class PlannedRatingResponse(BaseModel):
+    """One row of the caller's 평가 예정 ("plan to rate") list.
+
+    Strictly separate from ReviewCandidateResponse (평론 쓸 것): a planned
+    rating carries no rating/comment fields at all — its existence is the
+    entire fact. Album context is carried the same way (a planned album may
+    have no bucket entry and no rating row), so the join shape matches.
+    """
+
+    album_id: str
+    album_title: str
+    album_cover_url: Optional[str] = None
+    artist_id: Optional[str] = None
+    artist_name: Optional[str] = None
+    created_at: datetime
+
+
+class PlannedRatingListResponse(BaseModel):
+    planned: List[PlannedRatingResponse] = Field(default_factory=list)
+
+
 class MemberRatingResponse(BaseModel):
     """One row in a member's public profile feed — the review plus enough album
     context to render + link without a second fetch."""

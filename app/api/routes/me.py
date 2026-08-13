@@ -20,6 +20,8 @@ from app.api.schemas import (
     MeResponse,
     MyAlbumStateListResponse,
     MyAlbumStateResponse,
+    PlannedRatingListResponse,
+    PlannedRatingResponse,
     ReviewCandidateListResponse,
     ReviewCandidateResponse,
     UpdateMeRequest,
@@ -27,10 +29,12 @@ from app.api.schemas import (
 from app.clients.cognito_client import CognitoDeleteError, delete_cognito_user
 from app.core.auth import require_cognito_token, require_owner
 from app.core.config import get_settings
+from app.core.ids import parse_uuid_or_404
 from app.db.session import get_db
-from app.di import get_rating_service, get_user_service
+from app.di import get_planned_rating_service, get_rating_service, get_user_service
 from app.services.artist_primary import primary_artist_map
-from app.services.rating_service import RatingService
+from app.services.planned_rating_service import PlannedRatingService
+from app.services.rating_service import AlbumNotFoundError, RatingService
 from app.services.user_service import (
     LOCAL_DEV_USER_ID,
     HandleTakenError,
@@ -179,6 +183,70 @@ def get_my_review_candidates(
             for r, a in rows
         ]
     )
+
+
+@router.get("/planned-ratings", response_model=PlannedRatingListResponse)
+def get_my_planned_ratings(
+    claims: Dict[str, Any] = Depends(require_cognito_token),
+    db: Session = Depends(get_db),
+    svc: PlannedRatingService = Depends(get_planned_rating_service),
+):
+    """The caller's 평가 예정 ("plan to rate") queue (FEAT-rating-smart-collections
+    Step 2, Option B). Strictly separate from /review-candidates — a planned
+    rating carries no rating/comment, only the fact that it was planned.
+
+    Private, JWT-only, scoped to the caller with no handle parameter — same
+    posture as /review-candidates. Rides the edge_guard GET catch-all like
+    every other authed GET in this file — no API Gateway route needed.
+    """
+    rows = svc.list_planned(db, _member_id(claims))
+    amap = primary_artist_map(db, [a.id for _, a in rows])
+    return PlannedRatingListResponse(
+        planned=[
+            PlannedRatingResponse(
+                album_id=str(r.album_id),
+                album_title=a.title,
+                album_cover_url=a.cover_url,
+                artist_id=(amap.get(str(a.id)) or (None, None))[0],
+                artist_name=(amap.get(str(a.id)) or (None, None))[1],
+                created_at=r.created_at,
+            )
+            for r, a in rows
+        ]
+    )
+
+
+@router.put("/planned-ratings/{album_id}", status_code=204)
+def mark_planned_rating(
+    album_id: str,
+    claims: Dict[str, Any] = Depends(require_cognito_token),
+    db: Session = Depends(get_db),
+    svc: PlannedRatingService = Depends(get_planned_rating_service),
+):
+    """Mark an album as 평가 예정 — the drop target for the 평가전 tile in
+    BucketBoard. Idempotent: marking twice is a no-op, not an error.
+    """
+    aid = parse_uuid_or_404(album_id)
+    try:
+        svc.mark(db, _member_id(claims), claims, aid)
+    except AlbumNotFoundError:
+        raise HTTPException(status_code=404, detail="Album not found")
+    return Response(status_code=204)
+
+
+@router.delete("/planned-ratings/{album_id}", status_code=204)
+def unmark_planned_rating(
+    album_id: str,
+    claims: Dict[str, Any] = Depends(require_cognito_token),
+    db: Session = Depends(get_db),
+    svc: PlannedRatingService = Depends(get_planned_rating_service),
+):
+    """Unmark. Idempotent: unmarking an album that was never planned (or
+    already unmarked) is also a no-op — 204 either way, no 404.
+    """
+    aid = parse_uuid_or_404(album_id)
+    svc.unmark(db, _member_id(claims), aid)
+    return Response(status_code=204)
 
 
 @router.patch("", response_model=MeResponse)

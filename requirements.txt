@@ -7,4 +7,4 @@ pydantic-settings>=2.0
 requests>=2.31
 python-jose[cryptography]>=3.3
 httpx>=0.27
-myblog-shared-db @ git+https://github.com/hyuntohoon/myblog_shared_db.git@76ebbc80dd42239156df33b9e0776d5dbaf7689b
+myblog-shared-db @ git+https://github.com/hyuntohoon/myblog_shared_db.git@029f8dbcb3ff4a12b6fb066364585d3faf92c8a5
