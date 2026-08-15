@@ -312,11 +312,14 @@ class AlbumBrief(BaseModel):
 
 class TrackBrief(BaseModel):
     """FEAT-pocket-buckit Step 6: minimal track display for a track/playback membership row,
-    so the front can render the track without a second resolve. The cover lives on the album
-    (album_id is provided → the front reuses its album-cover path)."""
+    so the front can render the track without a second resolve. ARCH-global-playback-experience
+    Step 3: a playback-kind row has no `.album` on the membership itself, so the front has
+    nothing to resolve a cover from — `cover_url` is resolved server-side off the track's own
+    `album_id` instead."""
     id: str
     title: str
     album_id: Optional[str] = None
+    cover_url: Optional[str] = None
     artist_names: List[str] = Field(default_factory=list)
     duration_sec: Optional[int] = None
 

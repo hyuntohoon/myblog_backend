@@ -1184,6 +1184,80 @@ class TestExpandAlbumTracks:
         assert len(added) == 1
 
 
+class TestListBucketsTrackCoverEagerLoad:
+    """ARCH-global-playback-experience Step 3: TrackBrief.cover_url is resolved off
+    track.album.cover_url (app/api/routes/buckets.py's `_track_brief`). list_buckets'
+    selectinload options must eager-load ReviewBucketItem.track → Track.album for this,
+    or a playback-row queue N+1s one SELECT per row the first time `_track_brief` reads
+    `.album` — a mocked service test can't see this, only a real session's query log can."""
+
+    def test_track_album_accessible_without_per_row_query(self, db, svc, user_id):
+        b = svc.get_or_create_playback_bucket(db, user_id)
+        album1 = _mk_album(db, "Cover A")
+        album1.cover_url = "https://cdn/cover-a.jpg"
+        album2 = _mk_album(db, "Cover B")
+        album2.cover_url = "https://cdn/cover-b.jpg"
+        db.flush()
+        t1 = _mk_track(db, album1, "one", 1)
+        t2 = _mk_track(db, album2, "two", 1)
+        svc.add_item(db, user_id, str(b.id), item_type="playback", track_id=str(t1.id))
+        svc.add_item(db, user_id, str(b.id), item_type="playback", track_id=str(t2.id))
+
+        from sqlalchemy import event
+
+        queries = []
+        listener = lambda conn, cursor, statement, *a: queries.append(statement)
+        event.listen(db.get_bind(), "before_cursor_execute", listener)
+        try:
+            roots = svc.list_buckets(db, user_id)
+            queue = next(r for r in roots if str(r.id) == str(b.id))
+            # The access itself must not add a query — it should already be populated.
+            n_before = len(queries)
+            covers = {str(it.track.id): it.track.album.cover_url for it in queue.items}
+        finally:
+            event.remove(db.get_bind(), "before_cursor_execute", listener)
+
+        assert covers == {
+            str(t1.id): "https://cdn/cover-a.jpg",
+            str(t2.id): "https://cdn/cover-b.jpg",
+        }
+        # Reading .track.album on every row after list_buckets() returned must not have
+        # issued any further SELECTs — proves the eager-load, not a lazy per-row fetch.
+        assert len(queries) == n_before
+
+    def test_extra_select_count_does_not_scale_with_row_count(self, db, svc, user_id):
+        # Compares the query count list_buckets() itself issues before vs. after adding
+        # more playback rows across distinct albums, on the SAME db session/bucket (the
+        # two calls below are cumulative — 1 row, then +4 more for 5 total, not two
+        # independent 1-row/4-row buckets) — a per-row lazy load would make the count
+        # grow with row count; the eager-loaded case does not.
+        from sqlalchemy import event
+
+        def _list_buckets_query_count(n_new_rows):
+            b = svc.get_or_create_playback_bucket(db, user_id)
+            for i in range(n_new_rows):
+                album = _mk_album(db, f"Scale {i}")
+                trk = _mk_track(db, album, f"t{i}", 1)
+                svc.add_item(
+                    db, user_id, str(b.id), item_type="playback", track_id=str(trk.id)
+                )
+            queries = []
+            listener = lambda conn, cursor, statement, *a: queries.append(statement)
+            event.listen(db.get_bind(), "before_cursor_execute", listener)
+            try:
+                roots = svc.list_buckets(db, user_id)
+                queue = next(r for r in roots if str(r.id) == str(b.id))
+                for it in queue.items:
+                    _ = it.track.album.cover_url if it.track else None
+            finally:
+                event.remove(db.get_bind(), "before_cursor_execute", listener)
+            return len(queries)
+
+        n_at_one_row = _list_buckets_query_count(1)
+        n_at_five_rows = _list_buckets_query_count(4)  # cumulative: 1 + 4 = 5 rows now
+        assert n_at_one_row == n_at_five_rows
+
+
 class TestSystemBucketPublishGuard:
     @pytest.mark.parametrize("kind", ["playback_queue", "spotify_library", "to_listen"])
     def test_system_bucket_cannot_be_published(self, db, svc, user_id, kind):

@@ -51,15 +51,21 @@ def _item(item_id="it-1", album_id="alb-1", position=0, status="candidate"):
     return it
 
 
-def _track(track_id="trk-1", title="어떤 트랙", album_id="alb-1"):
+def _track(track_id="trk-1", title="어떤 트랙", album_id="alb-1", cover_url="https://cdn/track-cover.jpg"):
     """A Track ORM-shaped mock for the TrackBrief serializer. artists=[] so artist_names
-    resolves to [] (a bare MagicMock .artists isn't iterable)."""
+    resolves to [] (a bare MagicMock .artists isn't iterable). `.album` is set explicitly
+    (not left to MagicMock auto-vivification) since ARCH-global-playback-experience Step 3's
+    cover_url reads track.album.cover_url — an unset `.album` would auto-vivify a MagicMock
+    whose `.cover_url` is itself a MagicMock, failing TrackBrief's Optional[str] validation
+    instead of exercising the real album/no-album path. Pass cover_url=None for a track with
+    no resolvable album (the rare case _track_brief null-guards against)."""
     t = MagicMock()
     t.id = track_id
     t.title = title
     t.album_id = album_id
     t.duration_sec = 215
     t.artists = []
+    t.album = None if cover_url is None else MagicMock(cover_url=cover_url)
     return t
 
 
@@ -222,6 +228,26 @@ class TestListBuckets:
         assert track_item["already_reviewed"] is False
         # reviewed/research/genre batch lookups must only have been asked about the album.
         assert svc.reviewed_album_ids.call_args[0][1] == ["alb-1"]
+        app.dependency_overrides.clear()
+
+    def test_list_surfaces_track_cover_url_for_playback_row(self, client, app):
+        # ARCH-global-playback-experience Step 3: a playback-kind row's `.album` is
+        # always null on the membership itself (queue rows key off track_id) — the
+        # cover has to come from TrackBrief.cover_url, resolved server-side off the
+        # track's own album, not from the (absent) item-level album payload.
+        svc = MagicMock()
+        svc.list_buckets.return_value = [
+            _bucket(items=[_nonalbum_item(item_type="playback", track_id="trk-q1")])
+        ]
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.get("/api/buckets")
+
+        assert resp.status_code == 200
+        item = resp.json()["buckets"][0]["items"][0]
+        assert item["album"] is None
+        assert item["track"]["cover_url"] == "https://cdn/track-cover.jpg"
         app.dependency_overrides.clear()
 
     def test_list_surfaces_high_confidence_genres_on_album(self, client, app):
@@ -722,6 +748,27 @@ class TestAddItem:
         assert body["item_type"] == "track"
         assert body["album_id"] is None
         assert body["track"]["id"] == "trk-1"
+        # ARCH-global-playback-experience Step 3: resolved off track.album.cover_url,
+        # not off the (null, for a track row) membership-level album.
+        assert body["track"]["cover_url"] == "https://cdn/track-cover.jpg"
+        app.dependency_overrides.clear()
+
+    def test_track_write_cover_url_null_when_track_has_no_album(self, client, app):
+        # Defensive null-safety: a track whose album can't be resolved must not 500 the
+        # write — cover_url degrades to null, matching the front's existing placeholder.
+        svc = MagicMock()
+        svc.add_item.return_value = _nonalbum_item(track_id="trk-noalbum")
+        svc.add_item.return_value.track = _track(track_id="trk-noalbum", cover_url=None)
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.post(
+            "/api/buckets/bk-1/items",
+            json={"track_id": "trk-noalbum", "item_type": "track"},
+        )
+
+        assert resp.status_code == 201
+        assert resp.json()["track"]["cover_url"] is None
         app.dependency_overrides.clear()
 
     def test_track_write_without_track_id_rejected_by_schema(self, client, app):

@@ -4510,7 +4510,7 @@
         "type": "object"
       },
       "TrackBrief": {
-        "description": "FEAT-pocket-buckit Step 6: minimal track display for a track/playback membership row,\nso the front can render the track without a second resolve. The cover lives on the album\n(album_id is provided \u2192 the front reuses its album-cover path).",
+        "description": "FEAT-pocket-buckit Step 6: minimal track display for a track/playback membership row,\nso the front can render the track without a second resolve. ARCH-global-playback-experience\nStep 3: a playback-kind row has no `.album` on the membership itself, so the front has\nnothing to resolve a cover from \u2014 `cover_url` is resolved server-side off the track's own\n`album_id` instead.",
         "properties": {
           "album_id": {
             "anyOf": [
@@ -4529,6 +4529,17 @@
             },
             "title": "Artist Names",
             "type": "array"
+          },
+          "cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Url"
           },
           "duration_sec": {
             "anyOf": [

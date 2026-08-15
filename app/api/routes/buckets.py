@@ -93,10 +93,12 @@ def _album_brief(album, genres: list[str] | None = None) -> AlbumBrief:
 
 
 def _track_brief(track) -> TrackBrief:
+    album = getattr(track, "album", None)
     return TrackBrief(
         id=str(track.id),
         title=track.title,
         album_id=str(track.album_id) if getattr(track, "album_id", None) is not None else None,
+        cover_url=album.cover_url if album is not None else None,
         artist_names=[a.name for a in track.artists],
         duration_sec=getattr(track, "duration_sec", None),
     )
