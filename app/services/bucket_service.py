@@ -196,6 +196,14 @@ class BucketService:
                 selectinload(ReviewBucket.items)
                 .selectinload(ReviewBucketItem.track)
                 .selectinload(Track.artists),
+                # ARCH-global-playback-experience Step 3: _track_brief() now reads
+                # track.album.cover_url — without this, a playback-row queue of N tracks
+                # would lazy-load N albums (one query per row) the first time GET
+                # /api/buckets serializes it. Same one-extra-SELECT idiom as Track.artists
+                # above, not a new N+1.
+                selectinload(ReviewBucket.items)
+                .selectinload(ReviewBucketItem.track)
+                .selectinload(Track.album),
                 # FEAT-my-buckit-artist (V32): artist briefs for artist-kind rows (one extra
                 # SELECT, same idiom — avoids a lazy item.artist per Artist Buckit member).
                 selectinload(ReviewBucket.items).selectinload(ReviewBucketItem.artist),
