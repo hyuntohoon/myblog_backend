@@ -1016,18 +1016,18 @@ class BucketService:
         partial unique on `item_type='playback'`), because re-queueing a track you already
         queued is a legitimate act, not a mistake to swallow.
 
-        **Ordering.** ``tracks.track_no ASC NULLS LAST``, then ``created_at``/``id`` as a stable
-        tiebreak so the append order is deterministic rather than whatever the planner returns.
-        `track_no` is Spotify's `track_number`, written by the worker sync and by the music
-        service's track repo, and `track_no ASC NULLS LAST` is already the canonical album-track
-        order elsewhere in the system (myblog_music `track_repo.py`) — this reuses it rather
-        than inventing a second one.
+        **Ordering.** ``tracks.disc_no ASC NULLS LAST, track_no ASC NULLS LAST``, then
+        `created_at`/`id` as a stable tiebreak so the append order is deterministic rather than
+        whatever the planner returns. `track_no` is Spotify's `track_number`, which restarts at 1
+        on each disc; `disc_no` (DATA-multidisc-track-order Step 3) disambiguates multi-disc
+        albums the same way as every other album-track read in the system (myblog_music
+        `track_repo.py`) — this reuses that ordering rather than inventing a second one.
 
-        **Known limit, stated rather than hidden**: the schema has NO disc-number column
-        (`tracks` carries `track_no` only). Spotify's `track_number` restarts at 1 on each disc,
-        so a multi-disc album interleaves its discs here. That is a pre-existing modelling gap
-        shared by every album-track read in the product, not something this method introduces;
-        fixing it means a `disc_no` column and a backfill, which is out of this step's scope.
+        **Known residual**: 2 of 78 backfilled albums (Queen's *Sheer Heart Attack (Deluxe
+        Remastered Version)* and *The Game (Deluxe Remastered Version)*) never resolved a
+        `disc_no` — their local `spotify_id`s are orphaned in Spotify's current catalog, not a
+        market-relinking case. Their tracks still tie-break on `created_at`/`id`, same as every
+        album before this RFC; not a regression.
         """
         bucket = self.get_bucket(db, bucket_id, user_id)
         if bucket is None:
@@ -1050,6 +1050,7 @@ class BucketService:
             .options(selectinload(Track.artists))
             .filter(Track.album_id == album.id)
             .order_by(
+                Track.disc_no.asc().nullslast(),
                 Track.track_no.asc().nullslast(),
                 Track.created_at.asc(),
                 Track.id.asc(),
