@@ -20,10 +20,10 @@ import logging
 import uuid
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
-from myblog_shared_db.models import Album, AlbumRating, User
+from myblog_shared_db.models import Album, AlbumRating, PendingRerating, User
 
 from app.services.user_service import UserService
 
@@ -138,6 +138,23 @@ class RatingService:
                 return None, user
             state.updated_at = func.now()
 
+        # FEAT-album-rerating: a landed star ENDS any open 재평가 for this album,
+        # in the same transaction that saves it. Both surfaces that show a 재평가
+        # (the profile 재평가 중 section, the 마이버킷 다시 들어볼 앨범 tile) are
+        # views of `pending_reratings`, so this one delete clears them — there is
+        # deliberately no per-surface cleanup call for anyone to forget.
+        #
+        # Guarded on the FINAL rating, not on `changes`: an edit that only flips
+        # `review_candidate` must not end a 재평가, and the early-return above
+        # already covers a change that clears the star (clearing is not completing).
+        if state.rating is not None:
+            db.execute(
+                delete(PendingRerating).where(
+                    PendingRerating.user_id == user.id,
+                    PendingRerating.album_id == album_id,
+                )
+            )
+
         db.commit()
         db.refresh(state)
         return state, user
@@ -158,7 +175,7 @@ class RatingService:
         )
         if state is None or state.rating is None:
             raise RatingNotFoundError(str(album_id))
-        self._strip_rating(db, state)
+        self.strip_rating(db, state)
 
     def delete_any(self, db: Session, review_id: uuid.UUID) -> None:
         """Owner moderation: delete any 평가 by id (require_owner). 404 if absent.
@@ -169,19 +186,30 @@ class RatingService:
         state = db.get(AlbumRating, review_id)
         if state is None or state.rating is None:
             raise RatingNotFoundError(str(review_id))
-        self._strip_rating(db, state)
+        self.strip_rating(db, state)
         logger.info("owner deleted rating %s", review_id)
 
     @staticmethod
-    def _strip_rating(db: Session, state: AlbumRating) -> None:
-        """Drop the public facet, keeping the row only if a private one remains."""
+    def strip_rating(db: Session, state: AlbumRating, *, commit: bool = True) -> None:
+        """Drop the public facet, keeping the row only if a private one remains.
+
+        Public (was `_strip_rating`) because ReratingService now needs this exact
+        rule: withdrawing a 평가 for a 재평가 is the same strip, and duplicating
+        the review_candidate branch there would be a second place to get it wrong.
+
+        `commit=False` lets a caller fold the strip into a wider transaction —
+        ReratingService.start must write its snapshot and this strip together, or
+        a crash between two commits loses the star with nothing left to restore
+        it from.
+        """
         if state.review_candidate:
             state.rating = None
             state.comment = None
             state.updated_at = func.now()
         else:
             db.delete(state)
-        db.commit()
+        if commit:
+            db.commit()
 
     # ── reads (public) ───────────────────────────────────────────────────────
 

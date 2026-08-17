@@ -1407,6 +1407,37 @@ class PlannedRatingListResponse(BaseModel):
     planned: List[PlannedRatingResponse] = Field(default_factory=list)
 
 
+class MemberReratingResponse(BaseModel):
+    """One open 재평가 on a member's PUBLIC profile (FEAT-album-rerating).
+
+    Public by owner decision: seeing that someone pulled an album back for
+    another listen is part of their profile. The withdrawn score is NOT here —
+    `previous_rating`/`previous_comment` live only on MyReratingResponse. A
+    withdrawn verdict must not be published; the whole feature rests on the star
+    being gone.
+    """
+
+    album_id: str
+    album_title: str
+    album_cover_url: Optional[str] = None
+    artist_id: Optional[str] = None
+    artist_name: Optional[str] = None
+    created_at: datetime
+
+
+class MyReratingResponse(MemberReratingResponse):
+    """The caller's own view of an open 재평가 — the public fields plus the
+    withdrawn 평가, which only its author may read (it powers the 이전 ★ hint and
+    the 재평가 취소 restore)."""
+
+    previous_rating: float
+    previous_comment: Optional[str] = None
+
+
+class MyReratingListResponse(BaseModel):
+    reratings: List[MyReratingResponse] = Field(default_factory=list)
+
+
 class MemberRatingResponse(BaseModel):
     """One row in a member's public profile feed — the review plus enough album
     context to render + link without a second fetch."""
@@ -1433,6 +1464,11 @@ class MemberProfileResponse(BaseModel):
     created_at: datetime
     review_count: int
     reviews: List[MemberRatingResponse] = Field(default_factory=list)
+    # FEAT-album-rerating: albums whose 평가 was withdrawn and is being redone.
+    # Disjoint from `reviews` by construction — a withdrawn rating is gone from
+    # album_reviews, so the same album cannot appear in both lists, and
+    # `review_count` (len(reviews)) drops while a 재평가 is open.
+    reratings: List[MemberReratingResponse] = Field(default_factory=list)
 
 
 class MemberSummary(BaseModel):
