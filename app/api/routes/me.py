@@ -9,6 +9,9 @@
 #                     (rides the GET catch-all; JWT checked here at the Lambda).
 #   GET    /api/me/review-candidates — MY "평론 쓸 것" queue: marked albums joined to
 #                     their identity (same catch-all, same JWT-at-the-Lambda).
+#   GET    /api/me/reratings — MY open 재평가 list, withdrawn score included
+#                     (same catch-all). PUT/DELETE /api/me/reratings/{album_id}
+#                     start/cancel one — both are JWT-authorizer routes at API GW.
 import logging
 import uuid
 from typing import Any, Dict, Optional
@@ -20,6 +23,8 @@ from app.api.schemas import (
     MeResponse,
     MyAlbumStateListResponse,
     MyAlbumStateResponse,
+    MyReratingListResponse,
+    MyReratingResponse,
     PlannedRatingListResponse,
     PlannedRatingResponse,
     ReviewCandidateListResponse,
@@ -31,10 +36,16 @@ from app.core.auth import require_cognito_token, require_owner
 from app.core.config import get_settings
 from app.core.ids import parse_uuid_or_404
 from app.db.session import get_db
-from app.di import get_planned_rating_service, get_rating_service, get_user_service
+from app.di import (
+    get_planned_rating_service,
+    get_rating_service,
+    get_rerating_service,
+    get_user_service,
+)
 from app.services.artist_primary import primary_artist_map
 from app.services.planned_rating_service import PlannedRatingService
 from app.services.rating_service import AlbumNotFoundError, RatingService
+from app.services.rerating_service import NoRatingToRerateError, ReratingService
 from app.services.user_service import (
     LOCAL_DEV_USER_ID,
     HandleTakenError,
@@ -246,6 +257,85 @@ def unmark_planned_rating(
     """
     aid = parse_uuid_or_404(album_id)
     svc.unmark(db, _member_id(claims), aid)
+    return Response(status_code=204)
+
+
+@router.get("/reratings", response_model=MyReratingListResponse)
+def get_my_reratings(
+    claims: Dict[str, Any] = Depends(require_cognito_token),
+    db: Session = Depends(get_db),
+    svc: ReratingService = Depends(get_rerating_service),
+):
+    """The caller's open 재평가 list (FEAT-album-rerating).
+
+    This is the AUTHOR-ONLY view: it carries `previous_rating`/`previous_comment`,
+    the withdrawn 평가 that powers the 이전 ★ hint and the 재평가 취소 restore.
+    The same rows appear publicly on GET /api/members/{handle}, but without those
+    two fields — see MemberReratingResponse.
+
+    Rides the edge_guard GET catch-all like every other authed GET here.
+    """
+    rows = svc.list_pending(db, _member_id(claims))
+    amap = primary_artist_map(db, [a.id for _, a in rows])
+    return MyReratingListResponse(
+        reratings=[
+            MyReratingResponse(
+                album_id=str(r.album_id),
+                album_title=a.title,
+                album_cover_url=a.cover_url,
+                artist_id=(amap.get(str(a.id)) or (None, None))[0],
+                artist_name=(amap.get(str(a.id)) or (None, None))[1],
+                created_at=r.created_at,
+                previous_rating=float(r.previous_rating),
+                previous_comment=r.previous_comment,
+            )
+            for r, a in rows
+        ]
+    )
+
+
+@router.put("/reratings/{album_id}", status_code=204)
+def start_rerating(
+    album_id: str,
+    claims: Dict[str, Any] = Depends(require_cognito_token),
+    db: Session = Depends(get_db),
+    svc: ReratingService = Depends(get_rerating_service),
+):
+    """Withdraw the caller's 평가 for an album and open a 재평가.
+
+    PUT, not POST, to match the neighbouring /planned-ratings mark: both are
+    "make this state exist", idempotent — starting a 재평가 that is already open
+    is a no-op, not an error.
+
+    409 when the caller has no 평가 to withdraw: 재평가 means redoing a finished
+    one, so there is nothing to redo. Distinct from the 404 for an album that
+    does not exist at all.
+    """
+    aid = parse_uuid_or_404(album_id)
+    try:
+        svc.start(db, _member_id(claims), claims, aid)
+    except AlbumNotFoundError:
+        raise HTTPException(status_code=404, detail="Album not found")
+    except NoRatingToRerateError:
+        raise HTTPException(status_code=409, detail="No rating to rerate")
+    return Response(status_code=204)
+
+
+@router.delete("/reratings/{album_id}", status_code=204)
+def cancel_rerating(
+    album_id: str,
+    claims: Dict[str, Any] = Depends(require_cognito_token),
+    db: Session = Depends(get_db),
+    svc: ReratingService = Depends(get_rerating_service),
+):
+    """Cancel an open 재평가 — the withdrawn 평가 comes back exactly as it was.
+
+    Idempotent: cancelling a 재평가 that is not open is a no-op, 204 either way.
+    Note this is the only way BACK; completing the 재평가 (saving a new star via
+    PUT /api/reviews/albums/{album_id}) ends it forward, from RatingService.
+    """
+    aid = parse_uuid_or_404(album_id)
+    svc.cancel(db, _member_id(claims), aid)
     return Response(status_code=204)
 
 

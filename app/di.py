@@ -93,6 +93,12 @@ def get_planned_rating_service():
     return PlannedRatingService()
 
 
+def get_rerating_service():
+    from app.services.rerating_service import ReratingService
+
+    return ReratingService()
+
+
 _metrics_repo: MetricsRepository = SqlMetricsRepository()
 
 

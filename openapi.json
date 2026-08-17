@@ -2128,6 +2128,13 @@
             "title": "Handle",
             "type": "string"
           },
+          "reratings": {
+            "items": {
+              "$ref": "#/components/schemas/MemberReratingResponse"
+            },
+            "title": "Reratings",
+            "type": "array"
+          },
           "review_count": {
             "title": "Review Count",
             "type": "integer"
@@ -2232,6 +2239,64 @@
           "updated_at"
         ],
         "title": "MemberRatingResponse",
+        "type": "object"
+      },
+      "MemberReratingResponse": {
+        "description": "One open \uc7ac\ud3c9\uac00 on a member's PUBLIC profile (FEAT-album-rerating).\n\nPublic by owner decision: seeing that someone pulled an album back for\nanother listen is part of their profile. The withdrawn score is NOT here \u2014\n`previous_rating`/`previous_comment` live only on MyReratingResponse. A\nwithdrawn verdict must not be published; the whole feature rests on the star\nbeing gone.",
+        "properties": {
+          "album_cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Cover Url"
+          },
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "album_title": {
+            "title": "Album Title",
+            "type": "string"
+          },
+          "artist_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Id"
+          },
+          "artist_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Name"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "album_id",
+          "album_title",
+          "created_at"
+        ],
+        "title": "MemberReratingResponse",
         "type": "object"
       },
       "MemberSummary": {
@@ -2389,6 +2454,93 @@
           "updated_at"
         ],
         "title": "MyAlbumStateResponse",
+        "type": "object"
+      },
+      "MyReratingListResponse": {
+        "properties": {
+          "reratings": {
+            "items": {
+              "$ref": "#/components/schemas/MyReratingResponse"
+            },
+            "title": "Reratings",
+            "type": "array"
+          }
+        },
+        "title": "MyReratingListResponse",
+        "type": "object"
+      },
+      "MyReratingResponse": {
+        "description": "The caller's own view of an open \uc7ac\ud3c9\uac00 \u2014 the public fields plus the\nwithdrawn \ud3c9\uac00, which only its author may read (it powers the \uc774\uc804 \u2605 hint and\nthe \uc7ac\ud3c9\uac00 \ucde8\uc18c restore).",
+        "properties": {
+          "album_cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Cover Url"
+          },
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "album_title": {
+            "title": "Album Title",
+            "type": "string"
+          },
+          "artist_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Id"
+          },
+          "artist_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artist Name"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "previous_comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Comment"
+          },
+          "previous_rating": {
+            "title": "Previous Rating",
+            "type": "number"
+          }
+        },
+        "required": [
+          "album_id",
+          "album_title",
+          "created_at",
+          "previous_rating"
+        ],
+        "title": "MyReratingResponse",
         "type": "object"
       },
       "NightlyGrowRequest": {
@@ -7995,6 +8147,113 @@
         "summary": "Get Release Feed",
         "tags": [
           "release-feed"
+        ]
+      }
+    },
+    "/api/me/reratings": {
+      "get": {
+        "description": "The caller's open \uc7ac\ud3c9\uac00 list (FEAT-album-rerating).\n\nThis is the AUTHOR-ONLY view: it carries `previous_rating`/`previous_comment`,\nthe withdrawn \ud3c9\uac00 that powers the \uc774\uc804 \u2605 hint and the \uc7ac\ud3c9\uac00 \ucde8\uc18c restore.\nThe same rows appear publicly on GET /api/members/{handle}, but without those\ntwo fields \u2014 see MemberReratingResponse.\n\nRides the edge_guard GET catch-all like every other authed GET here.",
+        "operationId": "get_my_reratings_api_me_reratings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyReratingListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get My Reratings",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/reratings/{album_id}": {
+      "delete": {
+        "description": "Cancel an open \uc7ac\ud3c9\uac00 \u2014 the withdrawn \ud3c9\uac00 comes back exactly as it was.\n\nIdempotent: cancelling a \uc7ac\ud3c9\uac00 that is not open is a no-op, 204 either way.\nNote this is the only way BACK; completing the \uc7ac\ud3c9\uac00 (saving a new star via\nPUT /api/reviews/albums/{album_id}) ends it forward, from RatingService.",
+        "operationId": "cancel_rerating_api_me_reratings__album_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "album_id",
+            "required": true,
+            "schema": {
+              "title": "Album Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Cancel Rerating",
+        "tags": [
+          "me"
+        ]
+      },
+      "put": {
+        "description": "Withdraw the caller's \ud3c9\uac00 for an album and open a \uc7ac\ud3c9\uac00.\n\nPUT, not POST, to match the neighbouring /planned-ratings mark: both are\n\"make this state exist\", idempotent \u2014 starting a \uc7ac\ud3c9\uac00 that is already open\nis a no-op, not an error.\n\n409 when the caller has no \ud3c9\uac00 to withdraw: \uc7ac\ud3c9\uac00 means redoing a finished\none, so there is nothing to redo. Distinct from the 404 for an album that\ndoes not exist at all.",
+        "operationId": "start_rerating_api_me_reratings__album_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "album_id",
+            "required": true,
+            "schema": {
+              "title": "Album Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Start Rerating",
+        "tags": [
+          "me"
         ]
       }
     },
