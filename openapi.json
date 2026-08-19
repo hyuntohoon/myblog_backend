@@ -8218,7 +8218,7 @@
         ]
       },
       "put": {
-        "description": "Withdraw the caller's \ud3c9\uac00 for an album and open a \uc7ac\ud3c9\uac00.\n\nPUT, not POST, to match the neighbouring /planned-ratings mark: both are\n\"make this state exist\", idempotent \u2014 starting a \uc7ac\ud3c9\uac00 that is already open\nis a no-op, not an error.\n\n409 when the caller has no \ud3c9\uac00 to withdraw: \uc7ac\ud3c9\uac00 means redoing a finished\none, so there is nothing to redo. Distinct from the 404 for an album that\ndoes not exist at all.",
+        "description": "Withdraw the caller's \ud3c9\uac00 for an album and open a \uc7ac\ud3c9\uac00.\n\nPUT, not POST, to match the neighbouring /planned-ratings mark: both are\n\"make this state exist\", idempotent \u2014 starting a \uc7ac\ud3c9\uac00 that is already open\nis a no-op, not an error.\n\n409 when the caller has no \ud3c9\uac00 to withdraw: \uc7ac\ud3c9\uac00 means redoing a finished\none, so there is nothing to redo. Distinct from the 404 for an album that\ndoes not exist at all.\n\nOwner-only side effect: opening a \uc7ac\ud3c9\uac00 also adds the album into the\nspotify_library bucket and enqueues a sync, so it's ready to re-listen to in\nSpotify (rule #9 \u2014 this only enqueues, the worker does the actual Spotify\nwrite). Gated on `is_owner` because the Spotify lane itself is owner-only\nuntil Phase 3b; a member's \uc7ac\ud3c9\uac00 has no library side effect today.",
         "operationId": "start_rerating_api_me_reratings__album_id__put",
         "parameters": [
           {
