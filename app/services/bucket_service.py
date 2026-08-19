@@ -1469,6 +1469,35 @@ class BucketService:
         db.refresh(bucket)
         return bucket
 
+    def add_album_to_spotify_library(
+        self, db: Session, owner_id: uuid.UUID, album_id: str
+    ) -> None:
+        """FEAT-album-rerating → Spotify library trigger: add the album as an item
+        in the owner's spotify_library bucket, the same B-set the worker's
+        reconcile reads (library_sync_service.py `_bucket_album_ids`), so the next
+        sync saves it to Spotify. Owner-only, matching the rest of the Spotify lane
+        until Phase 3b — the route calling this must gate on `is_owner(claims)`.
+
+        Add-only: a rerating being cancelled or completed never removes the album
+        here, same one-way-intent shape as every other write into this bucket.
+        Bypasses `add_item()`'s public manual-add guard on purpose — that guard
+        exists to block a user dragging into the sync-owned bucket by hand; this is
+        a system-triggered write, not that.
+        """
+        bucket = self.get_or_create_spotify_library_bucket(db, owner_id)
+        try:
+            self._add_album_item(
+                db,
+                bucket,
+                user_id=owner_id,
+                album_id=album_id,
+                note=None,
+                today=None,
+                daily_cap=None,
+            )
+        except DuplicateItemError:
+            pass
+
     def library_last_synced_at(self, db: Session) -> Optional[datetime]:
         """max(spotify_library_albums.last_synced_at), or None when nothing synced.
         Drives both the debounce window and the GET-state poll timestamp."""

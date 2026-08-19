@@ -32,17 +32,20 @@ from app.api.schemas import (
     UpdateMeRequest,
 )
 from app.clients.cognito_client import CognitoDeleteError, delete_cognito_user
-from app.core.auth import require_cognito_token, require_owner
+from app.core.auth import is_owner, require_cognito_token, require_owner
 from app.core.config import get_settings
 from app.core.ids import parse_uuid_or_404
 from app.db.session import get_db
 from app.di import (
+    get_bucket_service,
     get_planned_rating_service,
     get_rating_service,
     get_rerating_service,
+    get_sqs_client,
     get_user_service,
 )
 from app.services.artist_primary import primary_artist_map
+from app.services.bucket_service import BucketService
 from app.services.planned_rating_service import PlannedRatingService
 from app.services.rating_service import AlbumNotFoundError, RatingService
 from app.services.rerating_service import NoRatingToRerateError, ReratingService
@@ -300,6 +303,8 @@ def start_rerating(
     claims: Dict[str, Any] = Depends(require_cognito_token),
     db: Session = Depends(get_db),
     svc: ReratingService = Depends(get_rerating_service),
+    bucket_svc: BucketService = Depends(get_bucket_service),
+    sqs=Depends(get_sqs_client),
 ):
     """Withdraw the caller's 평가 for an album and open a 재평가.
 
@@ -310,6 +315,12 @@ def start_rerating(
     409 when the caller has no 평가 to withdraw: 재평가 means redoing a finished
     one, so there is nothing to redo. Distinct from the 404 for an album that
     does not exist at all.
+
+    Owner-only side effect: opening a 재평가 also adds the album into the
+    spotify_library bucket and enqueues a sync, so it's ready to re-listen to in
+    Spotify (rule #9 — this only enqueues, the worker does the actual Spotify
+    write). Gated on `is_owner` because the Spotify lane itself is owner-only
+    until Phase 3b; a member's 재평가 has no library side effect today.
     """
     aid = parse_uuid_or_404(album_id)
     try:
@@ -318,6 +329,13 @@ def start_rerating(
         raise HTTPException(status_code=404, detail="Album not found")
     except NoRatingToRerateError:
         raise HTTPException(status_code=409, detail="No rating to rerate")
+
+    if is_owner(claims):
+        owner_id = _member_id(claims)
+        bucket_svc.add_album_to_spotify_library(db, owner_id, str(aid))
+        if not bucket_svc.library_sync_debounced(db):
+            sqs.send_library_sync()
+
     return Response(status_code=204)
 
 
