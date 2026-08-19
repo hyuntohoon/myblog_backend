@@ -1002,6 +1002,62 @@ class TestSpotifyLibraryManualAddGuard:
         assert db.get(ReviewBucketItem, i1.id).position == 0
 
 
+class TestAddAlbumToSpotifyLibrary:
+    """FEAT-album-rerating → Spotify library trigger: the one legitimate, system-
+    triggered bypass of TestSpotifyLibraryManualAddGuard's guard above."""
+
+    def test_creates_the_bucket_and_adds_the_album(self, db, svc, album_ids, user_id):
+        svc.add_album_to_spotify_library(db, user_id, album_ids[0])
+
+        bucket = (
+            db.query(ReviewBucket)
+            .filter(ReviewBucket.kind == "spotify_library", ReviewBucket.user_id == user_id)
+            .one()
+        )
+        items = (
+            db.query(ReviewBucketItem).filter(ReviewBucketItem.bucket_id == bucket.id).all()
+        )
+        assert [str(it.album_id) for it in items] == [str(album_ids[0])]
+
+    def test_idempotent_on_a_second_call(self, db, svc, album_ids, user_id):
+        svc.add_album_to_spotify_library(db, user_id, album_ids[0])
+        svc.add_album_to_spotify_library(db, user_id, album_ids[0])
+
+        bucket = (
+            db.query(ReviewBucket)
+            .filter(ReviewBucket.kind == "spotify_library", ReviewBucket.user_id == user_id)
+            .one()
+        )
+        count = (
+            db.query(ReviewBucketItem)
+            .filter(
+                ReviewBucketItem.bucket_id == bucket.id,
+                ReviewBucketItem.album_id == album_ids[0],
+            )
+            .count()
+        )
+        assert count == 1
+
+    def test_reuses_an_existing_bucket_rather_than_duplicating_it(
+        self, db, svc, album_ids, user_id
+    ):
+        first = svc.get_or_create_spotify_library_bucket(db, user_id)
+        svc.add_album_to_spotify_library(db, user_id, album_ids[0])
+
+        count = (
+            db.query(ReviewBucket)
+            .filter(ReviewBucket.kind == "spotify_library", ReviewBucket.user_id == user_id)
+            .count()
+        )
+        assert count == 1
+        item = (
+            db.query(ReviewBucketItem)
+            .filter(ReviewBucketItem.bucket_id == first.id)
+            .one()
+        )
+        assert str(item.album_id) == str(album_ids[0])
+
+
 class TestPlaybackTypeGate:
     def test_album_row_rejected_on_the_single_row_path(self, db, svc, album_ids, user_id):
         b = svc.get_or_create_playback_bucket(db, user_id)

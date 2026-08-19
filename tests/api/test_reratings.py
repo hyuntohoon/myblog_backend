@@ -37,12 +37,14 @@ def _album(album_id=_ALBUM, title="Indigo"):
     return SimpleNamespace(id=uuid.UUID(album_id), title=title, cover_url=None)
 
 
-def _override(app, svc):
+def _override(app, svc, *, bucket_svc=None, sqs=None):
     from app.db.session import get_db
-    from app.di import get_rerating_service
+    from app.di import get_bucket_service, get_rerating_service, get_sqs_client
 
     app.dependency_overrides[require_cognito_token] = lambda: {"sub": _SUB}
     app.dependency_overrides[get_rerating_service] = lambda: svc
+    app.dependency_overrides[get_bucket_service] = lambda: bucket_svc or MagicMock()
+    app.dependency_overrides[get_sqs_client] = lambda: sqs or MagicMock()
     app.dependency_overrides[get_db] = lambda: MagicMock()
 
 
@@ -71,6 +73,82 @@ class TestMyReratings:
 
         assert resp.status_code == 204
         assert svc.start.call_count == 1
+        app.dependency_overrides.clear()
+
+    def test_start_adds_the_album_to_spotify_library_and_enqueues_a_sync(self, client, app):
+        """Opening a 재평가 also puts the album where the worker's reconcile reads
+        it (rule #9 — this only enqueues, never calls Spotify itself). ENV=local
+        in tests makes every caller `is_owner`, matching the fact that the
+        Spotify lane is owner-only until Phase 3b anyway."""
+        svc = MagicMock()
+        bucket_svc = MagicMock()
+        bucket_svc.library_sync_debounced.return_value = False
+        sqs = MagicMock()
+        _override(app, svc, bucket_svc=bucket_svc, sqs=sqs)
+
+        resp = client.put(f"/api/me/reratings/{_ALBUM}")
+
+        assert resp.status_code == 204
+        bucket_svc.add_album_to_spotify_library.assert_called_once()
+        args = bucket_svc.add_album_to_spotify_library.call_args[0]
+        assert args[1] == uuid.UUID(_SUB)
+        assert args[2] == _ALBUM
+        sqs.send_library_sync.assert_called_once()
+        app.dependency_overrides.clear()
+
+    def test_start_skips_the_sync_enqueue_when_debounced(self, client, app):
+        svc = MagicMock()
+        bucket_svc = MagicMock()
+        bucket_svc.library_sync_debounced.return_value = True
+        sqs = MagicMock()
+        _override(app, svc, bucket_svc=bucket_svc, sqs=sqs)
+
+        resp = client.put(f"/api/me/reratings/{_ALBUM}")
+
+        assert resp.status_code == 204
+        bucket_svc.add_album_to_spotify_library.assert_called_once()
+        sqs.send_library_sync.assert_not_called()
+        app.dependency_overrides.clear()
+
+    def test_start_without_a_rating_never_touches_spotify_library(self, client, app):
+        """409 (nothing to redo) must short-circuit before the Spotify side
+        effect — there is no new 재평가 to add anything for."""
+        from app.services.rerating_service import NoRatingToRerateError
+
+        svc = MagicMock()
+        svc.start.side_effect = NoRatingToRerateError(_ALBUM)
+        bucket_svc = MagicMock()
+        _override(app, svc, bucket_svc=bucket_svc)
+
+        resp = client.put(f"/api/me/reratings/{_ALBUM}")
+
+        assert resp.status_code == 409
+        bucket_svc.add_album_to_spotify_library.assert_not_called()
+        app.dependency_overrides.clear()
+
+    def test_start_by_a_non_owner_skips_the_spotify_library_side_effect(self, client, app, monkeypatch):
+        """The Spotify lane is owner-only until Phase 3b — a member's own
+        재평가 must not silently write into the owner's library bucket."""
+        import app.core.auth as auth_module
+
+        monkeypatch.setattr(
+            auth_module,
+            "settings",
+            SimpleNamespace(
+                ENV="prod",
+                OWNER_SUB="00000000-owner-owner-owner-000000000000",
+            ),
+        )
+        svc = MagicMock()
+        bucket_svc = MagicMock()
+        sqs = MagicMock()
+        _override(app, svc, bucket_svc=bucket_svc, sqs=sqs)
+
+        resp = client.put(f"/api/me/reratings/{_ALBUM}")
+
+        assert resp.status_code == 204
+        bucket_svc.add_album_to_spotify_library.assert_not_called()
+        sqs.send_library_sync.assert_not_called()
         app.dependency_overrides.clear()
 
     def test_start_without_a_rating_is_409(self, client, app):
