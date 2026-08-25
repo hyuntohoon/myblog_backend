@@ -2,6 +2,9 @@
 # FEAT-multi-user-accounts Phase 1 — RYM-style public album 평가 (ratings).
 #   GET    /api/reviews/albums/{album_id}  — public aggregate (avg/count) + list
 #                                            (rides the edge_guard GET catch-all).
+#   PUT    /api/reviews/albums/{album_id}/best-new
+#                                           — owner-only mark/unmark BEST NEW
+#                                            (require_owner; JWT; new API Gateway route).
 #   PUT    /api/reviews/albums/{album_id}  — patch MY state (member; JWT route).
 #   DELETE /api/reviews/albums/{album_id}  — delete MY rating (member; JWT route).
 #   DELETE /api/reviews/{review_id}        — owner delete-any (require_owner; JWT).
@@ -18,6 +21,8 @@ from sqlalchemy.orm import Session
 
 from app.api.routes.me import _member_id
 from app.api.schemas import (
+    AlbumBestNewResponse,
+    AlbumBestNewUpdateRequest,
     AlbumRatingAggregateResponse,
     AlbumRatingResponse,
     AlbumRatingUpsertRequest,
@@ -81,8 +86,29 @@ def get_album_reviews(
         album_id=album_id,
         average=average,
         count=count,
+        best_new=svc.album_best_new(db, aid),
         reviews=[_review_response(r, u) for r, u in rows],
     )
+
+
+@router.put("/albums/{album_id}/best-new", response_model=AlbumBestNewResponse)
+def put_album_best_new(
+    album_id: str,
+    payload: AlbumBestNewUpdateRequest,
+    claims: Dict[str, Any] = Depends(require_owner),
+    db: Session = Depends(get_db),
+    svc: RatingService = Depends(get_rating_service),
+):
+    """Owner-only: mark/unmark this album BEST NEW from the rating surface
+    (AlbumRatingBlock), without opening the post editor. See
+    RatingService.set_best_new — same `albums.best_new` column.
+    """
+    aid = parse_uuid_or_404(album_id)
+    try:
+        best_new = svc.set_best_new(db, aid, payload.best_new)
+    except AlbumNotFoundError:
+        raise HTTPException(status_code=404, detail="Album not found")
+    return AlbumBestNewResponse(album_id=album_id, best_new=best_new)
 
 
 @router.put(

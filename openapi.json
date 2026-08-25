@@ -213,6 +213,38 @@
         "title": "AddTrackedArtistsResponse",
         "type": "object"
       },
+      "AlbumBestNewResponse": {
+        "properties": {
+          "album_id": {
+            "title": "Album Id",
+            "type": "string"
+          },
+          "best_new": {
+            "title": "Best New",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "album_id",
+          "best_new"
+        ],
+        "title": "AlbumBestNewResponse",
+        "type": "object"
+      },
+      "AlbumBestNewUpdateRequest": {
+        "description": "Owner-only: mark/unmark an album BEST NEW from the rating surface.\n\nWrites the same `albums.best_new` column the post editor sets at publish\ntime (`subject_best_new` on POST/PUT /api/posts) \u2014 this is a second entry\npoint onto that column, not a new per-review flag. BEST NEW stays a\nproperty of the album itself, not of any one person's \ud3c9\uac00.",
+        "properties": {
+          "best_new": {
+            "title": "Best New",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "best_new"
+        ],
+        "title": "AlbumBestNewUpdateRequest",
+        "type": "object"
+      },
       "AlbumBrief": {
         "properties": {
           "artist_names": {
@@ -296,6 +328,11 @@
               }
             ],
             "title": "Average"
+          },
+          "best_new": {
+            "default": false,
+            "title": "Best New",
+            "type": "boolean"
           },
           "count": {
             "title": "Count",
@@ -9338,6 +9375,64 @@
           }
         ],
         "summary": "Put Album Review",
+        "tags": [
+          "reviews"
+        ]
+      }
+    },
+    "/api/reviews/albums/{album_id}/best-new": {
+      "put": {
+        "description": "Owner-only: mark/unmark this album BEST NEW from the rating surface\n(AlbumRatingBlock), without opening the post editor. See\nRatingService.set_best_new \u2014 same `albums.best_new` column.",
+        "operationId": "put_album_best_new_api_reviews_albums__album_id__best_new_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "album_id",
+            "required": true,
+            "schema": {
+              "title": "Album Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlbumBestNewUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumBestNewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Put Album Best New",
         "tags": [
           "reviews"
         ]

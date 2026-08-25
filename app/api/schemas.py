@@ -1327,7 +1327,27 @@ class AlbumRatingAggregateResponse(BaseModel):
     album_id: str
     average: Optional[float] = None  # None when count == 0
     count: int
+    # albums.best_new (V4), read alongside the aggregate so the rating surface
+    # can show/toggle current state without a second fetch. Same column the
+    # writer sets at post-publish time — see RatingService.set_best_new.
+    best_new: bool = False
     reviews: List[AlbumRatingResponse] = Field(default_factory=list)
+
+
+class AlbumBestNewUpdateRequest(BaseModel):
+    """Owner-only: mark/unmark an album BEST NEW from the rating surface.
+
+    Writes the same `albums.best_new` column the post editor sets at publish
+    time (`subject_best_new` on POST/PUT /api/posts) — this is a second entry
+    point onto that column, not a new per-review flag. BEST NEW stays a
+    property of the album itself, not of any one person's 평가.
+    """
+    best_new: bool
+
+
+class AlbumBestNewResponse(BaseModel):
+    album_id: str
+    best_new: bool
 
 
 class MyAlbumStateResponse(BaseModel):
