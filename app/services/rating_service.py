@@ -211,6 +211,33 @@ class RatingService:
         if commit:
             db.commit()
 
+    # ── BEST NEW (owner-only, direct — not a per-review flag) ───────────────
+
+    def album_best_new(self, db: Session, album_id: uuid.UUID) -> bool:
+        """Current `albums.best_new` for the album, or False if it doesn't exist.
+
+        Read-side pair to set_best_new; also used to fold current state into
+        the public aggregate so the rating surface needs no second fetch.
+        """
+        album = db.get(Album, album_id)
+        return bool(album.best_new) if album is not None else False
+
+    def set_best_new(self, db: Session, album_id: uuid.UUID, best_new: bool) -> bool:
+        """Owner-only: mark/unmark BEST NEW directly from the rating surface.
+
+        Writes the same column the post editor sets at publish time (ARCH
+        decision: BEST NEW is a property of the album, not of any one 평가) —
+        a second entry point onto `albums.best_new`, not a new flag. No
+        version/lock guards this column, so a near-simultaneous post edit that
+        also sets `subject_best_new` is last-writer-wins, same as today.
+        """
+        album = db.get(Album, album_id)
+        if album is None:
+            raise AlbumNotFoundError(str(album_id))
+        album.best_new = bool(best_new)
+        db.commit()
+        return album.best_new
+
     # ── reads (public) ───────────────────────────────────────────────────────
 
     # Every query below is PUBLIC and therefore carries `rating IS NOT NULL`
