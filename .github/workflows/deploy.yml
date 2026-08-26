@@ -109,12 +109,16 @@ jobs:
   # secret is missing or a suite opts out for a DB/schema reason, this job goes
   # red instead of quietly passing.
   integration:
-    name: integration (${{ matrix.database }})
+    name: ${{ matrix.check_name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        database: [local, neon]
+        include:
+          - database: local
+            check_name: integration
+          - database: neon
+            check_name: integration (neon)
     services:
       postgres:
         image: postgres:16
