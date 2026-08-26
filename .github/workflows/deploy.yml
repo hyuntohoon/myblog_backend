@@ -196,18 +196,31 @@ jobs:
           # pipefail is NOT on by default in Actions' `bash -e` — without it the
           # pipeline exits with tee's status and a failing pytest reads as green.
           set -o pipefail
-          pytest tests/integration -m integration -rs | tee /tmp/integration.txt
+          pytest tests/integration -m integration -p no:randomly --strict-markers -rs \
+            --junitxml=/tmp/integration.xml | tee /tmp/integration.txt
 
-      - name: Fail on DB-reason skips
+      - name: Enforce zero integration skips
         run: |
-          # A suite that opts out because the schema/URL is missing must not pass
-          # silently — that is exactly how the isrc defects survived CI.
-          if grep -E '^SKIPPED' /tmp/integration.txt | grep -qiE 'TEST_DB_URL|test branch|not deployed|schema'; then
-            echo "::error::a suite skipped for a DB/schema reason — treat as failure, not green:"
-            grep -E '^SKIPPED' /tmp/integration.txt
-            exit 1
-          fi
-          echo "No DB-reason skips."
+          # Every test in this suite is now environment-independent. Inspect
+          # pytest's machine-readable report so any skip fails regardless of
+          # reason text or terminal-summary formatting.
+          python - <<'PY'
+          import sys
+          from xml.etree import ElementTree
+
+          report = ElementTree.parse("/tmp/integration.xml")
+          skipped = [
+              case
+              for case in report.getroot().iter("testcase")
+              if case.find("skipped") is not None
+          ]
+          if skipped:
+              print(f"::error::{len(skipped)} integration test(s) skipped; expected zero")
+              for case in skipped:
+                  print(f"SKIPPED {case.get('classname')}.{case.get('name')}")
+              sys.exit(1)
+          print("Integration suite reported zero skips.")
+          PY
 
   deploy:
     needs: [check, test, contract]
