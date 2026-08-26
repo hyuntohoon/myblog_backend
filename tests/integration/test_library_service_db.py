@@ -19,6 +19,8 @@ import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 
+from tests.integration.catalog import seed_catalog
+
 from app.services.library_service import (
     AlbumNotFoundError,
     DuplicateItemError,
@@ -58,11 +60,9 @@ def db(engine):
 
 @pytest.fixture
 def album_ids(db):
-    rows = db.execute(text("SELECT id FROM albums LIMIT 5")).all()
-    ids = [str(r[0]) for r in rows]
-    if len(ids) < 3:
-        pytest.skip("need ≥3 albums in test DB")
-    return ids
+    # OPS-integration-db-locality Step 1 — seeded into this test's transaction
+    # instead of borrowed from ambient rows. See tests/integration/catalog.py.
+    return seed_catalog(db).album_ids
 
 
 @pytest.fixture

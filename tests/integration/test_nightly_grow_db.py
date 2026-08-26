@@ -19,6 +19,8 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
+from tests.integration.catalog import seed_catalog
+
 from app.services.bucket_service import (
     BucketService,
     GrowPostNotDraftError,
@@ -62,11 +64,9 @@ def svc():
 
 @pytest.fixture
 def album_ids(db):
-    rows = db.execute(text("SELECT id FROM albums LIMIT 3")).all()
-    ids = [str(r[0]) for r in rows]
-    if len(ids) < 2:
-        pytest.skip("need ≥2 albums in test DB")
-    return ids
+    # OPS-integration-db-locality Step 1 — seeded into this test's transaction
+    # instead of borrowed from ambient rows. See tests/integration/catalog.py.
+    return seed_catalog(db).album_ids
 
 
 def _mk_user(db, uid: _uuid.UUID, handle: str) -> _uuid.UUID:

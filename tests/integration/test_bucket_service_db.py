@@ -8,7 +8,9 @@ Postgres (cf. feedback-sa-session-lifecycle-mock-blind).
 
 Gated on TEST_DB_URL (Neon test branch; see reference-test-db-url-source). Each
 test runs inside an outer transaction rolled back on teardown — nothing persists,
-so the shared test branch stays pristine.
+so the shared test branch stays pristine. The catalog rows the tests need are
+seeded into that same transaction (`catalog.seed_catalog`), so the suite no
+longer depends on the target database already containing production-shaped data.
 """
 from __future__ import annotations
 
@@ -20,6 +22,8 @@ import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
+
+from tests.integration.catalog import seed_catalog
 
 from app.services.bucket_service import (
     AlbumNotFoundError,
@@ -77,11 +81,11 @@ def db(engine):
 
 @pytest.fixture
 def album_ids(db):
-    rows = db.execute(text("SELECT id FROM albums LIMIT 5")).all()
-    ids = [str(r[0]) for r in rows]
-    if len(ids) < 3:
-        pytest.skip("need ≥3 albums in test DB")
-    return ids
+    # OPS-integration-db-locality Step 1: seeded, not borrowed. This used to read
+    # `SELECT id FROM albums LIMIT 5` off whatever the target DB held and skip when
+    # short — which silently emptied the suite against any database that is not a
+    # copy of production. seed_catalog writes into this test's own transaction.
+    return seed_catalog(db).album_ids
 
 
 @pytest.fixture

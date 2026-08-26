@@ -8,6 +8,8 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
+from tests.integration.catalog import seed_catalog
+
 from app.services.bucket_service import BucketNotFoundError, BucketService
 from app.services.tracked_artist_service import (
     ArtistNotFoundError,
@@ -50,10 +52,11 @@ def db(engine):
 
 @pytest.fixture
 def artist_ids(db):
-    ids = [row[0] for row in db.execute(text("SELECT id FROM artists LIMIT 3")).all()]
-    if len(ids) < 2:
-        pytest.skip("need >=2 artists in test DB")
-    return ids
+    # OPS-integration-db-locality Step 1 — seeded into this test's transaction
+    # instead of borrowed from ambient rows. The fixture catalog gives
+    # artist_ids[0] an album_artists credit, which the bucket-preview test below
+    # needs and used to skip without. UUID objects, as before.
+    return [uuid.UUID(a) for a in seed_catalog(db).artist_ids]
 
 
 @pytest.fixture(autouse=True)
@@ -113,6 +116,9 @@ def test_bucket_preview_expands_album_and_hides_cross_member_bucket(db, artist_i
     bucket = ReviewBucket(user_id=MEMBER_A, name="Import", position=0)
     db.add(bucket)
     db.flush()
+    # The credit is seeded (fixture album 1 ⟵ fixture artist 1), so resolving it
+    # is now an assertion rather than a skip: a missing credit means the catalog
+    # fixture regressed, which must fail loudly.
     album_id = db.execute(
         text(
             "SELECT aa.album_id FROM album_artists aa "
@@ -120,8 +126,7 @@ def test_bucket_preview_expands_album_and_hides_cross_member_bucket(db, artist_i
         ),
         {"artist_id": str(artist_ids[0])},
     ).scalar_one_or_none()
-    if album_id is None:
-        pytest.skip("need an album credit for test artist")
+    assert album_id is not None, "seeded catalog must credit artist_ids[0] on an album"
     db.add(
         ReviewBucketItem(
             bucket_id=bucket.id,
