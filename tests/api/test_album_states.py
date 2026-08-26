@@ -210,6 +210,11 @@ class TestReviewCandidateQueue:
         # A configured pool, so the answer is a plain 401 rather than the
         # fail-closed 503 that a missing pool id (correctly) produces.
         monkeypatch.setattr(auth_mod.settings, "COGNITO_USER_POOL_ID", "ap-northeast-2_test")
+        # ...and a configured app-client allowlist, for the same reason: an unset
+        # allowlist is a misconfiguration and also (correctly) answers 503.
+        monkeypatch.setattr(
+            auth_mod.settings, "COGNITO_ALLOWED_CLIENT_IDS", "test-spa-client"
+        )
 
         resp = client.get("/api/me/review-candidates")
 

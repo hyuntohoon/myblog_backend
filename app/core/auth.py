@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from functools import lru_cache
 from typing import Any, Dict
 
@@ -27,6 +28,56 @@ def _get_jwks() -> Dict[str, Any]:
     return resp.json()
 
 
+# SEC-system-hardening: bound the kid-miss refetch.
+#
+# An unknown `kid` used to call `_get_jwks.cache_clear()` unconditionally before
+# returning 401. That path is reachable by anyone who can base64 a JWT header —
+# no signature, no valid claims — and on this service `edge_guard` runs it for
+# every `/api/*` request on the raw invoke domain, not just guarded routes. So N
+# junk requests produced N outbound fetches to Cognito's JWKS endpoint, billed
+# to and rate-limited against this account, and each one made every concurrent
+# legitimate request pay a fresh 10s-timeout round trip.
+#
+# Key rotation is still picked up — a rotated key produces exactly this kid miss
+# — just at a bounded rate rather than once per request.
+_JWKS_REFRESH_MIN_INTERVAL_SECONDS = 60.0
+_jwks_last_refresh = 0.0
+_jwks_refreshes = 0
+
+
+def _refresh_jwks_if_due() -> None:
+    """Drop the cached JWKS, at most once per `_JWKS_REFRESH_MIN_INTERVAL_SECONDS`."""
+    global _jwks_last_refresh, _jwks_refreshes
+    now = time.monotonic()
+    if _jwks_last_refresh and now - _jwks_last_refresh < _JWKS_REFRESH_MIN_INTERVAL_SECONDS:
+        return
+    _jwks_last_refresh = now
+    _jwks_refreshes += 1
+    _get_jwks.cache_clear()
+
+
+def _jwks_refresh_count() -> int:
+    """Refreshes performed since process start. For tests and diagnostics."""
+    return _jwks_refreshes
+
+
+def _reset_jwks_refresh_throttle() -> None:
+    """Test seam — the throttle is process-global state."""
+    global _jwks_last_refresh, _jwks_refreshes
+    _jwks_last_refresh = 0.0
+    _jwks_refreshes = 0
+
+
+def _allowed_client_ids() -> frozenset[str]:
+    """The Cognito app clients whose tokens this service accepts.
+
+    Comma-separated in config so a client can be added or retired from Terraform
+    without a code deploy.
+    """
+    raw = getattr(settings, "COGNITO_ALLOWED_CLIENT_IDS", "") or ""
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
 def verify_token(token: str) -> Dict[str, Any]:
     """Validate a Cognito JWT string, returning its claims or raising HTTPException.
 
@@ -42,6 +93,21 @@ def verify_token(token: str) -> Dict[str, Any]:
     if not settings.COGNITO_USER_POOL_ID:
         logger.error(
             "COGNITO_USER_POOL_ID unset while ENV=%s — refusing to fail open",
+            settings.ENV,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Auth not configured",
+        )
+
+    # SEC-system-hardening: the app-client binding is configuration, so an unset
+    # allowlist is a misconfiguration and takes the same posture as an unset pool
+    # id — 503, never "skip the check". Checked before any crypto so a bad deploy
+    # is loud immediately rather than after a signature verification.
+    allowed_clients = _allowed_client_ids()
+    if not allowed_clients:
+        logger.error(
+            "COGNITO_ALLOWED_CLIENT_IDS unset while ENV=%s — refusing to fail open",
             settings.ENV,
         )
         raise HTTPException(
@@ -67,7 +133,7 @@ def verify_token(token: str) -> Dict[str, Any]:
             )
         key = next((k for k in jwks["keys"] if k["kid"] == kid), None)
         if key is None:
-            _get_jwks.cache_clear()
+            _refresh_jwks_if_due()
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unknown token key")
 
         issuer = (
@@ -82,8 +148,28 @@ def verify_token(token: str) -> Dict[str, Any]:
             options={"verify_at_hash": False},
         )
 
-        if claims.get("token_use") not in ("access", "id"):
+        token_use = claims.get("token_use")
+        if token_use not in ("access", "id"):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
+
+        # SEC-system-hardening: bind the token to an app client we actually issue
+        # to. Cognito puts the client on `client_id` for access tokens and `aud`
+        # for id tokens. Until now nothing here looked at either, so ANY token
+        # minted by this user pool was accepted — including one for an app client
+        # with entirely different scopes. The API Gateway authorizer pins the SPA
+        # client (infra/apigateway.tf), but it is attached to 51 of 55 routes, so
+        # every backend GET and the whole music service were unbound. The live harm
+        # is bounded today because only the SPA client is in use; the harm this
+        # prevents is a future app client silently inheriting the entire API.
+        presented_client = claims.get("client_id") if token_use == "access" else claims.get("aud")
+        if presented_client not in allowed_clients:
+            logger.warning(
+                "token for app client %r rejected — not in COGNITO_ALLOWED_CLIENT_IDS",
+                presented_client,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token client"
+            )
 
         return claims
 
@@ -119,6 +205,15 @@ def require_cognito_token(
         if not settings.COGNITO_USER_POOL_ID:
             logger.error(
                 "COGNITO_USER_POOL_ID unset while ENV=%s — refusing to fail open",
+                settings.ENV,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Auth not configured",
+            )
+        if not _allowed_client_ids():
+            logger.error(
+                "COGNITO_ALLOWED_CLIENT_IDS unset while ENV=%s — refusing to fail open",
                 settings.ENV,
             )
             raise HTTPException(

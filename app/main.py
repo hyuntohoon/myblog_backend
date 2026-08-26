@@ -29,6 +29,21 @@ app.add_middleware(
     max_age=600,
 )
 
+import hmac
+
+
+def _edge_secret_matches(presented: str | None) -> bool:
+    """Constant-time comparison of the CloudFront-injected x-origin-verify header.
+
+    Encodes both sides: `hmac.compare_digest` rejects str inputs containing
+    non-ASCII, and this header is attacker-controlled on the raw invoke domain,
+    so a UTF-8 header value must return False rather than raise a 500.
+    """
+    if not presented:
+        return False
+    return hmac.compare_digest(presented.encode("utf-8"), settings.EDGE_SECRET.encode("utf-8"))
+
+
 PUBLIC_PATHS = {"/health"}
 PROTECTED_PREFIXES = ("/api",)
 
@@ -52,7 +67,12 @@ async def edge_guard(request: Request, call_next):
         # SSM/secrets load failed, EDGE_SECRET is "" and a request carrying an
         # empty (or absent-but-present) x-origin-verify header would compare equal
         # and fail OPEN. Cognito misconfig already fails closed (503); match it.
-        if settings.EDGE_SECRET and request.headers.get("x-origin-verify") == settings.EDGE_SECRET:
+        # SEC-system-hardening: constant-time comparison. `==` on str short-circuits
+        # on the first differing byte. A remote timing oracle through CloudFront and
+        # Lambda cold/warm variance is not a practical attack and this is not claimed
+        # as a fix for one — it is a one-line change that removes the question, and
+        # this value is a shared secret compared on every single request.
+        if settings.EDGE_SECRET and _edge_secret_matches(request.headers.get("x-origin-verify")):
             return await call_next(request)
 
         # No edge secret => a direct (raw invoke domain) request. It must carry a
@@ -65,10 +85,17 @@ async def edge_guard(request: Request, call_next):
                 verify_token(auth_header[len("Bearer "):])
                 return await call_next(request)
             except HTTPException as exc:
-                # JWKS outage (503) stays 503; a bad/expired/forged token => 403
-                # (clean reject — the old reject path raised inside middleware and
-                # surfaced as a 500, STAB-2 / P8-7).
-                code = exc.status_code if exc.status_code == 503 else 403
+                # JWKS outage (503) stays 503. A token that was PRESENTED and
+                # rejected now stays 401 as well, instead of being flattened to 403.
+                #
+                # SEC-system-hardening: the flattening made an expired session
+                # indistinguishable from no session on the raw invoke domain, and
+                # the SPA only refreshes on 401 (myblog_front/src/lib/auth.ts) — so
+                # an aged-out token died silently instead of refreshing. 403 is now
+                # reserved for what it means everywhere else in this service:
+                # authenticated, wrong tier. Anything unexpected still becomes 403
+                # rather than leaking a 500 through the middleware (STAB-2 / P8-7).
+                code = exc.status_code if exc.status_code in (401, 503) else 403
                 return JSONResponse(status_code=code, content={"detail": exc.detail})
 
         return JSONResponse(status_code=403, content={"detail": "Forbidden"})
