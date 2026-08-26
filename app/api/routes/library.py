@@ -281,6 +281,7 @@ def list_saved_tracks(
         items=[
             SavedTrackItem(
                 spotify_track_id=r.spotify_track_id,
+                track_id=str(r.track_id) if r.track_id else None,
                 track_name=r.track_name,
                 artist_name=r.artist_name,
                 artist_id=_saved_track_artist_id(r),

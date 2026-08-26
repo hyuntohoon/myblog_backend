@@ -22,9 +22,12 @@ def _album(album_id="alb-1", title="Album", artists=("Artist A",)):
     return a
 
 
-def _saved_row(tid="t1", album_id=None, album=None, duration_ms=211000):
+def _saved_row(tid="t1", album_id=None, album=None, duration_ms=211000, track_id=None):
     r = MagicMock()
     r.spotify_track_id = tid
+    # Must set explicitly — a bare MagicMock attr is truthy and would stringify
+    # into a fake catalog id, hiding the "not in catalog" branch.
+    r.track_id = track_id
     r.track_name = "Song"
     r.artist_name = "Artist A"
     r.album_name = "Album"
@@ -64,6 +67,29 @@ class TestSavedTracksList:
         assert body["items"][0]["spotify_track_id"] == "t1"
         assert body["items"][0]["album"]["id"] == "alb-1"
         assert body["items"][0]["duration_ms"] == 211000
+
+    def test_list_exposes_catalog_track_id(self, client, app):
+        # FEAT-todays-pick-liked-tab: the 오늘의 곡 좋아요 tab needs the catalog track
+        # id (daily_picks.track_id is NOT NULL). Uncatalogued tracks stay null and the
+        # front disables their post/queue buttons rather than posting a broken pick.
+        import uuid
+
+        tid = uuid.uuid4()
+        svc = MagicMock()
+        svc.list_saved_tracks.return_value = (
+            [
+                _saved_row(tid="t1", album_id="alb-1", album=_album(), track_id=tid),
+                _saved_row(tid="t2", album_id="alb-1", album=_album(), track_id=None),
+            ],
+            2,
+            None,
+        )
+        _override(app, svc)
+
+        body = client.get("/api/library/saved-tracks").json()
+
+        assert body["items"][0]["track_id"] == str(tid)
+        assert body["items"][1]["track_id"] is None
 
     def test_list_populates_album_genres(self, client, app, monkeypatch):
         # The /profile 분석 버킷 facet/chip groups by the album's primary genre, so the

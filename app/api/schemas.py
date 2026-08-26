@@ -735,6 +735,11 @@ class ListenedAlbumsResponse(BaseModel):
 
 class SavedTrackItem(BaseModel):
     spotify_track_id: str
+    # Resolved catalog TRACK id, mirroring album_id below. None for saved tracks
+    # whose track we don't have (still shown, denormalized). Load-bearing for the
+    # 오늘의 곡 좋아요 tab: daily_picks.track_id is NOT NULL, so a row without this
+    # cannot be posted or queued (FEAT-todays-pick-liked-tab).
+    track_id: Optional[str] = None
     track_name: str
     artist_name: Optional[str] = None
     # RFC-ui-surface-unification Step 4: primary catalog-artist id for the
