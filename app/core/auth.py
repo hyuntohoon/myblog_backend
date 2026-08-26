@@ -40,6 +40,14 @@ def _get_jwks() -> Dict[str, Any]:
 #
 # Key rotation is still picked up — a rotated key produces exactly this kid miss
 # — just at a bounded rate rather than once per request.
+#
+# Caveat, unmeasured: `time.monotonic()` is CLOCK_MONOTONIC, which is not
+# guaranteed to advance while a Lambda microVM is frozen between invocations. On a
+# low-traffic container "60 seconds" of monotonic time can therefore span much more
+# wall time, widening the window in which a rotated key returns 401. Verifying that
+# needs a real Lambda logging monotonic() against time() across a cold gap, which
+# has not been done. AWS does not auto-rotate user-pool signing keys today, so this
+# is a documented unknown rather than a live risk.
 _JWKS_REFRESH_MIN_INTERVAL_SECONDS = 60.0
 _jwks_last_refresh = 0.0
 _jwks_refreshes = 0
@@ -74,7 +82,7 @@ def _allowed_client_ids() -> frozenset[str]:
     Comma-separated in config so a client can be added or retired from Terraform
     without a code deploy.
     """
-    raw = getattr(settings, "COGNITO_ALLOWED_CLIENT_IDS", "") or ""
+    raw = settings.COGNITO_ALLOWED_CLIENT_IDS or ""
     return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
 
@@ -154,7 +162,10 @@ def verify_token(token: str) -> Dict[str, Any]:
 
         # SEC-system-hardening: bind the token to an app client we actually issue
         # to. Cognito puts the client on `client_id` for access tokens and `aud`
-        # for id tokens. Until now nothing here looked at either, so ANY token
+        # for id tokens — but the `aud` half is unreachable today, because
+        # `jwt.decode` is called without `audience=` and jose rejects any token
+        # carrying `aud` before this line. It is written out so that whoever does
+        # add ID-token support has the binding already correct rather than absent. Until now nothing here looked at either, so ANY token
         # minted by this user pool was accepted — including one for an app client
         # with entirely different scopes. The API Gateway authorizer pins the SPA
         # client (infra/apigateway.tf), but it is attached to 51 of 55 routes, so

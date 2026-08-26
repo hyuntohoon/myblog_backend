@@ -88,13 +88,22 @@ async def edge_guard(request: Request, call_next):
                 # JWKS outage (503) stays 503. A token that was PRESENTED and
                 # rejected now stays 401 as well, instead of being flattened to 403.
                 #
-                # SEC-system-hardening: the flattening made an expired session
-                # indistinguishable from no session on the raw invoke domain, and
-                # the SPA only refreshes on 401 (myblog_front/src/lib/auth.ts) — so
-                # an aged-out token died silently instead of refreshing. 403 is now
-                # reserved for what it means everywhere else in this service:
-                # authenticated, wrong tier. Anything unexpected still becomes 403
-                # rather than leaking a 500 through the middleware (STAB-2 / P8-7).
+                # SEC-system-hardening. The first version of this comment claimed
+                # the flattening broke the SPA's session refresh. That was wrong and
+                # is corrected here rather than quietly deleted: PUBLIC_API_URL and
+                # PUBLIC_BACKEND_API_URL both point at CloudFront, so every SPA
+                # request carries x-origin-verify and returns from the branch above —
+                # this path was never on the SPA's route at all. Verified by replaying
+                # an expired token with the edge header against both the old and new
+                # middleware: 401 either way, unchanged.
+                #
+                # The real reason is narrower and worth stating accurately: on the raw
+                # invoke domain (scripts/smoke.py, scripts/buckit_nightly.py, and any
+                # future non-CloudFront caller) an expired token and no token at all
+                # were indistinguishable, and that is the one signal an incident
+                # responder needs. 403 now means what it means everywhere else in this
+                # service: authenticated, wrong tier. Anything unexpected still becomes
+                # 403 rather than leaking a 500 through the middleware (STAB-2 / P8-7).
                 code = exc.status_code if exc.status_code in (401, 503) else 403
                 return JSONResponse(status_code=code, content={"detail": exc.detail})
 
