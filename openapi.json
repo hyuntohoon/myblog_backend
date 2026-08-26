@@ -3902,6 +3902,17 @@
             "title": "Spotify Track Id",
             "type": "string"
           },
+          "track_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Id"
+          },
           "track_name": {
             "title": "Track Name",
             "type": "string"
