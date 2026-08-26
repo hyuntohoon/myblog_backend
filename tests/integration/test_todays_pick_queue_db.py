@@ -10,6 +10,8 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
+from tests.integration.catalog import seed_catalog
+
 from app.core.kst import kst_today
 from app.services.todays_pick_service import TodaysPickService
 
@@ -69,16 +71,12 @@ def db(engine):
 
 @pytest.fixture
 def tracks(db):
-    """Two catalog (track_id, album_id) pairs — the queue FKs need real rows."""
-    rows = db.execute(
-        text(
-            "SELECT t.id, t.album_id FROM tracks t "
-            "WHERE t.album_id IS NOT NULL LIMIT 2"
-        )
-    ).all()
-    if len(rows) < 2:
-        pytest.skip("need >=2 tracks with albums in test DB")
-    return rows
+    """Catalog (track_id, album_id) pairs — the queue FKs need real rows.
+
+    OPS-integration-db-locality Step 1 — seeded into this test's transaction
+    instead of borrowed from ambient rows.
+    """
+    return seed_catalog(db).track_album_pairs
 
 
 def _add(svc, db, track_id, album_id, *, title="Queued"):

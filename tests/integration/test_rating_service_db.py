@@ -20,6 +20,8 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
+from tests.integration.catalog import seed_catalog
+
 from app.services.rating_service import (
     AlbumNotFoundError,
     MemberNotFoundError,
@@ -118,11 +120,9 @@ def db(engine):
 
 @pytest.fixture
 def album_ids(db):
-    rows = db.execute(text("SELECT id FROM albums LIMIT 2")).all()
-    ids = [r[0] for r in rows]
-    if len(ids) < 2:
-        pytest.skip("need ≥2 albums in test DB")
-    return ids
+    # OPS-integration-db-locality Step 1 — seeded into this test's transaction
+    # instead of borrowed from ambient rows. UUID objects, as before.
+    return [uuid.UUID(a) for a in seed_catalog(db).album_ids]
 
 
 @pytest.fixture

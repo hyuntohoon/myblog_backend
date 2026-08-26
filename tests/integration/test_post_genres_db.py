@@ -22,6 +22,8 @@ import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 
+from tests.integration.catalog import seed_catalog
+
 from app.repositories.post_repository import PostRepository
 from app.repositories.section_repository import SectionRepository
 from app.repositories.tag_repository import TagRepository
@@ -82,13 +84,10 @@ def svc():
 
 @pytest.fixture
 def gids(db):
-    rows = db.execute(
-        select(Genre.id).where(Genre.parent_id.is_(None)).limit(3)
-    ).all()
-    ids = [str(r[0]) for r in rows]
-    if len(ids) < 2:
-        pytest.skip("need ≥2 genres in test DB")
-    return ids
+    # OPS-integration-db-locality Step 1 — seeded into this test's transaction
+    # instead of borrowed from ambient rows. The catalog's genres are all tier-0
+    # (parent_id NULL), which is what this file's queries filter on.
+    return seed_catalog(db).genre_ids
 
 
 def _tags(db, post_id):
