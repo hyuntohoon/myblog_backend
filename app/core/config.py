@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # Cognito JWT
     COGNITO_REGION: str = "ap-northeast-2"
     COGNITO_USER_POOL_ID: str = ""
+    # SEC-system-hardening: Cognito app clients whose tokens this service accepts,
+    # comma-separated. Empty is a MISCONFIGURATION and fails closed (503), never
+    # "accept any client in the pool" — see app/core/auth.py. Set from
+    # infra/lambda.tf so a client can be added or retired without a code deploy.
+    COGNITO_ALLOWED_CLIENT_IDS: str = ""
 
     # FEAT-multi-user-accounts 0d: the owner's Cognito sub. DELETE /api/me
     # refuses this sub (403) so the blog-admin identity can't self-delete via the

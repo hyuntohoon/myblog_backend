@@ -370,6 +370,7 @@ class TestPublishJwtRequired:
         fake_settings = MagicMock()
         fake_settings.ENV = "prod"
         fake_settings.COGNITO_USER_POOL_ID = "ap-northeast-2_TestPool"
+        fake_settings.COGNITO_ALLOWED_CLIENT_IDS = "test-spa-client"
         fake_settings.COGNITO_REGION = "ap-northeast-2"
 
         with patch.object(auth_module, "settings", fake_settings):

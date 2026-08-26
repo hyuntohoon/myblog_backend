@@ -30,6 +30,10 @@ def _settings(**kw):
         ENV="prod",
         COGNITO_USER_POOL_ID="pool",
         COGNITO_REGION="ap-northeast-2",
+        # SEC-system-hardening: an unset app-client allowlist is a
+        # misconfiguration and fails closed (503), so every prod-shaped
+        # settings object in the tests must pin it the way infra/lambda.tf does.
+        COGNITO_ALLOWED_CLIENT_IDS="test-spa-client",
         OWNER_SUB=OWNER,
         DRAFT_AGENT_SUB="",
     )

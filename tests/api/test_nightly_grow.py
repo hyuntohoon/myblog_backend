@@ -43,6 +43,8 @@ def _prod_settings(**kw):
         ENV="prod",
         COGNITO_USER_POOL_ID="pool",
         COGNITO_REGION="ap-northeast-2",
+        # SEC-system-hardening: unset => 503 fail-closed, so pin it as infra does.
+        COGNITO_ALLOWED_CLIENT_IDS="test-spa-client",
         OWNER_SUB=OWNER,
         DRAFT_AGENT_SUB=AGENT,
     )

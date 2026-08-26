@@ -46,6 +46,7 @@ def _prod_settings():
     s = MagicMock()
     s.ENV = "prod"
     s.COGNITO_USER_POOL_ID = "ap-northeast-2_TestPool"
+    s.COGNITO_ALLOWED_CLIENT_IDS = "test-spa-client"
     s.COGNITO_REGION = "ap-northeast-2"
     return s
 

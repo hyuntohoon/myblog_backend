@@ -68,7 +68,14 @@ def test_garbage_bearer_no_longer_bypasses(prod_main, monkeypatch):
     )
     with _client(prod_main) as c:
         r = c.get("/api/posts?include_archived=true", headers={"Authorization": "Bearer x"})
-    assert r.status_code == 403
+    # SEC-system-hardening changed this from 403 to 401. What matters here is
+    # unchanged — the request does NOT reach the route — but a token that was
+    # presented and rejected is now reported as a credential problem instead of
+    # being flattened into 403. The flattening made an expired session look
+    # identical to no session, and the SPA only refreshes on 401.
+    # test_no_auth_returns_clean_403_not_500 above still pins 403 for the
+    # no-credential case, which is the distinction that was lost.
+    assert r.status_code == 401
 
 
 def test_jwks_outage_surfaces_503_not_403(prod_main, monkeypatch):
@@ -117,7 +124,14 @@ def test_empty_edge_secret_does_not_fail_open(prod_main, monkeypatch):
 # --- verify_token unit (shared validator) ---
 
 def _auth_settings(**kw):
-    base = dict(ENV="prod", COGNITO_USER_POOL_ID="ap-northeast-2_test", COGNITO_REGION="ap-northeast-2")
+    base = dict(
+        ENV="prod",
+        COGNITO_USER_POOL_ID="ap-northeast-2_test",
+        COGNITO_REGION="ap-northeast-2",
+        # SEC-system-hardening: an unset app-client allowlist fails closed (503),
+        # so a prod-shaped settings object must pin it as infra/lambda.tf does.
+        COGNITO_ALLOWED_CLIENT_IDS="test-spa-client",
+    )
     base.update(kw)
     return SimpleNamespace(**base)
 
