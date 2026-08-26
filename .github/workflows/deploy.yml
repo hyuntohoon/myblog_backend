@@ -97,8 +97,10 @@ jobs:
           python scripts/export_openapi.py
           git diff --exit-code openapi.json
 
-  # Real-DB suite against the Neon test branch. Split from `test` because it needs
-  # a live DB and runs ~8 min, where the unit gate runs in seconds.
+  # Real-DB suite against both a disposable local Postgres and the Neon test
+  # branch. Split from `test` because it needs a real DB and runs ~8 min, where
+  # the unit gate runs in seconds. The two legs temporarily prove local/Neon
+  # parity before the remote leg is removed in a later step.
   #
   # The branch was synced to prod schema (V2–V49) on 2026-07-29, which is what
   # makes this job meaningful: before that, every DB-bound suite in the repo
@@ -107,9 +109,51 @@ jobs:
   # secret is missing or a suite opts out for a DB/schema reason, this job goes
   # red instead of quietly passing.
   integration:
+    name: ${{ matrix.check_name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - database: local
+            check_name: integration
+          - database: neon
+            check_name: integration (neon)
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: myblog_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d myblog_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check out canonical schema
+        if: matrix.database == 'local'
+        uses: actions/checkout@v4
+        with:
+          repository: hyuntohoon/myblog_shared_db
+          ref: 90a6fca4a0528a0ed37be3a514e86ad379373042
+          token: ${{ secrets.SHARED_DB_PAT }}
+          persist-credentials: false
+          path: shared-db-schema
+
+      - name: Load canonical schema
+        if: matrix.database == 'local'
+        env:
+          POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          docker exec -i "$POSTGRES_CONTAINER_ID" \
+            psql -U postgres -d myblog_test --set ON_ERROR_STOP=on \
+            < shared-db-schema/tests/canonical_schema.sql
 
       - uses: actions/setup-python@v5
         with:
@@ -125,28 +169,30 @@ jobs:
 
       - name: Run integration suite
         env:
-          TEST_DB_URL: ${{ secrets.TEST_DB_URL }}
+          TEST_DB_URL: ${{ matrix.database == 'local' && 'postgresql+psycopg://postgres:postgres@localhost:5432/myblog_test' || secrets.TEST_DB_URL }}
           DATABASE_URL: "postgresql+psycopg://x:x@localhost/x"
         run: |
-          if [ -z "$TEST_DB_URL" ]; then
-            echo "::error::TEST_DB_URL secret is not set on this repo — the integration suite would self-skip and report a false green. Set it (same value as myblog_worker's) and re-run."
-            exit 1
-          fi
-          # Shape check. The secret must be a full SQLAlchemy URL, not just the
-          # Neon password — pasting the password alone fails 85 tests with an
-          # opaque "Could not parse SQLAlchemy URL" and is easy to do, because the
-          # Neon console shows the password on its own next to the connection
-          # string. Never echo the value, any slice of it, or its length: when the
-          # value is wrong it is usually wrong by BEING a raw credential, so a
-          # "harmless prefix" is credential material and the length narrows a
-          # brute-force search. The message below carries no property of the value.
-          case "$TEST_DB_URL" in
-            postgresql://*|postgresql+*://*) ;;
-            *)
-              echo "::error::TEST_DB_URL is set but does not start with postgresql:// — it looks like the Neon password pasted on its own. Set the full connection string instead: postgresql+psycopg://USER:PASSWORD@HOST/neondb?sslmode=require"
+          if [ "${{ matrix.database }}" = "neon" ]; then
+            if [ -z "$TEST_DB_URL" ]; then
+              echo "::error::TEST_DB_URL secret is not set on this repo — the integration suite would self-skip and report a false green. Set it (same value as myblog_worker's) and re-run."
               exit 1
-              ;;
-          esac
+            fi
+            # Shape check. The secret must be a full SQLAlchemy URL, not just the
+            # Neon password — pasting the password alone fails 85 tests with an
+            # opaque "Could not parse SQLAlchemy URL" and is easy to do, because the
+            # Neon console shows the password on its own next to the connection
+            # string. Never echo the value, any slice of it, or its length: when the
+            # value is wrong it is usually wrong by BEING a raw credential, so a
+            # "harmless prefix" is credential material and the length narrows a
+            # brute-force search. The message below carries no property of the value.
+            case "$TEST_DB_URL" in
+              postgresql://*|postgresql+*://*) ;;
+              *)
+                echo "::error::TEST_DB_URL is set but does not start with postgresql:// — it looks like the Neon password pasted on its own. Set the full connection string instead: postgresql+psycopg://USER:PASSWORD@HOST/neondb?sslmode=require"
+                exit 1
+                ;;
+            esac
+          fi
           # pipefail is NOT on by default in Actions' `bash -e` — without it the
           # pipeline exits with tee's status and a failing pytest reads as green.
           set -o pipefail
