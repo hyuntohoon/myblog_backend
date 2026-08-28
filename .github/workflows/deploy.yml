@@ -190,6 +190,14 @@ jobs:
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Job-level permissions REPLACE the workflow-level block, so `contents: read`
+    # is restated here rather than inherited. `id-token: write` is what lets this
+    # job mint the OIDC token it trades for the AWS role, and it is granted to this
+    # job ONLY — the test/check jobs run on every pull request and must not be able
+    # to request one.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -212,11 +220,23 @@ jobs:
           cd build && zip -r ../bundle.zip . && cd -
           ls -lh bundle.zip
 
+      # SEC-system-hardening Step 3c: OIDC, not a long-lived key. The role's trust
+      # policy pins `sub` AND `job_workflow_ref` with StringEquals, so only this
+      # workflow file on this repo's main can assume it — `sub` alone would also
+      # match a pull_request_target run, whose GITHUB_REF is the base branch. The
+      # role can call exactly the Lambda actions below on ONE function; the shared
+      # github-actions-deploy user it replaces could write four.
+      #
+      # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY remain set and are now unused;
+      # they are deleted only after this lane is confirmed green in production.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-backend-deploy-${{ github.run_id }}
+          aws-region: ap-northeast-2
+
       - name: Deploy to Lambda
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ap-northeast-2
           FUNCTION_NAME: ${{ vars.LAMBDA_FUNCTION_NAME }}
         run: |
           aws lambda update-function-code \
