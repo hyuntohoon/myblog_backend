@@ -97,28 +97,10 @@ jobs:
           python scripts/export_openapi.py
           git diff --exit-code openapi.json
 
-  # Real-DB suite against both a disposable local Postgres and the Neon test
-  # branch. Split from `test` because it needs a real DB and runs ~8 min, where
-  # the unit gate runs in seconds. The two legs temporarily prove local/Neon
-  # parity before the remote leg is removed in a later step.
-  #
-  # The branch was synced to prod schema (V2–V49) on 2026-07-29, which is what
-  # makes this job meaningful: before that, every DB-bound suite in the repo
-  # self-skipped and reported green — the false-green pattern that let two isrc
-  # write-path defects through. So a skip is treated as a FAILURE here: if the
-  # secret is missing or a suite opts out for a DB/schema reason, this job goes
-  # red instead of quietly passing.
+  # Required real-DB suite against disposable local Postgres. Keep this job id
+  # and check name exactly `integration`: the main ruleset requires that context.
   integration:
-    name: ${{ matrix.check_name }}
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - database: local
-            check_name: integration
-          - database: neon
-            check_name: integration (neon)
     services:
       postgres:
         image: postgres:16
@@ -137,7 +119,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Check out canonical schema
-        if: matrix.database == 'local'
         uses: actions/checkout@v4
         with:
           repository: hyuntohoon/myblog_shared_db
@@ -147,7 +128,6 @@ jobs:
           path: shared-db-schema
 
       - name: Load canonical schema
-        if: matrix.database == 'local'
         env:
           POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
         run: |
@@ -169,30 +149,9 @@ jobs:
 
       - name: Run integration suite
         env:
-          TEST_DB_URL: ${{ matrix.database == 'local' && 'postgresql+psycopg://postgres:postgres@localhost:5432/myblog_test' || secrets.TEST_DB_URL }}
+          TEST_DB_URL: postgresql+psycopg://postgres:postgres@localhost:5432/myblog_test
           DATABASE_URL: "postgresql+psycopg://x:x@localhost/x"
         run: |
-          if [ "${{ matrix.database }}" = "neon" ]; then
-            if [ -z "$TEST_DB_URL" ]; then
-              echo "::error::TEST_DB_URL secret is not set on this repo — the integration suite would self-skip and report a false green. Set it (same value as myblog_worker's) and re-run."
-              exit 1
-            fi
-            # Shape check. The secret must be a full SQLAlchemy URL, not just the
-            # Neon password — pasting the password alone fails 85 tests with an
-            # opaque "Could not parse SQLAlchemy URL" and is easy to do, because the
-            # Neon console shows the password on its own next to the connection
-            # string. Never echo the value, any slice of it, or its length: when the
-            # value is wrong it is usually wrong by BEING a raw credential, so a
-            # "harmless prefix" is credential material and the length narrows a
-            # brute-force search. The message below carries no property of the value.
-            case "$TEST_DB_URL" in
-              postgresql://*|postgresql+*://*) ;;
-              *)
-                echo "::error::TEST_DB_URL is set but does not start with postgresql:// — it looks like the Neon password pasted on its own. Set the full connection string instead: postgresql+psycopg://USER:PASSWORD@HOST/neondb?sslmode=require"
-                exit 1
-                ;;
-            esac
-          fi
           # pipefail is NOT on by default in Actions' `bash -e` — without it the
           # pipeline exits with tee's status and a failing pytest reads as green.
           set -o pipefail
@@ -223,7 +182,7 @@ jobs:
           PY
 
   deploy:
-    needs: [check, test, contract]
+    needs: [check, test, contract, integration]
     # Production deploy is main-only. push already filters to main (on.push.branches), but
     # workflow_dispatch can be invoked against ANY ref, so guard the ref explicitly — otherwise
     # a dispatch from a feature branch would ship that branch's code to prod.
