@@ -27,7 +27,7 @@ from app.api.schemas import (
     DailyPickQueueItem,
     UpsertTodaysPickRequest,
 )
-from app.core.auth import require_owner
+from app.core.authz import require_owner
 from app.db.session import get_db
 from app.di import get_todays_pick_service
 from app.services.artist_primary import primary_artist_map

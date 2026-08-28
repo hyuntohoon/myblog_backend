@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 
 from app.api.routes.me import _member_id
 from app.api.schemas import PlaybackResolveResponse, SpotifyStreamingTokenResponse
-from app.core.auth import require_cognito_token, resolve_owner
+from app.core.auth import require_cognito_token
+from app.core.authz import resolve_owner
 from app.core.config import settings
 from app.db.session import get_db
 from app.di import get_playback_service

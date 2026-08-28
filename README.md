@@ -19,7 +19,7 @@
 - **글 메타데이터** — 앨범·아티스트 연결, 평점(0~5, 0.5 단위), 커버 URL 저장
 - **Review buckets** — 칸반 칼럼 + 아이템 + reorder. **퍼유저 스코프** (V40/V42 `user_id`); `is_public` 토글 시 `/api/buckets/public` 에 소유자 귀속과 함께 공개
 - **멤버 기능** (FEAT-multi-user-accounts) — `/api/me` (lazy provisioning + 계정 삭제), `/api/reviews/albums/*` (0.5 단위 평점+코멘트, 공개 라이브 집계), `/api/members[/{handle}]` (+ now-playing, 출처 표기), `/api/integrations/*` (Last.fm username / Spotify OAuth+KMS 봉투)
-- **인증·권한** — 모든 뮤테이션은 API GW Cognito authorizer 통과. 백엔드 내부에서 **오너 전용 라우트는 `require_owner`** (`sub == OWNER_SUB`, fail-closed), 멤버 라우트는 `require_cognito_token` + lazy provisioning, 행 단위 `user_id` 스코프
+- **인증·권한** — 모든 뮤테이션은 API GW Cognito authorizer 통과. 백엔드 내부에서 **오너 전용 라우트는 `require_owner`** (`sub == OWNER_SUB`, fail-closed), 멤버 라우트는 `require_cognito_token` + lazy provisioning, 행 단위 `user_id` 스코프. 코드 위치가 SEC-system-hardening Step 6 으로 갈렸습니다: **인증**(Cognito 토큰 검증)은 `app/core/auth.py` — `myblog_music` 의 같은 경로와 **바이트 단위로 동일한 공유 파일**이라 한쪽만 고치면 안 됩니다(워크스페이스의 일일 드리프트 잡이 두 `main` 을 diff). **인가** 계층(`require_owner` / `require_owner_or_draft_agent` / `is_owner` / `resolve_owner`)은 백엔드 전용이라 `app/core/authz.py` 에 있습니다. 어느 라우트가 오너 전용인지는 `tests/test_route_guard_map.py` 가 고정합니다 — 가드를 바꾸면 그 테스트가 깨지는 게 정상입니다.
 - **Publishing** — `POST /api/publish` 가 글 MDX 를 myblog_front 의 content repo 에 GitHub API 로 커밋 → GitHub Actions 가 Astro 빌드 후 S3 + CloudFront 갱신 (ARCH-11 으로 옛 myblog_publish 서비스에서 흡수)
 
 ---
@@ -48,7 +48,7 @@
 | `DELETE`| `/api/buckets/:bucket_id/items/:item_id` | 아이템 제거 | Cognito JWT |
 | `PUT`   | `/api/buckets/reorder`     | 드래그 결과 일괄 반영 (`{buckets:[{id, item_ids:[...]}]}`) | Cognito JWT |
 
-위 표는 에디토리얼 core 만 담은 발췌입니다 — 전체 계약은 `openapi.json` (멤버 라우트: me/reviews/members/integrations/library 포함). 모든 뮤테이션은 API Gateway 의 Cognito authorizer 를 통과한 뒤 Lambda 로 들어오고(라우트 목록: 워크스페이스 `infra/apigateway.tf`), 공개 조회는 CloudFront 의 `x-origin-verify` edge guard 경유. 오너 전용 라우트는 추가로 `require_owner` 게이트 (자세한 흐름: 워크스페이스 `CLAUDE.md` 의 "Auth — two entry points").
+위 표는 에디토리얼 core 만 담은 발췌입니다 — 전체 계약은 `openapi.json` (멤버 라우트: me/reviews/members/integrations/library 포함). 모든 뮤테이션은 API Gateway 의 Cognito authorizer 를 통과한 뒤 Lambda 로 들어오고(라우트 목록: 워크스페이스 `infra/apigateway.tf`), 공개 조회는 CloudFront 의 `x-origin-verify` edge guard 경유. 오너 전용 라우트는 추가로 `require_owner` 게이트 — 그 목록은 `tests/test_route_guard_map.py` 에 고정돼 있습니다 (자세한 흐름: 워크스페이스 `CLAUDE.md` 의 "Auth — two entry points").
 
 ---
 

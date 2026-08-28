@@ -1,3 +1,32 @@
+"""Cognito JWT verification — the canonical copy.
+
+SEC-system-hardening Step 6. This file is **byte-identical** in
+`myblog_backend/app/core/auth.py` and `myblog_music/app/core/auth.py`. Both
+repositories name their application package `app` and define the same four
+settings fields (`ENV`, `COGNITO_REGION`, `COGNITO_USER_POOL_ID`,
+`COGNITO_ALLOWED_CLIENT_IDS`), so the shared text needs no injection seam — the
+same source compiles and runs unchanged in either service.
+
+Before Step 6 these were two files whose *code* was already token-for-token
+identical; only the comments and one structural split differed (backend had
+factored `verify_token` out for `edge_guard`, music had it inlined). Step 6
+removes the second copy's right to drift, it does not change what either
+service accepts or rejects.
+
+**Editing rule:** a change here must land in both repositories. The workspace
+repository runs a daily drift check that diffs the two `main` copies and fails
+when they differ; `docs/rfcs/SEC-system-hardening.md` Step 6 records why the
+enforcement is a scheduled cross-repo diff rather than a shared package (the
+three services pin `myblog_shared_db` at three different revisions today, one of
+them an abandoned tag, so a packaged verifier would have shipped two different
+versions of this code and made an auth hotfix a pin migration).
+
+**Scope:** authentication only — *is this a valid token from our pool, for an
+app client we issue to*. Authorization tiers are deliberately NOT here, because
+they differ per service: `myblog_backend` keeps owner / draft-agent / member
+tiers in `app/core/authz.py`; `myblog_music` has none beyond this file.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -32,11 +61,11 @@ def _get_jwks() -> Dict[str, Any]:
 #
 # An unknown `kid` used to call `_get_jwks.cache_clear()` unconditionally before
 # returning 401. That path is reachable by anyone who can base64 a JWT header —
-# no signature, no valid claims — and on this service `edge_guard` runs it for
-# every `/api/*` request on the raw invoke domain, not just guarded routes. So N
-# junk requests produced N outbound fetches to Cognito's JWKS endpoint, billed
-# to and rate-limited against this account, and each one made every concurrent
-# legitimate request pay a fresh 10s-timeout round trip.
+# no signature, no valid claims — and on `myblog_backend` `edge_guard` runs it
+# for every `/api/*` request on the raw invoke domain, not just guarded routes.
+# So N junk requests produced N outbound fetches to Cognito's JWKS endpoint,
+# billed to and rate-limited against this account, and each one made every
+# concurrent legitimate request pay a fresh 10s-timeout round trip.
 #
 # Key rotation is still picked up — a rotated key produces exactly this kid miss
 # — just at a bounded rate rather than once per request.
@@ -89,15 +118,19 @@ def _allowed_client_ids() -> frozenset[str]:
 def verify_token(token: str) -> Dict[str, Any]:
     """Validate a Cognito JWT string, returning its claims or raising HTTPException.
 
-    Shared by `require_cognito_token` (FastAPI dependency) and `edge_guard`
-    (middleware, STAB-2 Step 2) so both layers validate identically. A missing
-    pool id raises 503 (fail closed — never a silent no-op); a JWKS-fetch outage
-    raises 503; a bad/expired/malformed token raises 401.
+    Called by `require_cognito_token` (the FastAPI dependency) in both services,
+    and additionally by `edge_guard` (middleware, STAB-2 Step 2) in
+    `myblog_backend`, so both layers validate identically. A missing pool id
+    raises 503 (fail closed — never a silent no-op); a JWKS-fetch outage raises
+    503; a bad/expired/malformed token raises 401.
     """
-    # STAB-2 / AUTH-5: in prod a missing pool id is a MISCONFIGURATION, not a
-    # reason to skip auth. Fail CLOSED — never silently fall open (the old
-    # `or not COGNITO_USER_POOL_ID: return {}` made require_cognito_token a
-    # no-op in prod because the backend Lambda env never set the pool id).
+    # STAB-2 / AUTH-5 / FIX-bug-audit-2026-07 WS-A: in prod a missing pool id is a
+    # MISCONFIGURATION, not a reason to skip auth. Fail CLOSED — never silently
+    # fall open. The removed shape was `or not COGNITO_USER_POOL_ID: return {}`,
+    # which made `require_cognito_token` a no-op in prod on `myblog_backend`
+    # (whose Lambda env never set the pool id) and would have silently un-gated
+    # `/candidates` on `myblog_music` (sync Spotify read + SQS enqueue) if the
+    # musicApi Lambda env ever dropped it.
     if not settings.COGNITO_USER_POOL_ID:
         logger.error(
             "COGNITO_USER_POOL_ID unset while ENV=%s — refusing to fail open",
@@ -130,10 +163,11 @@ def verify_token(token: str) -> Dict[str, Any]:
         try:
             jwks = _get_jwks()
         except httpx.HTTPError as e:
-            # Cognito JWKS fetch failed (network/timeout/5xx). This is an upstream
-            # availability issue, not a bad token — surface 503 instead of letting
-            # the HTTPError escape as an unhandled 500. Not cached (lru_cache only
-            # stores successful returns), so the next request retries.
+            # STAB-2 Step 4: a Cognito JWKS fetch failure (network/timeout/5xx)
+            # is an upstream availability issue, not a bad token. Surface 503
+            # instead of letting the HTTPError escape as an unhandled 500. Not
+            # cached (lru_cache only stores successful returns), so the next
+            # request retries.
             logger.error("JWKS fetch failed: %s", e)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -165,13 +199,16 @@ def verify_token(token: str) -> Dict[str, Any]:
         # for id tokens — but the `aud` half is unreachable today, because
         # `jwt.decode` is called without `audience=` and jose rejects any token
         # carrying `aud` before this line. It is written out so that whoever does
-        # add ID-token support has the binding already correct rather than absent. Until now nothing here looked at either, so ANY token
-        # minted by this user pool was accepted — including one for an app client
-        # with entirely different scopes. The API Gateway authorizer pins the SPA
-        # client (infra/apigateway.tf), but it is attached to 51 of 55 routes, so
-        # every backend GET and the whole music service were unbound. The live harm
-        # is bounded today because only the SPA client is in use; the harm this
-        # prevents is a future app client silently inheriting the entire API.
+        # add ID-token support has the binding already correct rather than absent.
+        # Until this landed nothing here looked at either, so ANY token minted by
+        # this user pool was accepted — including one for an app client with
+        # entirely different scopes. The API Gateway authorizer pins the SPA
+        # client (infra/apigateway.tf), but it is attached to 51 of 55 routes and
+        # to none of `/api/music/*`, so every backend GET and the whole music
+        # service were unbound — on `myblog_music` this in-process check is the
+        # only place the app client is bound at all. The live harm is bounded
+        # today because only the SPA client is in use; the harm this prevents is a
+        # future app client silently inheriting the entire API.
         presented_client = claims.get("client_id") if token_use == "access" else claims.get("aud")
         if presented_client not in allowed_clients:
             logger.warning(
@@ -187,21 +224,6 @@ def verify_token(token: str) -> Dict[str, Any]:
     except JWTError as e:
         logger.warning("JWT validation failed: %s", e)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-
-
-# FEAT-pocket-buckit Step 3 (OQ11 / OQ12): single-owner-from-sub. The drop + playback
-# routes read the owner from the VERIFIED JWT `sub`, never the request body, so a later
-# per-owner generalization (FEAT-multi-user-accounts) is a plain additive change. v1 has
-# no `owner_id` column anywhere (OQ12 defers all multi-user scoping), so this resolves the
-# *pattern* + the local/dev fallback, not a value that gets stored. `require_cognito_token`
-# returns `{}` in local/dev, so `claims.get('sub')` is None there → the single-owner
-# sentinel; a bare `claims['sub']` would KeyError (the carried adversarial must-fix).
-SINGLE_OWNER = "owner"
-
-
-def resolve_owner(claims: Dict[str, Any] | None) -> str:
-    """The acting owner id: the verified JWT `sub`, else the single-owner sentinel."""
-    return (claims or {}).get("sub") or SINGLE_OWNER
 
 
 def require_cognito_token(
@@ -234,106 +256,3 @@ def require_cognito_token(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
 
     return verify_token(credentials.credentials)
-
-
-def require_owner(
-    claims: Dict[str, Any] = Depends(require_cognito_token),
-) -> Dict[str, Any]:
-    """Owner-only gate: the verified JWT `sub` must equal `OWNER_SUB`.
-
-    FEAT-multi-user-accounts 0c: enabling Cognito self-signup fills the pool with
-    federated members, so `require_cognito_token` alone (any valid pool token) no
-    longer implies the owner. Single-owner routes — editorial authoring/publish,
-    genre taxonomy, and the owner's buckets/library/playback (none per-user scoped
-    until Phase 2/3) — must additionally verify identity. Member-legitimate routes
-    (`/api/me`, music search, `GET /api/lyrics/{id}`) keep plain
-    `require_cognito_token`.
-
-    **`/api/lyrics` left this list 2026-07-28, rejoined it 2026-08-09**
-    (`CHORE-lyrics-member-guard-reopen`, owner decision 2026-08-03). The
-    07-28 tightening reasoned from the Genius annotation store the route now
-    also serves; the owner reverted that call. `POST
-    /api/lyrics/{id}/translation-request` still uses `require_owner` — a
-    separate, still-standing reason (LLM cost/quota control), not a leftover
-    of this one.
-
-    Fail closed: local/dev keeps the `require_cognito_token` bypass (claims `{}`) so
-    local admin work is unblocked; in prod an unset `OWNER_SUB` is a
-    misconfiguration → 503 (never fall open); a non-owner token → 403.
-    """
-    if settings.ENV in ("local", "dev"):
-        return claims  # {} — mirrors the require_cognito_token local bypass
-
-    if not settings.OWNER_SUB:
-        logger.error(
-            "OWNER_SUB unset while ENV=%s — refusing to fail open",
-            settings.ENV,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Auth not configured",
-        )
-
-    if claims.get("sub") != settings.OWNER_SUB:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner only")
-
-    return claims
-
-
-def require_owner_or_draft_agent(
-    claims: Dict[str, Any] = Depends(require_cognito_token),
-) -> Dict[str, Any]:
-    """The owner, or the nightly draft agent — for draft creation only.
-
-    FIX-nightly-draft-identity Phase A. `scripts/buckit_nightly.py` runs at 03:00
-    with nobody logged in and must create a draft post. It used to borrow the smoke
-    user, which `require_owner` has rejected since 392dd50 (2026-07-08).
-
-    This is a SEPARATE dependency, not a widening of `require_owner`. `require_owner`
-    guards 38 routes (authoring, publish, delete, genre taxonomy, the owner's
-    buckets/library/playback); admitting a second `sub` there would grant the
-    automation all of them to solve a problem that needs exactly one capability.
-    Only `create_post` and the grow-once bucket-item PATCH use this.
-
-    Passing this gate is not permission to publish: `create_post` COERCES a
-    non-owner caller's post to `status='draft'` (it does not merely validate, so a
-    future code path that forgets the check cannot open a publish hole).
-
-    Fail closed, identically to `require_owner`: local/dev bypasses, an unset
-    OWNER_SUB in prod is a misconfiguration ⇒ 503, anything else ⇒ 403. An unset
-    DRAFT_AGENT_SUB means *no agent exists* and must never widen access — it is
-    checked for truthiness before comparing, so `sub=None`/`""` cannot match it.
-    """
-    if settings.ENV in ("local", "dev"):
-        return claims  # {} — mirrors the require_cognito_token local bypass
-
-    if not settings.OWNER_SUB:
-        logger.error(
-            "OWNER_SUB unset while ENV=%s — refusing to fail open",
-            settings.ENV,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Auth not configured",
-        )
-
-    sub = claims.get("sub")
-    if sub == settings.OWNER_SUB:
-        return claims
-    if settings.DRAFT_AGENT_SUB and sub == settings.DRAFT_AGENT_SUB:
-        return claims
-
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner only")
-
-
-def is_owner(claims: Dict[str, Any]) -> bool:
-    """True when these claims are the owner's.
-
-    Used by routes that admit the draft agent to tell the two callers apart — the
-    agent gets its post coerced to a draft. In local/dev `require_cognito_token`
-    yields `{}`, and local admin work must keep behaving as the owner, so an empty
-    claim set is treated as the owner there and only there.
-    """
-    if settings.ENV in ("local", "dev"):
-        return True
-    return bool(settings.OWNER_SUB) and claims.get("sub") == settings.OWNER_SUB
