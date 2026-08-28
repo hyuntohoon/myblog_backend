@@ -77,21 +77,16 @@ class PlaybackService:
     _creds_cache: dict = {"val": None, "ts": 0.0}
 
     def _read_spotify_secret(self) -> Dict:
-        """The myblog/spotify secret JSON, or {} when unset/unreadable. Mirrors
-        get_spotify_connection_status' on-demand read (SSM preferred → Secrets Manager)."""
+        """The /myblog/spotify secret JSON, or {} when unset/unreadable. Mirrors
+        get_spotify_connection_status' on-demand SSM read."""
         param = settings.SPOTIFY_SECRETS_PARAM
-        arn = settings.SPOTIFY_SECRETS_ARN
-        if not param and not arn:
+        if not param:
             return {}
         try:
             import boto3
 
-            if param:
-                ssm = boto3.client("ssm", region_name=settings.AWS_DEFAULT_REGION)
-                raw = ssm.get_parameter(Name=param, WithDecryption=True)["Parameter"]["Value"]
-            else:
-                sm = boto3.client("secretsmanager", region_name=settings.AWS_DEFAULT_REGION)
-                raw = sm.get_secret_value(SecretId=arn)["SecretString"]
+            ssm = boto3.client("ssm", region_name=settings.AWS_DEFAULT_REGION)
+            raw = ssm.get_parameter(Name=param, WithDecryption=True)["Parameter"]["Value"]
             return json.loads(raw)
         except Exception as e:  # pragma: no cover - IAM/network failure path
             logger.error("Failed to read Spotify secret for playback token: %s", e)
