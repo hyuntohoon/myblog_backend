@@ -181,7 +181,18 @@ def test_missing_optional_github_token_still_boots_and_warns(caplog):
 
 
 def test_no_ssm_call_and_no_validation_when_secrets_param_is_unset():
-    """Local dev and the unit suite: empty SECRETS_PARAM, no contract at all."""
+    """Local dev and the unit suite: empty SECRETS_PARAM, no contract at all.
+
+    This pins LOCAL ergonomics — no AWS call from a laptop or a CI runner. Read
+    narrowly: it is NOT a guarantee that a deployed environment may run without
+    `SECRETS_PARAM`. It may not, and that hole is still open — an empty
+    `SECRETS_PARAM` on the real Lambda would skip this whole contract and boot on
+    the localhost DB default with an empty EDGE_SECRET, exactly the state the
+    contract exists to prevent. Closing it means asserting ENV-vs-SECRETS_PARAM
+    consistency, which overlaps SEC-system-hardening open question 3 and is
+    deliberately not decided here. If that assertion lands, this test changes
+    shape rather than being deleted.
+    """
     import app.core.config as cfg
 
     cfg.get_settings.cache_clear()
@@ -220,3 +231,23 @@ def test_successful_boot_does_not_log_the_secret_values(caplog):
         _get_settings({"DATABASE_URL": "postgresql://u:pw-in-url@h/db", "EDGE_SECRET": _EDGE})
     assert "pw-in-url" not in caplog.text
     assert _EDGE not in caplog.text
+
+
+def test_required_values_are_assigned_verbatim_and_never_stripped():
+    """Whitespace decides presence but must NOT be trimmed off the value.
+
+    Kills a mutant that survived the first version of this file: rewriting the
+    assignments as `secrets["EDGE_SECRET"].strip()` left all of them green. That
+    refactor is not hypothetical — "normalize the config values" is a natural
+    tidy-up, and it would 403 the entire site. `EDGE_SECRET` is compared
+    byte-for-byte in `app/main.py` against the header CloudFront injects from
+    this same parameter, so trimming here and not at the edge makes the two
+    diverge; `DATABASE_URL` is asserted alongside it because a driver DSN is no
+    safer to silently rewrite.
+    """
+    padded_edge = "  edge-with-padding  "
+    padded_db = " postgresql+psycopg://u:pw@h/db "
+    s, _ = _get_settings({"DATABASE_URL": padded_db, "EDGE_SECRET": padded_edge, "GITHUB_TOKEN": " g "})
+    assert s.EDGE_SECRET == padded_edge
+    assert s.DATABASE_URL == padded_db
+    assert s.GITHUB_TOKEN == " g "

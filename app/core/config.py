@@ -183,13 +183,24 @@ def _mask(url: str) -> str:
 #   open), but every CloudFront request — i.e. the whole site — 403s with a
 #   "Forbidden" that names nothing.
 #
-# GITHUB_TOKEN is NOT required, on purpose. Its only consumers are the
-# owner-only publish route (`app/api/routes/publish.py`, which already returns
-# 500 "Missing GitHub environment variables") and `content_sync._github_config`
-# (which logs and returns None so the caller's DB op still succeeds). Both fail
-# loudly and locally, neither is on a read path, and a rotated-out token must
-# not take the public API offline. Its absence is logged at WARNING instead —
-# prod Lambdas run LOG_LEVEL=WARNING, so that line is actually visible.
+# GITHUB_TOKEN is NOT required, on purpose: it feeds three owner-only write
+# paths, none of them on a read path, and a rotated-out token must not take the
+# public API offline. Be precise about what "degraded" costs, because it is not
+# uniform and only the first of the three is loud:
+#   - POST /api/posts (`app/api/routes/publish.py`) returns 500 "Missing GitHub
+#     environment variables". Loud, and the caller learns nothing shipped.
+#   - DELETE/archive a post (`app/api/routes/posts.py` -> `remove_post_content`)
+#     returns success. `_github_config` logs and returns None, the route catches
+#     only RuntimeError, so the DB row is archived or deleted while the published
+#     MDX STAYS LIVE on the content repo — a takedown that takes nothing down.
+#   - Restore (`app/api/routes/posts.py` -> `republish_post_content`) likewise
+#     returns 200 "published" while the static page is never recreated (404).
+# The two silent ones are the reason absence is logged at WARNING rather than
+# passed over: the operator gets no other signal. WARNING (not INFO) because
+# nothing configures a level on this function — no LOG_LEVEL env var and no
+# ApplicationLogLevel in its LoggingConfig, verified against `ratemymusic-api`
+# 2026-08-29 — so the runtime bootstrap's root level decides, and WARNING is
+# above it under every default this runtime has shipped.
 #
 # COGNITO_USER_POOL_ID / COGNITO_ALLOWED_CLIENT_IDS / OWNER_SUB / DRAFT_AGENT_SUB
 # are not in this parameter at all — they arrive as Lambda env vars from
@@ -282,9 +293,11 @@ def _apply_secrets(s: Settings, secrets: object, param: str) -> None:
     for key in OPTIONAL_SECRET_KEYS:
         if not _present(secrets.get(key)):
             logger.warning(
-                "%s has no usable %s; boot continues. This key is optional by "
-                "design — only owner-only publishing and the restore re-publish "
-                "read it, and both already fail at their own call site.",
+                "%s has no usable %s; boot continues by design (this key is "
+                "optional — requiring it would take every read route down for an "
+                "owner-only feature). Degraded while it is absent: POST /api/posts "
+                "returns 500, and post delete/archive and restore return SUCCESS "
+                "while silently not removing or not recreating the published MDX.",
                 param,
                 key,
             )
