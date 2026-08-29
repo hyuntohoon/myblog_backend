@@ -90,6 +90,41 @@ myblog_backend → GitHub API   : /api/publish 시 MDX 커밋
 
 ---
 
+## 의존성 잠금 (`requirements.lock`)
+
+`requirements.txt`는 사람이 쓰는 범위 선언이고, **배포 번들에 실제로 들어가는 것은
+`requirements.lock` 하나다.** CI의 빌드와 `build.sh`가 둘 다 `pip install --no-deps -r
+requirements.lock`으로 설치하므로, lock에 없는 패키지는 Lambda에도 없다.
+
+lock은 **프로덕션 타깃 기준으로만** 해석된다 — CPython 3.12 / `aarch64-manylinux2014` /
+wheel 전용. 이 타깃이 고정돼 있어서 macOS arm64 노트북과 x86_64 CI 러너가 같은 파일을
+만든다. 호스트에서 풀면 환경 마커가 호스트 기준으로 평가돼(macOS는
+`platform_machine == "arm64"`) SQLAlchemy의 `greenlet`처럼 aarch64에서만 필요한 패키지가
+조용히 빠진다.
+
+```bash
+pip install uv==0.12.7          # 정확히 이 버전 (스크립트가 검사한다)
+./scripts/compile_requirements.sh
+```
+
+- `requirements.txt`를 고쳤으면 위를 실행하고 lock을 **같은 커밋에** 담아라. 안 하면
+  CI의 `Check dependency lock`이 red가 된다.
+- **lock을 손으로 고치지 마라.** 검증은 처음부터 다시 풀어서 대조하므로, 새로 푼 결과가
+  내놓지 않는 pin은 그대로 거부된다.
+- 패키지를 올리는 유일한 방법은 `scripts/compile_requirements.sh`의 `EXCLUDE_NEWER`
+  타임스탬프를 앞으로 옮기고 다시 돌리는 것이다. 인덱스가 그 시점에 얼어 있어서,
+  아무것도 안 바꾸고 다시 돌리면 결과가 같다.
+- `build.sh`는 비공개 `myblog_shared_db`를 받기 위해 `SHARED_DB_PAT`가 필요하다.
+
+알려진 한계 — `myblog-shared-db`는 git 의존성이다. `--require-hashes`는 모든 요구사항에
+해시를 요구하는데 `git+` URL은 해시를 가질 수 없으므로 쓸 수 없고, `--only-binary`도
+직접 URL에는 적용되지 않는다. 그래서 이 패키지 하나만은 고정된 wheel을 받는 게 아니라
+**배포 시점에 러너에서 빌드된다**(순수 파이썬 `py3-none-any`). 커밋 SHA는 고정돼 있지만
+그 빌드가 PyPI에서 끌어오는 build backend는 고정돼 있지 않다 — 즉 lock만이 번들의
+입력은 아니다. 닫으려면 shared_db를 wheel로 배포하고 해시를 lock에 넣어야 한다.
+재현성 검사는 두 설치 모두 `--no-cache-dir`로 돌려서, 두 번째 설치가 첫 번째가 만든
+wheel을 그대로 받지 않도록 — 즉 이 패키지가 검사 사각지대가 되지 않도록 — 한다.
+
 ## 왜 분리했는가
 
 블로그 데이터(글/카테고리)는 음악 동기화와 별개로 **안정적으로 운영**되어야 합니다. Cognito JWT 기반 인증·권한 경계가 뚜렷해서 API를 분리하는 것이 보안상 안전합니다. Music API의 Spotify 장애가 글 조회·작성에 영향을 주지 않습니다.
