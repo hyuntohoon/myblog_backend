@@ -23,11 +23,11 @@ class Settings(BaseSettings):
     # auth. Local dev opts in explicitly via ENV=local (repo README).
     ENV: str = "prod"
 
-    # Secrets Manager (legacy) + SSM Parameter Store (CHORE-secrets-ssm-migration).
-    # SECRETS_PARAM (an SSM SecureString name like /myblog/backend) takes priority;
-    # SECRETS_ARN is the fallback. Setting SECRETS_PARAM is the per-service cutover
-    # switch (owner Terraform env flip); unsetting it reverts to Secrets Manager.
-    SECRETS_ARN: str = ""
+    # Runtime secrets: SSM Parameter Store ONLY (CHORE-secrets-ssm-migration).
+    # SECRETS_PARAM is an SSM SecureString name like /myblog/backend. The legacy
+    # Secrets Manager fallback (SECRETS_ARN) was removed once the migration
+    # completed — AWS Secrets Manager holds zero secrets in this account, so the
+    # fallback could only ever turn an SSM failure into a silent empty load.
     SECRETS_PARAM: str = ""
 
     # Auth / security
@@ -102,8 +102,7 @@ class Settings(BaseSettings):
 
     # Spotify connection status (refresh-token presence) — myblog/spotify. Read on
     # demand by the 연동 tab; the token itself is only ever used by the worker.
-    # SPOTIFY_SECRETS_PARAM (SSM) takes priority over SPOTIFY_SECRETS_ARN (SM).
-    SPOTIFY_SECRETS_ARN: str = ""
+    # SSM SecureString name only (CHORE-secrets-ssm-migration).
     SPOTIFY_SECRETS_PARAM: str = ""
 
     # FEAT-pocket-buckit Step 3 (D3 / OQ8): the async Spotify Web Playback SDK token mint
@@ -139,7 +138,7 @@ class Settings(BaseSettings):
     # message can't force a write. Keep this in sync with the worker setting.
     SPOTIFY_LIBRARY_WRITES_ENABLED: bool = False
 
-    # GitHub (loaded from Secrets Manager in prod)
+    # GitHub (loaded from the SSM secret in prod)
     GITHUB_TOKEN: str = ""
     GITHUB_REPO_OWNER: str = ""
     GITHUB_REPO_NAME: str = ""
@@ -165,35 +164,47 @@ def _mask(url: str) -> str:
         return url
 
 
-def _load_secrets(param: str, arn: str) -> dict:
-    """Load the secret JSON dict, preferring SSM Parameter Store (``param``) and
-    falling back to Secrets Manager (``arn``) on unset-or-error. The env-var
-    presence is the migration cutover switch (CHORE-secrets-ssm-migration)."""
-    if param:
-        try:
-            import boto3
-            ssm = boto3.client("ssm")
-            val = ssm.get_parameter(Name=param, WithDecryption=True)
-            return json.loads(val["Parameter"]["Value"])
-        except Exception as e:
-            logger.error("SSM load failed for %s, falling back to Secrets Manager: %s", param, e)
-    if arn:
-        try:
-            import boto3
-            sm = boto3.client("secretsmanager")
-            val = sm.get_secret_value(SecretId=arn)
-            return json.loads(val["SecretString"])
-        except Exception as e:
-            logger.error("Failed to load secrets from %s: %s", arn, e)
-    return {}
+def _load_secrets(param: str) -> dict:
+    """Load the secret JSON dict from SSM Parameter Store (SecureString).
+
+    SSM is the only source (CHORE-secrets-ssm-migration). A failure here is a
+    misconfiguration, an IAM regression, or an SSM outage — none of which this
+    process can serve through — so it is raised, not swallowed. The old code
+    logged and returned ``{}``, which let the Lambda finish importing with the
+    localhost DATABASE_URL default and an empty EDGE_SECRET; every request then
+    failed one layer later with an error that named neither SSM nor the
+    parameter.
+
+    ``myblog_music`` and ``myblog_worker`` raise on this condition too, but they
+    also raise when the load SUCCEEDS and a required key is absent. This service
+    still has no such check — a `/myblog/backend` value that parses but omits
+    ``EDGE_SECRET`` boots here and 403s every CloudFront request. That gap is
+    older than this change and is left as its own piece of work; do not read the
+    parity below as covering it.
+
+    Everything that can fail is inside the ``try``: constructing the client
+    (``NoRegionError``) and parsing the value (``JSONDecodeError``, which the
+    `/myblog/backend` parameter has actually been written badly enough to raise
+    before) are as much "the load failed" as the API call is, and each must
+    still produce a log line naming the parameter.
+    """
+    import boto3
+
+    try:
+        ssm = boto3.client("ssm")
+        val = ssm.get_parameter(Name=param, WithDecryption=True)
+        return json.loads(val["Parameter"]["Value"])
+    except Exception as e:
+        logger.error("SSM load failed for %s: %s", param, e)
+        raise
 
 
 @lru_cache
 def get_settings() -> Settings:
     s = Settings()
 
-    if s.SECRETS_ARN or s.SECRETS_PARAM:
-        secrets = _load_secrets(s.SECRETS_PARAM, s.SECRETS_ARN)
+    if s.SECRETS_PARAM:
+        secrets = _load_secrets(s.SECRETS_PARAM)
         if secrets.get("DATABASE_URL"):
             s.DATABASE_URL = secrets["DATABASE_URL"]
         if secrets.get("EDGE_SECRET"):

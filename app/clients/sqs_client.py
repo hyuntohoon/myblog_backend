@@ -155,23 +155,22 @@ def _parse_dt(raw) -> datetime | None:
 
 
 # Connection status changes only when the worker rotates/invalidates the token (~hourly
-# at most), so cache it across warm Lambda invocations rather than hitting Secrets
-# Manager on every 연동-tab open.
+# at most), so cache it across warm Lambda invocations rather than hitting SSM on
+# every 연동-tab open.
 _CONN_TTL_SEC = 300.0
 _conn_cache: dict = {"val": None, "ts": 0.0}
 
 
 def get_spotify_connection_status() -> SpotifyConnectionStatus:
-    """Read the 연동-tab status from Secrets Manager myblog/spotify (TTL-cached).
+    """Read the 연동-tab status from SSM /myblog/spotify (TTL-cached).
 
     ``connected`` = a refresh token is stored; ``needs_reauth`` = the worker's last
     refresh was rejected (invalid_grant → "재인증 필요"); ``last_successful_refresh_at`` =
     when the token last worked. Never returns the token itself."""
     import time
 
-    arn = settings.SPOTIFY_SECRETS_ARN
     param = settings.SPOTIFY_SECRETS_PARAM
-    if not arn and not param:
+    if not param:
         return SpotifyConnectionStatus()
     now = time.time()
     if _conn_cache["val"] is not None and now - _conn_cache["ts"] < _CONN_TTL_SEC:
@@ -179,13 +178,9 @@ def get_spotify_connection_status() -> SpotifyConnectionStatus:
     try:
         import boto3
 
-        # SSM (SECRETS_PARAM) preferred → Secrets Manager fallback (CHORE-secrets-ssm-migration)
-        if param:
-            ssm = boto3.client("ssm", region_name=settings.AWS_DEFAULT_REGION)
-            payload = json.loads(ssm.get_parameter(Name=param, WithDecryption=True)["Parameter"]["Value"])
-        else:
-            sm = boto3.client("secretsmanager", region_name=settings.AWS_DEFAULT_REGION)
-            payload = json.loads(sm.get_secret_value(SecretId=arn)["SecretString"])
+        # SSM Parameter Store only (CHORE-secrets-ssm-migration).
+        ssm = boto3.client("ssm", region_name=settings.AWS_DEFAULT_REGION)
+        payload = json.loads(ssm.get_parameter(Name=param, WithDecryption=True)["Parameter"]["Value"])
         status = SpotifyConnectionStatus(
             connected=bool(payload.get("refresh_token") or payload.get("SPOTIFY_REFRESH_TOKEN")),
             needs_reauth=bool(payload.get("needs_reauth")),
