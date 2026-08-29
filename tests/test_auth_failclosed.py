@@ -14,6 +14,7 @@ import pytest
 from fastapi import HTTPException
 
 import app.core.auth as auth
+import app.core.authz as authz
 
 
 def _settings(**kw):
@@ -58,27 +59,27 @@ def test_prod_with_pool_id_requires_a_token(monkeypatch):
 
 def test_require_owner_local_env_bypasses(monkeypatch):
     monkeypatch.setattr(auth, "settings", _settings(ENV="local", OWNER_SUB="owner-sub"))
-    assert auth.require_owner(claims={}) == {}
+    assert authz.require_owner(claims={}) == {}
 
 
 def test_require_owner_503_when_owner_sub_unset_in_prod(monkeypatch):
     # OWNER_SUB unset in prod is a misconfiguration — must 503, never fall open
     monkeypatch.setattr(auth, "settings", _settings(OWNER_SUB=""))
     with pytest.raises(HTTPException) as ei:
-        auth.require_owner(claims={"sub": "anyone"})
+        authz.require_owner(claims={"sub": "anyone"})
     assert ei.value.status_code == 503
 
 
 def test_require_owner_403_for_non_owner_member(monkeypatch):
     monkeypatch.setattr(auth, "settings", _settings(OWNER_SUB="owner-sub"))
     with pytest.raises(HTTPException) as ei:
-        auth.require_owner(claims={"sub": "some-member-sub"})
+        authz.require_owner(claims={"sub": "some-member-sub"})
     assert ei.value.status_code == 403
 
 
 def test_require_owner_allows_the_owner(monkeypatch):
     monkeypatch.setattr(auth, "settings", _settings(OWNER_SUB="owner-sub"))
-    assert auth.require_owner(claims={"sub": "owner-sub"}) == {"sub": "owner-sub"}
+    assert authz.require_owner(claims={"sub": "owner-sub"}) == {"sub": "owner-sub"}
 
 
 # SEC-2 (OPS-safety-net-drift Step 3): ENV *absence* must be restrictive.

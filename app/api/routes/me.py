@@ -32,7 +32,8 @@ from app.api.schemas import (
     UpdateMeRequest,
 )
 from app.clients.cognito_client import CognitoDeleteError, delete_cognito_user
-from app.core.auth import is_owner, require_cognito_token, require_owner
+from app.core.auth import require_cognito_token
+from app.core.authz import is_owner, require_owner
 from app.core.config import get_settings
 from app.core.ids import parse_uuid_or_404
 from app.db.session import get_db

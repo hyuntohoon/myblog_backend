@@ -14,7 +14,7 @@ from app.api.schemas import (
     WritePostRequest,
     WritePostResponse,
 )
-from app.core.auth import is_owner, require_owner, require_owner_or_draft_agent
+from app.core.authz import is_owner, require_owner, require_owner_or_draft_agent
 from app.db.session import get_db
 from app.di import get_post_service
 from app.services import content_sync

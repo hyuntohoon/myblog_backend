@@ -37,7 +37,7 @@ from app.api.schemas import (
 )
 from app.api.routes.me import provisioned_member_id, provisioned_owner_id
 from app.clients.sqs_client import get_spotify_connection_status
-from app.core.auth import require_owner_or_draft_agent
+from app.core.authz import require_owner_or_draft_agent
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.di import (

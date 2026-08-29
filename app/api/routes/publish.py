@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core.auth import require_owner
+from app.core.authz import require_owner
 from app.core.config import settings
 from app.db.session import get_db
 from app.services.content_sync import derive_subgenres, derive_subject_meta

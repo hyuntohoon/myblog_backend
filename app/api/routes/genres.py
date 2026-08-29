@@ -14,7 +14,7 @@ from app.api.schemas import (
     GenreTreeResponse,
     UpdateGenreRequest,
 )
-from app.core.auth import require_owner
+from app.core.authz import require_owner
 from app.core.cache import GENRE_CACHE_CONTROL
 from app.db.session import get_db
 from app.di import get_genre_service

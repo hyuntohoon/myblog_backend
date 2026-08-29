@@ -29,7 +29,8 @@ from app.api.schemas import (
     MyAlbumStateResponse,
     RatingAuthor,
 )
-from app.core.auth import require_cognito_token, require_owner
+from app.core.auth import require_cognito_token
+from app.core.authz import require_owner
 from app.core.config import get_settings
 from app.core.ids import parse_uuid_or_404
 from app.db.session import get_db

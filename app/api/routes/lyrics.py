@@ -30,7 +30,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.schemas import LyricsResponse, LyricsTranslationInfo
-from app.core.auth import require_cognito_token, require_owner
+from app.core.auth import require_cognito_token
+from app.core.authz import require_owner
 from app.db.session import get_db
 from app.di import get_lyrics_service
 from app.services.lyrics_service import (

@@ -16,7 +16,7 @@ from app.api.schemas import (
     ResearchStatusMapResponse,
     ResearchTriggerRequest,
 )
-from app.core.auth import require_owner
+from app.core.authz import require_owner
 from app.core.ids import parse_uuid_list_or_400, parse_uuid_or_404
 from app.db.session import get_db
 from app.di import get_research_service
