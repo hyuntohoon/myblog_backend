@@ -26,7 +26,7 @@ docker run --rm \
     # hold the same distributions, from the same wheels, as the one CI builds.
     # (The zips themselves are not byte-identical -- this script and the deploy
     # job use different zip tools and neither normalizes mtimes.)
-    python -m pip install --no-deps -r requirements.lock -t build \
+    python -m pip install --no-deps --no-cache-dir -r requirements.lock -t build \
       --platform manylinux2014_aarch64 \
       --python-version 3.12 \
       --implementation cp \

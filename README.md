@@ -116,8 +116,14 @@ pip install uv==0.12.7          # 정확히 이 버전 (스크립트가 검사�
   아무것도 안 바꾸고 다시 돌리면 결과가 같다.
 - `build.sh`는 비공개 `myblog_shared_db`를 받기 위해 `SHARED_DB_PAT`가 필요하다.
 
-알려진 한계: `myblog-shared-db`는 git 의존성이라 해시 고정(`--require-hashes`)을 쓸 수
-없고, 번들에서 유일하게 러너에서 빌드되는 패키지다(순수 파이썬 `py3-none-any`).
+알려진 한계 — `myblog-shared-db`는 git 의존성이다. `--require-hashes`는 모든 요구사항에
+해시를 요구하는데 `git+` URL은 해시를 가질 수 없으므로 쓸 수 없고, `--only-binary`도
+직접 URL에는 적용되지 않는다. 그래서 이 패키지 하나만은 고정된 wheel을 받는 게 아니라
+**배포 시점에 러너에서 빌드된다**(순수 파이썬 `py3-none-any`). 커밋 SHA는 고정돼 있지만
+그 빌드가 PyPI에서 끌어오는 build backend는 고정돼 있지 않다 — 즉 lock만이 번들의
+입력은 아니다. 닫으려면 shared_db를 wheel로 배포하고 해시를 lock에 넣어야 한다.
+재현성 검사는 두 설치 모두 `--no-cache-dir`로 돌려서, 두 번째 설치가 첫 번째가 만든
+wheel을 그대로 받지 않도록 — 즉 이 패키지가 검사 사각지대가 되지 않도록 — 한다.
 
 ## 왜 분리했는가
 

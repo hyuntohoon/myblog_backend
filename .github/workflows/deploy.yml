@@ -39,11 +39,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Pinned to a commit: this job also holds SHARED_DB_PAT, and a mutable
-      # major tag on a third-party action is a writable edge next to it.
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.6.0
+      # This job also holds SHARED_DB_PAT, so both halves of this step are pinned.
+      # The action pin alone is not enough: the action's real work is
+      # `docker run --privileged <image>`, and its default image is the mutable
+      # tag tonistiigi/binfmt:latest. A repush of that tag would get privileged
+      # execution on the runner one step before the PAT is written to ~/.gitconfig,
+      # so the image is pinned by digest too.
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
         with:
           platforms: arm64
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
 
       - name: Configure git auth for private package
         env:
@@ -63,7 +68,12 @@ jobs:
           TARGET_TWO="$(mktemp -d)"
           trap 'rm -rf "$TARGET_ONE" "$TARGET_TWO"' EXIT
           for target in "$TARGET_ONE" "$TARGET_TWO"; do
-            python -m pip install --no-deps -r requirements.lock -t "$target" \
+            # --no-cache-dir is what makes this a reproducibility test rather than
+            # a tautology: myblog-shared-db is a git dependency, so pip builds it on
+            # the runner, and without this the second install is just handed the
+            # wheel the first one built -- leaving the one distribution actually
+            # produced here as the only one the check could not see.
+            python -m pip install --no-deps --no-cache-dir -r requirements.lock -t "$target" \
               --platform manylinux2014_aarch64 \
               --python-version 3.12 \
               --implementation cp \
