@@ -39,7 +39,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: docker/setup-qemu-action@v3
+      # Pinned to a commit: this job also holds SHARED_DB_PAT, and a mutable
+      # major tag on a third-party action is a writable edge next to it.
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.6.0
         with:
           platforms: arm64
 
@@ -71,6 +73,8 @@ jobs:
           python scripts/distribution_manifest.py "$TARGET_ONE" > /tmp/manifest-one.txt
           python scripts/distribution_manifest.py "$TARGET_TWO" > /tmp/manifest-two.txt
           diff -u /tmp/manifest-one.txt /tmp/manifest-two.txt
+          find "$TARGET_ONE" -name "__pycache__" -type d -exec rm -rf {} +
+          find "$TARGET_ONE" -name "*.pyc" -delete
           cp -r app "$TARGET_ONE"/
           (cd "$TARGET_ONE" && python -m zipfile -c /tmp/backend-bundle.zip .)
           test -s /tmp/backend-bundle.zip
