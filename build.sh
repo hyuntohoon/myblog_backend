@@ -18,8 +18,15 @@ docker run --rm \
   -lc '
     echo "== pip install =="
     git config --global url."https://${SHARED_DB_PAT}@github.com/".insteadOf "https://github.com/"
-    python -m pip install --no-deps -r requirements.lock -t build --only-binary=:all:
-    # (필요 시) 누락 방지용 강제 설치 예: pip install pydantic-settings -t build
+    # Flags mirror scripts/compile_requirements.sh and deploy.yml: the lock was
+    # resolved for this exact target, so pinning it here keeps the local bundle
+    # byte-comparable with the one CI builds.
+    python -m pip install --no-deps -r requirements.lock -t build \
+      --platform manylinux2014_aarch64 \
+      --python-version 3.12 \
+      --implementation cp \
+      --abi cp312 \
+      --only-binary=:all:
     echo "== copy app =="
     cp -r app build/
     echo "== prune =="
