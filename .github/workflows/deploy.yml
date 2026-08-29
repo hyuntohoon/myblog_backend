@@ -39,13 +39,50 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Configure git auth for private package
         env:
           SHARED_DB_PAT: ${{ secrets.SHARED_DB_PAT }}
         run: git config --global url."https://${SHARED_DB_PAT}@github.com/".insteadOf "https://github.com/"
 
+      - name: Install lock compiler
+        run: python -m pip install pip-tools==7.6.1
+
+      - name: Check dependency lock
+        run: ./scripts/check_requirements_lock.sh
+
+      - name: Verify repeatable arm64 Lambda bundle
+        run: |
+          set -euo pipefail
+          TARGET_ONE="$(mktemp -d)"
+          TARGET_TWO="$(mktemp -d)"
+          trap 'rm -rf "$TARGET_ONE" "$TARGET_TWO"' EXIT
+          for target in "$TARGET_ONE" "$TARGET_TWO"; do
+            python -m pip install --no-deps -r requirements.lock -t "$target" \
+              --platform manylinux2014_aarch64 \
+              --python-version 3.12 \
+              --implementation cp \
+              --abi cp312 \
+              --only-binary=:all:
+          done
+          python scripts/distribution_manifest.py "$TARGET_ONE" > /tmp/manifest-one.txt
+          python scripts/distribution_manifest.py "$TARGET_TWO" > /tmp/manifest-two.txt
+          diff -u /tmp/manifest-one.txt /tmp/manifest-two.txt
+          cp -r app "$TARGET_ONE"/
+          (cd "$TARGET_ONE" && python -m zipfile -c /tmp/backend-bundle.zip .)
+          test -s /tmp/backend-bundle.zip
+          docker run --rm --platform linux/arm64 \
+            -e ENV=local \
+            -e DATABASE_URL=postgresql+psycopg://x:x@localhost/x \
+            -v "${TARGET_ONE}:/var/task:ro" -w /var/task \
+            --entrypoint /bin/bash public.ecr.aws/lambda/python:3.12 \
+            -lc "python -c 'from app.main import handler; assert callable(handler)'"
+
       - name: Install dependencies
-        run: pip install -r requirements.txt pyright
+        run: pip install -r requirements.lock pyright
 
       - name: Type check (pyright)
         run: pyright app/
@@ -65,7 +102,7 @@ jobs:
         run: git config --global url."https://${SHARED_DB_PAT}@github.com/".insteadOf "https://github.com/"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt -r requirements-test.txt
+        run: pip install -r requirements.lock -r requirements-test.txt
 
       # Unit suite only. Integration tests (tests/integration/*) are marked
       # `integration` and require a real DB via TEST_DB_URL — excluded from the
@@ -88,7 +125,7 @@ jobs:
         run: git config --global url."https://${SHARED_DB_PAT}@github.com/".insteadOf "https://github.com/"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.lock
 
       - name: Verify openapi.json is up to date
         env:
@@ -145,7 +182,7 @@ jobs:
         run: git config --global url."https://${SHARED_DB_PAT}@github.com/".insteadOf "https://github.com/"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt -r requirements-test.txt
+        run: pip install -r requirements.lock -r requirements-test.txt
 
       - name: Run integration suite
         env:
@@ -213,7 +250,12 @@ jobs:
       - name: Build zip
         run: |
           mkdir -p build
-          pip install -r requirements.txt -t build --platform manylinux2014_aarch64 --only-binary=:all:
+          pip install --no-deps -r requirements.lock -t build \
+            --platform manylinux2014_aarch64 \
+            --python-version 3.12 \
+            --implementation cp \
+            --abi cp312 \
+            --only-binary=:all:
           cp -r app build/
           find build -name "__pycache__" -type d -exec rm -rf {} +
           find build -name "*.pyc" -delete
