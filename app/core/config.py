@@ -164,6 +164,64 @@ def _mask(url: str) -> str:
         return url
 
 
+# --- Required-secret contract for the /myblog/backend SecureString -----------
+#
+# Derived from the runtime call sites, not from what the parameter happens to
+# contain today. A key is REQUIRED only when its absence breaks the service as a
+# whole; a key whose absence breaks one feature that already fails loudly at its
+# own call site is deliberately left optional, because raising here takes the
+# entire Lambda down — every read route included — to punish a partial outage.
+#
+# DATABASE_URL — `app/db/session.py` builds the engine at import time. Settings
+#   carries a *localhost* default for local dev, so an absent key does not
+#   surface as an empty string: the Lambda boots pointed at 127.0.0.1 and every
+#   `/api` route dies at request time with a connection error naming a host that
+#   does not exist in Lambda and no mention of SSM.
+# EDGE_SECRET — `app/main.py:edge_guard` requires it truthy before it will trust
+#   CloudFront's injected `x-origin-verify`. Empty is already fail-*closed* (the
+#   request falls through to the raw-invoke branch and 403s, it never fails
+#   open), but every CloudFront request — i.e. the whole site — 403s with a
+#   "Forbidden" that names nothing.
+#
+# GITHUB_TOKEN is NOT required, on purpose: it feeds three owner-only write
+# paths, none of them on a read path, and a rotated-out token must not take the
+# public API offline. Be precise about what "degraded" costs, because it is not
+# uniform and only the first of the three is loud:
+#   - POST /api/posts (`app/api/routes/publish.py`) returns 500 "Missing GitHub
+#     environment variables". Loud, and the caller learns nothing shipped.
+#   - DELETE/archive a post (`app/api/routes/posts.py` -> `remove_post_content`)
+#     returns success. `_github_config` logs and returns None, the route catches
+#     only RuntimeError, so the DB row is archived or deleted while the published
+#     MDX STAYS LIVE on the content repo — a takedown that takes nothing down.
+#   - Restore (`app/api/routes/posts.py` -> `republish_post_content`) likewise
+#     returns 200 "published" while the static page is never recreated (404).
+# The two silent ones are the reason absence is logged at WARNING rather than
+# passed over: the operator gets no other signal. WARNING (not INFO) because
+# nothing configures a level on this function — no LOG_LEVEL env var and no
+# ApplicationLogLevel in its LoggingConfig, verified against `ratemymusic-api`
+# 2026-08-29 — so the runtime bootstrap's root level decides, and WARNING is
+# above it under every default this runtime has shipped.
+#
+# COGNITO_USER_POOL_ID / COGNITO_ALLOWED_CLIENT_IDS / OWNER_SUB / DRAFT_AGENT_SUB
+# are not in this parameter at all — they arrive as Lambda env vars from
+# `infra/lambda.tf`, and `app/core/auth.py` already fails closed (503) on each.
+# SPOTIFY_SECRETS_PARAM points at a *different* parameter (`/myblog/spotify`)
+# that is read on demand per request and degrades to a 503, not at boot.
+REQUIRED_SECRET_KEYS: tuple[str, ...] = ("DATABASE_URL", "EDGE_SECRET")
+OPTIONAL_SECRET_KEYS: tuple[str, ...] = ("GITHUB_TOKEN",)
+
+
+def _present(value: object) -> bool:
+    """True when `value` is a usable secret string.
+
+    A key written as `null`, `""`, or `"   "` is as absent as a key that is not
+    there at all — SSM parameters are hand-edited JSON and all three shapes have
+    a plausible way of happening. Non-strings are rejected rather than coerced:
+    every field these feed is typed `str`.
+    """
+    return isinstance(value, str) and bool(value.strip())
+
+
 def _load_secrets(param: str) -> dict:
     """Load the secret JSON dict from SSM Parameter Store (SecureString).
 
@@ -175,12 +233,10 @@ def _load_secrets(param: str) -> dict:
     failed one layer later with an error that named neither SSM nor the
     parameter.
 
-    ``myblog_music`` and ``myblog_worker`` raise on this condition too, but they
-    also raise when the load SUCCEEDS and a required key is absent. This service
-    still has no such check — a `/myblog/backend` value that parses but omits
-    ``EDGE_SECRET`` boots here and 403s every CloudFront request. That gap is
-    older than this change and is left as its own piece of work; do not read the
-    parity below as covering it.
+    ``myblog_music`` and ``myblog_worker`` raise on this condition too, and as
+    of this change so does the successful-load-but-key-missing condition —
+    see ``_apply_secrets``. The required *set* is this service's own, not a copy
+    of theirs.
 
     Everything that can fail is inside the ``try``: constructing the client
     (``NoRegionError``) and parsing the value (``JSONDecodeError``, which the
@@ -199,18 +255,68 @@ def _load_secrets(param: str) -> dict:
         raise
 
 
+def _apply_secrets(s: Settings, secrets: object, param: str) -> None:
+    """Copy the loaded secret payload onto `s`, failing closed on a missing key.
+
+    Presence is decided from the PAYLOAD, never from the resulting attribute.
+    ``DATABASE_URL`` has a non-empty localhost default, so the ``if not
+    s.DATABASE_URL`` formulation that `myblog_music` and `myblog_worker` can use
+    (their defaults are ``""``) is silently a no-op here — it would let a
+    parameter that omits the key boot the Lambda against 127.0.0.1. Asking what
+    SSM actually supplied is the only check that catches it.
+
+    Values are assigned verbatim. Whitespace is used to judge presence but never
+    stripped: ``EDGE_SECRET`` is compared byte-for-byte against the value
+    CloudFront injects from this same parameter, so silently trimming it here
+    would 403 the whole site to "fix" a value the edge still sends untrimmed.
+
+    Raises ValueError naming the parameter and the missing KEYS. No secret value
+    is included, and none is logged.
+    """
+    if not isinstance(secrets, dict):
+        raise ValueError(
+            f"{param} must hold a JSON object of secret keys; parsed as "
+            f"{type(secrets).__name__}. Fix the SecureString value."
+        )
+
+    missing = [k for k in REQUIRED_SECRET_KEYS if not _present(secrets.get(k))]
+    if missing:
+        raise ValueError(
+            f"Required secrets missing from {param}: {sorted(missing)}. "
+            "The parameter was read and parsed as JSON, so this is not an SSM or "
+            "IAM failure — these keys are absent, empty, or not strings. The "
+            "process refuses to start rather than serve on defaults: "
+            "DATABASE_URL would fall back to a localhost engine and EDGE_SECRET "
+            "would 403 every CloudFront request."
+        )
+
+    for key in OPTIONAL_SECRET_KEYS:
+        if not _present(secrets.get(key)):
+            logger.warning(
+                "%s has no usable %s; boot continues by design (this key is "
+                "optional — requiring it would take every read route down for an "
+                "owner-only feature). Degraded while it is absent: POST /api/posts "
+                "returns 500, and post delete/archive and restore return SUCCESS "
+                "while silently not removing or not recreating the published MDX.",
+                param,
+                key,
+            )
+
+    s.DATABASE_URL = secrets["DATABASE_URL"]
+    s.EDGE_SECRET = secrets["EDGE_SECRET"]
+    if _present(secrets.get("GITHUB_TOKEN")):
+        s.GITHUB_TOKEN = secrets["GITHUB_TOKEN"]
+
+
 @lru_cache
 def get_settings() -> Settings:
     s = Settings()
 
+    # Gated on SECRETS_PARAM, which only a deployed environment sets
+    # (infra/lambda.tf). Local dev and the test suite leave it empty, take no
+    # SSM call, and are unaffected by the required-key contract above.
     if s.SECRETS_PARAM:
-        secrets = _load_secrets(s.SECRETS_PARAM)
-        if secrets.get("DATABASE_URL"):
-            s.DATABASE_URL = secrets["DATABASE_URL"]
-        if secrets.get("EDGE_SECRET"):
-            s.EDGE_SECRET = secrets["EDGE_SECRET"]
-        if secrets.get("GITHUB_TOKEN"):
-            s.GITHUB_TOKEN = secrets["GITHUB_TOKEN"]
+        _apply_secrets(s, _load_secrets(s.SECRETS_PARAM), s.SECRETS_PARAM)
 
     logger.debug("ENV=%s DATABASE_URL=%s", s.ENV, _mask(s.DATABASE_URL))
     return s
