@@ -68,6 +68,19 @@ def _override(app, svc):
     app.dependency_overrides[get_db] = lambda: MagicMock()
 
 
+@pytest.fixture(autouse=True)
+def _no_override_leak(app):
+    """Clear dependency overrides even when an assertion fails.
+
+    These tests install a fake `require_cognito_token` and a MagicMock `get_db`.
+    Clearing at the end of the test body (the pattern this file first used) leaks
+    both on any failure, turning one real failure into a cascade of unrelated ones
+    in every later test in the session. Review caught it.
+    """
+    yield
+    app.dependency_overrides.clear()
+
+
 def _as(app, sub: str):
     """Answer the token dependency with these claims, bypassing signature checks.
 
@@ -95,7 +108,6 @@ class TestNonOwnerIsRefused:
         assert resp.status_code == 403, f"{path} answered a non-owner"
         # The point of the boundary: the owner's rows are never even loaded.
         assert getattr(svc, method_name).call_count == 0
-        app.dependency_overrides.clear()
 
     @pytest.mark.parametrize("path", _PATHS)
     def test_missing_owner_sub_in_prod_is_503_not_open(self, client, app, path):
@@ -110,7 +122,6 @@ class TestNonOwnerIsRefused:
             resp = client.get(path)
 
         assert resp.status_code == 503, f"{path} did not fail closed on unset OWNER_SUB"
-        app.dependency_overrides.clear()
 
 
 class TestOwnerStillReads:
@@ -145,4 +156,3 @@ class TestOwnerStillReads:
             resp = client.get(path)
 
         assert resp.status_code == 200, f"{path} refused the owner: {resp.text[:200]}"
-        app.dependency_overrides.clear()
