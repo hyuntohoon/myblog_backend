@@ -96,7 +96,25 @@ def _to_listen_response(item) -> ToListenItemResponse:
     )
 
 
-# ── reads (edge_guard only — no JWT; covered by GET /api/{proxy+}) ──────────────
+# ── reads (covered by the GET /api/{proxy+} catch-all) ─────────────────────────
+#
+# SEC-member-listening-data-boundary Step 1: the owner-global listening reads below
+# are `require_owner`, not edge_guard-only. They read `spotify_now_playing`,
+# `spotify_recent_albums`, `spotify_recent_tracks`, `spotify_play_events` and
+# `spotify_saved_tracks` — none of which has a user column, so every caller got the
+# OWNER's history. `SelfDashboard` renders their widgets for any signed-in member, so
+# a second member's dashboard was a window onto the owner's listening. The tables
+# cannot simply gain a `WHERE user_id`: `spotify_now_playing` is a CHECK-enforced
+# singleton and the rest have no per-member source to scope to (V45's header records
+# that as deliberate). So the read is gated, not scoped; Step 2 gives members their
+# OWN now-playing/recent-tracks over the V45 `spotify_member_*` tables, and Step 3
+# decides whether the album/좋아요 panels come back for them at all.
+#
+# These are GETs on the edge_guard catch-all, so the JWT is verified here in the
+# Lambda — exactly like the member-scoped stream-history reads below, and like the
+# already-owner-gated GET /api/posts. No `infra/apigateway.tf` change (CLAUDE.md's
+# route-match rule is satisfied by the catch-all that already serves them).
+# `tests/test_route_guard_map.py` pins every one of them.
 
 # FEAT-multi-user Phase 2: the to-listen queue is per-user, so this read is now
 # member-scoped (require_cognito_token via provisioned_member_id) — was edge_guard.
@@ -135,6 +153,7 @@ def list_reviewed(
 def list_recently_listened(
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    _claims: Dict = Depends(require_owner),
 ):
     # 최근 들은 앨범 (D25/D26) — read from the worker-fed cache; never calls Spotify.
     rows = svc.list_recently_listened(db)
@@ -155,6 +174,7 @@ def list_recently_listened(
 def list_recent_tracks(
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    _claims: Dict = Depends(require_owner),
 ):
     # 최근 재생 트랙 (D-B) — worker-fed rolling cache; never calls Spotify. Row 0 is
     # also the "최근 재생" latest-played fallback for the now-playing surface (D-C).
@@ -182,6 +202,7 @@ def list_listened_albums(
     offset: int = 0,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    _claims: Dict = Depends(require_owner),
 ):
     # 들은 앨범(누적) (D-A) — aggregate of the append-only spotify_play_events log
     # (per-album play_count + first/last play); no rollup table. DB-only read.
@@ -207,6 +228,7 @@ def list_listened_albums(
 def now_playing(
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    _claims: Dict = Depends(require_owner),
 ):
     np = svc.get_now_playing(db)
     if np is None or not np.is_playing:
@@ -241,9 +263,11 @@ def spotify_connection():
 
 
 # ── 분석 버킷: saved-tracks + genre/artist distribution (FEAT-genre-artist-distribution) ──
-# Reads are edge_guard-only (no JWT), matching the other library reads. Both the 좋아요
-# source and the 재생 (play-events) source return the SAME DistributionResponse so the
-# front chart component is source-agnostic (통일성).
+# Owner-only reads (`require_owner`) — see the SEC-member-listening-data-boundary note
+# at the top of the reads section: they aggregate the owner-global `spotify_saved_tracks`
+# and `spotify_play_events` tables and have no per-member scope to narrow to. Both the
+# 좋아요 source and the 재생 (play-events) source return the SAME DistributionResponse so
+# the front chart component is source-agnostic (통일성).
 
 def _distribution_response(d) -> DistributionResponse:
     breakdown = None
@@ -267,6 +291,7 @@ def list_saved_tracks(
     offset: int = 0,
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    _claims: Dict = Depends(require_owner),
 ):
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
@@ -303,6 +328,7 @@ def list_saved_tracks(
 def saved_tracks_genre_distribution(
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    _claims: Dict = Depends(require_owner),
 ):
     return _distribution_response(svc.saved_tracks_genre_distribution(db))
 
@@ -311,6 +337,7 @@ def saved_tracks_genre_distribution(
 def saved_tracks_artist_distribution(
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    _claims: Dict = Depends(require_owner),
 ):
     return _distribution_response(svc.saved_tracks_artist_distribution(db))
 
@@ -319,6 +346,7 @@ def saved_tracks_artist_distribution(
 def play_events_genre_distribution(
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    _claims: Dict = Depends(require_owner),
 ):
     return _distribution_response(svc.play_events_genre_distribution(db))
 
@@ -327,12 +355,13 @@ def play_events_genre_distribution(
 def play_events_artist_distribution(
     db: Session = Depends(get_db),
     svc: LibraryService = Depends(get_library_service),
+    _claims: Dict = Depends(require_owner),
 ):
     return _distribution_response(svc.play_events_artist_distribution(db))
 
 
 # ── 분석 버킷: lifetime stream-history top tracks/artists (FEAT-listening-history-import) ──
-# Ungated count/time rankings over the imported Spotify streaming history.
+# Member-scoped count/time rankings over the imported Spotify streaming history.
 # FEAT-multi-user Phase 3 (library user-scope): every stream-history read is
 # member-scoped (require_cognito_token via provisioned_member_id — was edge_guard)
 # and returns ONLY the requesting member's imported history (strict user_id

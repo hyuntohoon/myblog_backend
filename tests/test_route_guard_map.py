@@ -53,6 +53,19 @@ OWNER_ONLY = [
     'app.api.routes.library:classify_saved_tracks',                  # POST /api/library/saved-tracks/classify
     'app.api.routes.library:fill_saved_track_genres',                # POST /api/library/saved-tracks/fill-genres
     'app.api.routes.library:refresh_recent',                         # POST /api/library/refresh-recent
+    # SEC-member-listening-data-boundary Step 1 — the owner-global listening READS.
+    # These are GETs, and they were edge_guard-only: any signed-in member's
+    # dashboard rendered the owner's listening history off them. They have no
+    # per-member scope to narrow to (no user column), so they are gated, not scoped.
+    'app.api.routes.library:list_listened_albums',                   # GET /api/library/listened-albums
+    'app.api.routes.library:list_recent_tracks',                     # GET /api/library/recent-tracks
+    'app.api.routes.library:list_recently_listened',                 # GET /api/library/recently-listened
+    'app.api.routes.library:list_saved_tracks',                      # GET /api/library/saved-tracks
+    'app.api.routes.library:now_playing',                            # GET /api/library/now-playing
+    'app.api.routes.library:play_events_artist_distribution',        # GET /api/library/play-events/artist-distribution
+    'app.api.routes.library:play_events_genre_distribution',         # GET /api/library/play-events/genre-distribution
+    'app.api.routes.library:saved_tracks_artist_distribution',       # GET /api/library/saved-tracks/artist-distribution
+    'app.api.routes.library:saved_tracks_genre_distribution',        # GET /api/library/saved-tracks/genre-distribution
     'app.api.routes.lyrics:request_lyrics_translation',              # POST /api/lyrics/{spotify_track_id}/translation-request
     'app.api.routes.posts:delete_post',                              # DELETE /api/posts/{post_id}
     'app.api.routes.posts:get_post',                                 # GET /api/posts/{post_id}
