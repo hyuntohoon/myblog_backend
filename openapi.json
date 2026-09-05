@@ -8714,7 +8714,7 @@
     },
     "/api/playback/resolve": {
       "get": {
-        "description": "Map a catalog DB id \u2192 a Spotify URI (spotify:album|track:<spotify_id>) for the Web\nPlayback SDK (FEAT-spotify-streaming-playback Step 2). Unlike /spotify-token this is\nedge_guard-only \u2014 NO Cognito JWT, NO dedicated infra/apigateway.tf route: spotify_id is\na public identifier and the catalog is otherwise edge_guard-only (unified search, bucket\nreads), so there is nothing to JWT-gate. rule #9 holds: a direct catalog DB read, never a\nsynchronous Spotify content call. Bad type \u2192 422 (Literal); unknown/empty id \u2192 404.",
+        "description": "Map a catalog DB id \u2192 a playback URI for the requested provider.\n\nDefault and historical behaviour: a Spotify URI (spotify:album|track:<spotify_id>) for\nthe Web Playback SDK (FEAT-spotify-streaming-playback Step 2). `provider` is OPTIONAL\nand defaults to 'spotify', so every caller that predates\nFEAT-youtube-playback-provider Step A1 is unaffected \u2014 the parameter is additive, which\nis why this needs no contract-breaking change and no frontend change to keep working.\n\n`provider=youtube` reads the Step-A1 `track_provider_refs` mapping and returns\nyoutube:video:<videoId>. Track-only (YouTube has no album-context equivalent), and only\nwhile the mapping is still playable \u2014 see PlaybackService.resolve_uri.\n\nUnlike /spotify-token this is edge_guard-only \u2014 NO Cognito JWT, NO dedicated\ninfra/apigateway.tf route: spotify_id is a public identifier and the catalog is\notherwise edge_guard-only (unified search, bucket reads), so there is nothing to\nJWT-gate. A YouTube videoId is public in the same sense, and the mapping table holds no\nper-member data, so the gating does not change here either. rule #9 holds: a direct\ncatalog DB read, never a synchronous provider content call. Bad type or bad provider \u2192\n422 (Literal); unknown/empty id, or a track with no usable mapping \u2192 404.",
         "operationId": "resolve_playback_uri_api_playback_resolve_get",
         "parameters": [
           {
@@ -8736,6 +8736,20 @@
             "required": true,
             "schema": {
               "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "provider",
+            "required": false,
+            "schema": {
+              "default": "spotify",
+              "enum": [
+                "spotify",
+                "youtube"
+              ],
+              "title": "Provider",
               "type": "string"
             }
           }

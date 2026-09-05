@@ -27,12 +27,12 @@ from datetime import datetime, timezone
 from typing import Dict, Optional
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.core import kms_envelope
 from app.core.config import settings
-from myblog_shared_db.models import Album, Track, UserIntegration
+from myblog_shared_db.models import Album, Track, TrackProviderRef, UserIntegration
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,12 @@ class PlaybackItemNotFoundError(Exception):
 # call. Kept as a constant (not a setting) since it is a fixed Spotify endpoint.
 _SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 
+# YouTube Developer Policy III.E.4.c/.d — stored API data must be deleted or
+# refreshed within 30 calendar days, with no exception for a resource id obtained
+# from a plain public search.list. Enforced at resolve time as well as by the
+# Step-A5 sweep, because a sweep that is down is not a sweep.
+_YT_RETENTION_DAYS = 30
+
 # The streaming creds change only when the owner re-consents (~never), so cache the secret
 # read across warm Lambda invocations rather than hitting SSM on every play-token refresh.
 _CREDS_TTL_SEC = 300.0
@@ -92,16 +98,81 @@ class PlaybackService:
             logger.error("Failed to read Spotify secret for playback token: %s", e)
             return {}
 
-    def resolve_uri(self, db: Session, *, item_type: str, item_id: str) -> str:
-        """Map a catalog DB id → a Spotify URI via the stored ``spotify_id`` — a direct DB
-        read, NO Spotify search (rule #9-safe). ``spotify:album:<id>`` is played as a
-        context_uri; ``spotify:track:<id>`` as a uris[] entry. Raises
-        PlaybackItemNotFoundError (→404) for a malformed/unknown id or a row with no
-        spotify_id. ``item_type`` is constrained to 'album'|'track' by the route's Literal."""
+    def resolve_uri(
+        self,
+        db: Session,
+        *,
+        item_type: str,
+        item_id: str,
+        provider: str = "spotify",
+    ) -> str:
+        """Map a catalog DB id → a playback URI for ``provider`` — a direct DB read, NO
+        provider search on this path (rule #9-safe).
+
+        ``provider`` DEFAULTS TO SPOTIFY and every pre-existing caller omits it, so the
+        shipped behaviour is unchanged by construction: ``spotify:album:<id>`` is played as
+        a context_uri, ``spotify:track:<id>`` as a uris[] entry, both read from the in-row
+        ``spotify_id``. Spotify is not, and must not become, a row in track_provider_refs.
+
+        ``provider='youtube'`` reads the Step-A1 mapping table instead and returns
+        ``youtube:video:<videoId>``. It is TRACK-ONLY: YouTube has no album-context
+        equivalent of a Spotify context_uri, so an album asked for on YouTube is a 404
+        rather than a guess at a playlist.
+
+        A YouTube row only resolves while it is actually playable AND still inside its
+        retention window. Three conditions, each load-bearing for a different reason:
+
+        * ``verify_state='live'`` — a mapping the Step-A5 refresh job has since marked
+          'gone' or 'not_embeddable' resolves to 404, NOT to a dead videoId. Handing the
+          IFrame player an id we already know is dead turns a clean "no mapping" into an
+          opaque player error. 404 is what the shipped ``uris.ts`` already treats as a
+          durable miss.
+        * ``last_verified_at`` inside 30 days — this is the COMPLIANCE condition, and it
+          is enforced at READ time on purpose. YouTube Developer Policy III.E.4.c/.d cap
+          stored API data at 30 calendar days; the Step-A5 job is what deletes such rows,
+          but that job does not exist yet and, once it does, can be down for a week.
+          Serving a 45-day-old mapping because the sweep is broken is exactly the failure
+          the policy is about, so resolve refuses it on its own rather than trusting a
+          background job to have run.
+        * ``embeddable IS NOT FALSE`` — a known non-embeddable video cannot play in an
+          IFrame at all. NULL passes: it means videos.list has not been asked yet, which
+          is not the same as "known unplayable". NOTE that in v1 this tolerance protects
+          nothing — Step A3's PUT verifies with videos.list BEFORE writing, so the only
+          writer always has the value. It matters only if a future writer (a Milestone-B
+          import) skips that verification, and if A3 instead lands the column NOT NULL
+          this can tighten to ``IS TRUE``. Tracked as an open question on the RFC.
+
+        Raises PlaybackItemNotFoundError (→404) for a malformed/unknown id, a row with no
+        spotify_id, or an absent/unplayable provider mapping. ``item_type`` is constrained
+        to 'album'|'track' and ``provider`` to 'spotify'|'youtube' by the route's Literals.
+        """
         try:
             uuid.UUID(str(item_id))  # str() so a non-str caller can't raise an uncaught error
         except ValueError:
-            raise PlaybackItemNotFoundError(f"{item_type}:{item_id}")
+            raise PlaybackItemNotFoundError(f"{provider}:{item_type}:{item_id}")
+
+        if provider == "youtube":
+            if item_type != "track":
+                # No YouTube analogue of an album context_uri — see the docstring.
+                raise PlaybackItemNotFoundError(f"youtube:{item_type}:{item_id}")
+            video_id = db.execute(
+                select(TrackProviderRef.external_id).where(
+                    TrackProviderRef.track_id == item_id,
+                    TrackProviderRef.provider == "youtube",
+                    TrackProviderRef.verify_state == "live",
+                    # The III.E.4 retention window, enforced at read time so a
+                    # stalled refresh job cannot make us serve expired API data.
+                    TrackProviderRef.last_verified_at
+                    > func.now() - text("interval '%d days'" % _YT_RETENTION_DAYS),
+                    # IS NOT FALSE, not "== True": NULL means "not yet checked by
+                    # videos.list", which is not the same as "known unplayable".
+                    TrackProviderRef.embeddable.isnot(False),
+                )
+            ).scalar_one_or_none()
+            if not video_id:
+                raise PlaybackItemNotFoundError(f"youtube:track:{item_id}")
+            return f"youtube:video:{video_id}"
+
         model = Album if item_type == "album" else Track
         spotify_id = db.query(model.spotify_id).filter(model.id == item_id).scalar()
         if not spotify_id:
