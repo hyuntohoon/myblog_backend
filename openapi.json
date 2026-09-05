@@ -5539,6 +5539,60 @@
         ],
         "title": "WritePostResponse",
         "type": "object"
+      },
+      "YouTubeMappingRequest": {
+        "properties": {
+          "video_id": {
+            "pattern": "^[A-Za-z0-9_-]{11}$",
+            "title": "Video Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "video_id"
+        ],
+        "title": "YouTubeMappingRequest",
+        "type": "object"
+      },
+      "YouTubeMappingResponse": {
+        "properties": {
+          "duration_sec": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Sec"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "track_id": {
+            "title": "Track Id",
+            "type": "string"
+          },
+          "verified_at": {
+            "format": "date-time",
+            "title": "Verified At",
+            "type": "string"
+          },
+          "video_id": {
+            "title": "Video Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "track_id",
+          "provider",
+          "video_id",
+          "verified_at"
+        ],
+        "title": "YouTubeMappingResponse",
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -8803,6 +8857,103 @@
           }
         ],
         "summary": "Spotify Token",
+        "tags": [
+          "playback"
+        ]
+      }
+    },
+    "/api/playback/track/{track_id}/youtube-mapping": {
+      "delete": {
+        "description": "The \"wrong video\" action. Idempotent \u2014 deleting nothing is still a 204.",
+        "operationId": "delete_youtube_mapping_api_playback_track__track_id__youtube_mapping_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "track_id",
+            "required": true,
+            "schema": {
+              "title": "Track Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Youtube Mapping",
+        "tags": [
+          "playback"
+        ]
+      },
+      "put": {
+        "description": "Confirm a videoId for a track. Verified server-side before it is written.\n\nThe four status fields are read from `videos.list` here, never taken from\nthe request body: the row is GLOBAL, so a client-supplied `embeddable` would\nlet one member write a mapping every other member resolves and fails to\nplay.",
+        "operationId": "put_youtube_mapping_api_playback_track__track_id__youtube_mapping_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "track_id",
+            "required": true,
+            "schema": {
+              "title": "Track Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/YouTubeMappingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YouTubeMappingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Put Youtube Mapping",
         "tags": [
           "playback"
         ]
