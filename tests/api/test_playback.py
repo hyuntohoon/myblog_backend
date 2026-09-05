@@ -619,7 +619,14 @@ class TestResolveRoute:
         assert resp.status_code == 200
         assert resp.json()["uri"] == "spotify:track:abc123"
         # query keys are type/id (RFC), threaded to the service as item_type/item_id.
-        assert svc.resolve_uri.call_args.kwargs == {"item_type": "track", "item_id": _UUID}
+        # provider is threaded too and DEFAULTS TO SPOTIFY when the query omits it
+        # (FEAT-youtube-playback-provider Step A1) — the route-level half of the
+        # control that keeps every pre-A1 caller working unchanged.
+        assert svc.resolve_uri.call_args.kwargs == {
+            "item_type": "track",
+            "item_id": _UUID,
+            "provider": "spotify",
+        }
         app.dependency_overrides.clear()
 
     def test_resolve_not_found_maps_to_404(self, client, app):
@@ -650,6 +657,36 @@ class TestResolveRoute:
         self._override_db(app)
 
         resp = client.get("/api/playback/resolve?type=track")  # no id
+
+        assert resp.status_code == 422
+        svc.resolve_uri.assert_not_called()
+        app.dependency_overrides.clear()
+
+    def test_resolve_threads_an_explicit_provider(self, client, app):
+        svc = MagicMock()
+        svc.resolve_uri.return_value = "youtube:video:abc123"
+        _override(app, svc)
+        self._override_db(app)
+
+        resp = client.get(
+            f"/api/playback/resolve?type=track&id={_UUID}&provider=youtube"
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["uri"] == "youtube:video:abc123"
+        assert svc.resolve_uri.call_args.kwargs["provider"] == "youtube"
+        app.dependency_overrides.clear()
+
+    def test_resolve_unknown_provider_422(self, client, app):
+        """A provider we have no adapter for must be rejected at the edge by the
+        Literal, never reach the service, and never fall through to Spotify."""
+        svc = MagicMock()
+        _override(app, svc)
+        self._override_db(app)
+
+        resp = client.get(
+            f"/api/playback/resolve?type=track&id={_UUID}&provider=soundcloud"
+        )
 
         assert resp.status_code == 422
         svc.resolve_uri.assert_not_called()
