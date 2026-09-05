@@ -27,7 +27,11 @@ from sqlalchemy.orm import sessionmaker
 
 from tests.integration.catalog import seed_catalog
 
-from app.services.playback_service import PlaybackItemNotFoundError, PlaybackService
+from app.services.playback_service import (
+    PlaybackItemNotFoundError,
+    PlaybackMappingGoneError,
+    PlaybackService,
+)
 
 TEST_DB_URL = os.environ.get("TEST_DB_URL")
 
@@ -223,37 +227,72 @@ class TestUnplayableMappingsDoNotResolve:
     passes trivially against a mock; only a real engine runs the filter."""
 
     @pytest.mark.parametrize("state", ["gone", "not_embeddable"])
-    def test_a_non_live_mapping_is_a_404(self, db, svc, catalog, state):
-        """Handing the IFrame player an id the refresh job already marked dead
-        turns a clean 'no mapping' into an opaque player error."""
+    def test_a_non_live_mapping_is_GONE_not_missing(self, db, svc, catalog, state):
+        """V56/OQ8 reversed this too: it used to be a 404.
+
+        Handing the IFrame player an id the refresh job already marked dead
+        turns a clean answer into an opaque player error — that part is
+        unchanged. What changed is WHICH clean answer: a row that exists but is
+        dead is `PlaybackMappingGoneError` (410), not "never mapped" (404),
+        because the front-end caches a 404 durably for the tab and must not
+        cache this one.
+
+        The assertion is on the SPECIFIC exception. `PlaybackMappingGoneError`
+        does not inherit from `PlaybackItemNotFoundError`, so a regression that
+        collapsed the two would fail here rather than pass on a base class.
+        """
         track_id = catalog.track_ids[0]
         _map(db, track_id, "dead-video", verify_state=state)
 
-        with pytest.raises(PlaybackItemNotFoundError):
+        with pytest.raises(PlaybackMappingGoneError):
             svc.resolve_uri(
                 db, item_type="track", item_id=track_id, provider="youtube"
             )
 
-    def test_a_known_non_embeddable_mapping_is_a_404(self, db, svc, catalog):
+    def test_a_known_non_embeddable_mapping_is_GONE_not_missing(self, db, svc, catalog):
         track_id = catalog.track_ids[0]
         _map(db, track_id, "no-embed", embeddable=False)
 
-        with pytest.raises(PlaybackItemNotFoundError):
+        with pytest.raises(PlaybackMappingGoneError):
             svc.resolve_uri(
                 db, item_type="track", item_id=track_id, provider="youtube"
             )
 
-    def test_embeddable_null_still_resolves(self, db, svc, catalog):
-        """NULL means 'videos.list has not checked this yet', which is NOT the
-        same as 'known unplayable'. This is why the filter is `IS NOT FALSE`
-        rather than `== True` — with `== True` this test fails and a freshly
-        confirmed mapping would be unplayable until the first refresh ran."""
-        track_id = catalog.track_ids[0]
-        _map(db, track_id, "unchecked-yet", embeddable=None)
+    def test_gone_and_never_mapped_are_different_exceptions(self, db, svc, catalog):
+        """The OQ8 distinction, asserted as a distinction rather than twice.
 
-        assert svc.resolve_uri(
-            db, item_type="track", item_id=track_id, provider="youtube"
-        ) == "youtube:video:unchecked-yet"
+        A suite that only ever exercised one branch would pass against a service
+        that always returned that one — this pins both against the SAME service
+        in one test.
+        """
+        mapped_dead, never_mapped = catalog.track_ids[0], catalog.track_ids[1]
+        _map(db, mapped_dead, "dead", verify_state="gone")
+
+        with pytest.raises(PlaybackMappingGoneError):
+            svc.resolve_uri(db, item_type="track", item_id=mapped_dead, provider="youtube")
+        with pytest.raises(PlaybackItemNotFoundError):
+            svc.resolve_uri(db, item_type="track", item_id=never_mapped, provider="youtube")
+
+    def test_embeddable_can_no_longer_be_null_at_all(self, db, svc, catalog):
+        """THIS TEST'S PREDECESSOR ASSERTED THE OPPOSITE, AND V56 REVERSED IT.
+
+        The A1 version was `test_embeddable_null_still_resolves`, justified as
+        "NULL means videos.list has not checked this yet, which is not the same
+        as known unplayable". That reasoning was inverted, and OQ9 says why: the
+        only v1 writer is A3's PUT, which calls `videos.list` BEFORE inserting,
+        so no writer can produce NULL. The tolerance protected nothing and cost
+        a real distinction — it forced `resolve` to spell `IS NOT FALSE` where
+        it meant `IS TRUE`.
+
+        V56 makes the column NOT NULL, so the case is now unreachable at the
+        DATABASE, not merely unused by the code. Asserting the IntegrityError is
+        what proves the migration is applied here; a test that simply stopped
+        exercising NULL would pass against a test branch still on V55.
+        """
+        track_id = catalog.track_ids[0]
+        with pytest.raises(IntegrityError):
+            _map(db, track_id, "unchecked-yet", embeddable=None)
+            db.flush()
 
 
 class TestRetentionWindowIsEnforcedAtReadTime:
@@ -298,7 +337,11 @@ class TestRetentionWindowIsEnforcedAtReadTime:
         ).one()
         assert (state, emb) == ("live", True), "row must be healthy apart from its age"
 
-        with pytest.raises(PlaybackItemNotFoundError):
+        # 410 since OQ8: the row EXISTS, it is simply past the III.E.4 ceiling.
+        # Answering 404 here would tell the front-end "never mapped", which it
+        # caches durably — so an expired mapping would look permanently absent
+        # even after the A5 job refreshed it.
+        with pytest.raises(PlaybackMappingGoneError):
             svc.resolve_uri(
                 db, item_type="track", item_id=track_id, provider="youtube"
             )

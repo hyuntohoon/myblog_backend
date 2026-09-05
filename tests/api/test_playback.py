@@ -5,16 +5,28 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.core.auth import require_cognito_token
 from app.db.session import get_db
 from app.di import get_playback_service
 from app.services.playback_service import (
     PlaybackItemNotFoundError,
+    PlaybackMappingForbiddenError,
+    PlaybackMappingGoneError,
     PlaybackNotConfiguredError,
     PlaybackNotConnectedError,
     PlaybackProviderError,
     PlaybackService,
+    PlaybackVideoUnusableError,
 )
+from app.clients.youtube_client import (
+    YouTubeError,
+    YouTubeNotConfigured,
+    YouTubeQuotaExhausted,
+    YouTubeRateLimited,
+)
+from app.api.routes.me import provisioned_member_id
 
 _UUID = "11111111-1111-1111-1111-111111111111"
 
@@ -725,3 +737,209 @@ class TestResolveUri:
         except PlaybackItemNotFoundError:
             pass
         db.query.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# FEAT-youtube-playback-provider Step A3 — mapping routes.
+# ---------------------------------------------------------------------------
+
+_MEMBER = uuid.UUID("22222222-2222-2222-2222-222222222222")
+_VIDEO = "dQw4w9WgXcQ"
+
+
+def _override_mapping_path(app, svc):
+    app.dependency_overrides[get_playback_service] = lambda: svc
+    app.dependency_overrides[get_db] = lambda: MagicMock()
+    app.dependency_overrides[provisioned_member_id] = lambda: _MEMBER
+
+
+class TestResolveGoneVsNotFound:
+    """OQ8. Both are "you cannot play this", and the front-end must tell them apart:
+    404 is a durable miss it caches for the tab; 410 drives the re-pick affordance
+    and must never be cached durably."""
+
+    def _setup(self, app, exc):
+        svc = MagicMock()
+        svc.resolve_uri.side_effect = exc
+        _override(app, svc)
+        app.dependency_overrides[get_db] = lambda: None
+        return svc
+
+    def test_a_dead_mapping_is_410(self, client, app):
+        self._setup(app, PlaybackMappingGoneError("youtube:track:x"))
+        try:
+            resp = client.get(f"/api/playback/resolve?type=track&id={_UUID}&provider=youtube")
+            assert resp.status_code == 410, resp.text
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_an_unmapped_track_is_still_404(self, client, app):
+        """The control. Without it, mapping BOTH to 410 would pass the test above."""
+        self._setup(app, PlaybackItemNotFoundError("youtube:track:x"))
+        try:
+            resp = client.get(f"/api/playback/resolve?type=track&id={_UUID}&provider=youtube")
+            assert resp.status_code == 404, resp.text
+        finally:
+            app.dependency_overrides.clear()
+
+
+class TestMappingRoutesAreWired:
+    def test_put_returns_the_written_mapping(self, client, app):
+        svc = MagicMock()
+        svc.set_youtube_mapping.return_value = {
+            "track_id": _UUID, "provider": "youtube", "video_id": _VIDEO,
+            "duration_sec": 253, "verified_at": "2026-09-06T00:00:00Z",
+        }
+        _override_mapping_path(app, svc)
+        try:
+            resp = client.put(
+                f"/api/playback/track/{_UUID}/youtube-mapping", json={"video_id": _VIDEO}
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["video_id"] == _VIDEO
+            # The acting member comes from the JWT, never from the body or path.
+            assert svc.set_youtube_mapping.call_args.kwargs["member_id"] == _MEMBER
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_delete_is_204(self, client, app):
+        svc = MagicMock()
+        svc.delete_youtube_mapping.return_value = None
+        _override_mapping_path(app, svc)
+        try:
+            resp = client.delete(f"/api/playback/track/{_UUID}/youtube-mapping")
+            assert resp.status_code == 204, resp.text
+            assert svc.delete_youtube_mapping.call_args.kwargs["member_id"] == _MEMBER
+        finally:
+            app.dependency_overrides.clear()
+
+    @pytest.mark.parametrize("bad", [
+        "short", "way-too-long-for-an-id", "has spaces", "has/slash", "", "abcdefghijk!",
+    ])
+    def test_a_malformed_video_id_is_422_before_the_service_is_called(self, client, app, bad):
+        """A videoId is 11 URL-safe base64 chars. Rejecting at the boundary keeps
+        anything shaped like a path or a URL out of the client's `id=` parameter,
+        and costs no quota."""
+        svc = MagicMock()
+        _override_mapping_path(app, svc)
+        try:
+            resp = client.put(
+                f"/api/playback/track/{_UUID}/youtube-mapping", json={"video_id": bad}
+            )
+            assert resp.status_code == 422, resp.text
+            svc.set_youtube_mapping.assert_not_called()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_a_well_formed_video_id_is_accepted(self, client, app):
+        """Control for the parametrised rejection above: the pattern must not
+        reject everything."""
+        svc = MagicMock()
+        svc.set_youtube_mapping.return_value = {
+            "track_id": _UUID, "provider": "youtube", "video_id": "kffacxfA7G4",
+            "duration_sec": None, "verified_at": "2026-09-06T00:00:00Z",
+        }
+        _override_mapping_path(app, svc)
+        try:
+            resp = client.put(
+                f"/api/playback/track/{_UUID}/youtube-mapping", json={"video_id": "kffacxfA7G4"}
+            )
+            assert resp.status_code == 200, resp.text
+        finally:
+            app.dependency_overrides.clear()
+
+
+class TestMappingErrorTaxonomy:
+    @pytest.mark.parametrize("exc,status,marker", [
+        (PlaybackMappingForbiddenError("t"), 403, "own buckets"),
+        (PlaybackItemNotFoundError("t"), 404, "No such track"),
+        (PlaybackVideoUnusableError("v: embedding disabled"), 422, "youtube_video_unusable"),
+        (YouTubeQuotaExhausted("quotaExceeded"), 429, "youtube_quota_exhausted"),
+        (YouTubeRateLimited("rateLimitExceeded"), 429, "youtube_rate_limited"),
+        (YouTubeNotConfigured("no key"), 503, "youtube_not_configured"),
+        (YouTubeError("HTTP 500"), 502, "youtube_upstream_error"),
+    ])
+    def test_put_maps_each_failure_to_its_own_status(self, client, app, exc, status, marker):
+        svc = MagicMock()
+        svc.set_youtube_mapping.side_effect = exc
+        _override_mapping_path(app, svc)
+        try:
+            resp = client.put(
+                f"/api/playback/track/{_UUID}/youtube-mapping", json={"video_id": _VIDEO}
+            )
+            assert resp.status_code == status, resp.text
+            assert marker in str(resp.json()["detail"])
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_no_standing_is_403_not_404(self, client, app):
+        """403, not 404: the track exists and the caller simply lacks standing.
+
+        Hiding it behind a 404 would make "add it to a bucket first" —
+        the one action that grants access — undiscoverable.
+        """
+        svc = MagicMock()
+        svc.delete_youtube_mapping.side_effect = PlaybackMappingForbiddenError("t")
+        _override_mapping_path(app, svc)
+        try:
+            resp = client.delete(f"/api/playback/track/{_UUID}/youtube-mapping")
+            assert resp.status_code == 403, resp.text
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_the_two_429s_carry_different_retry_after_values(self, client, app):
+        """Both are 429; only the daily one should say "come back tomorrow"."""
+        got = {}
+        for exc, key in [(YouTubeQuotaExhausted("q"), "daily"), (YouTubeRateLimited("r"), "window")]:
+            svc = MagicMock()
+            svc.set_youtube_mapping.side_effect = exc
+            _override_mapping_path(app, svc)
+            try:
+                resp = client.put(
+                    f"/api/playback/track/{_UUID}/youtube-mapping", json={"video_id": _VIDEO}
+                )
+                got[key] = (resp.status_code, resp.headers.get("Retry-After"), resp.json()["detail"])
+            finally:
+                app.dependency_overrides.clear()
+        assert got["daily"][0] == got["window"][0] == 429
+        assert int(got["daily"][1]) > int(got["window"][1])
+        assert "midnight" in got["daily"][2] and "midnight" not in got["window"][2]
+
+
+class TestMappingRoutesAreAuthenticated:
+    """Both routes are authenticated mutations and each needs its own entry in
+    infra/apigateway.tf — without it they 404 at the edge no matter what the
+    router says. Checked structurally: the suite runs with ENV=local, where the
+    JWT check is disabled by design, so calling the route proves nothing."""
+
+    @pytest.mark.parametrize("method", ["PUT", "DELETE"])
+    def test_the_route_depends_on_provisioned_member_id(self, app, method):
+        from app.api.routes.playback import delete_youtube_mapping, put_youtube_mapping
+
+        target = put_youtube_mapping if method == "PUT" else delete_youtube_mapping
+        routes = [
+            r for r in _iter_endpoint_routes(app)
+            if getattr(r, "endpoint", None) is target
+        ]
+        assert routes, f"{method} youtube-mapping is not registered on the app"
+        deps = {d.call for d in routes[0].dependant.dependencies}
+        assert provisioned_member_id in deps, (
+            "the acting member must come from the verified JWT, never from the path"
+        )
+
+
+def _iter_endpoint_routes(container):
+    """Every route carrying an `endpoint`, however deeply include_router nested it.
+
+    Recent FastAPI does not flatten `include_router` into `app.routes`; children
+    hide behind `_IncludedRouter.original_router` and carry the UNPREFIXED path,
+    so a lookup by full path silently finds nothing.
+    """
+    routes = getattr(container, "routes", None)
+    if routes is None and hasattr(container, "original_router"):
+        routes = getattr(container.original_router, "routes", None)
+    for r in routes or []:
+        if hasattr(r, "endpoint"):
+            yield r
+        if hasattr(r, "routes") or hasattr(r, "original_router"):
+            yield from _iter_endpoint_routes(r)
