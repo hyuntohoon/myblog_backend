@@ -599,6 +599,24 @@ class PlaybackResolveResponse(BaseModel):
     uri: str
 
 
+# --- FEAT-youtube-playback-provider Step A3: mapping writes ---
+
+class YouTubeMappingRequest(BaseModel):
+    # A YouTube videoId: 11 chars of the URL-safe base64 alphabet. Constrained
+    # here so a malformed value is a 422 at the boundary rather than a wasted
+    # videos.list call — and so nothing shaped like a path or a URL reaches the
+    # client's `id=` parameter.
+    video_id: str = Field(..., pattern=r"^[A-Za-z0-9_-]{11}$")
+
+
+class YouTubeMappingResponse(BaseModel):
+    track_id: str
+    provider: str
+    video_id: str
+    duration_sec: Optional[int] = None
+    verified_at: datetime
+
+
 # ====== Member library (FEAT-member-dashboard Step 2, D18) ======
 # Two sources: 들을 것 (to-listen queue, a real table) and 평론한 앨범 (reviewed,
 # a derived view over published posts). 최근 들은 앨범 is Step 3.

@@ -21,18 +21,27 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
 import httpx
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, delete, func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.core import kms_envelope
 from app.core.config import settings
-from myblog_shared_db.models import Album, Track, TrackProviderRef, UserIntegration
+from myblog_shared_db.models import (
+    Album,
+    ReviewBucket,
+    ReviewBucketItem,
+    Track,
+    TrackProviderRef,
+    UserIntegration,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +65,35 @@ class PlaybackGrantRevokedError(PlaybackProviderError):
     can prompt a reconnect and the next mint is a clean 404."""
 
 
+class PlaybackMappingForbiddenError(Exception):
+    """The caller has no STANDING to change this mapping (-> 403).
+
+    FEAT-youtube-playback-provider OQ7: a member may change a mapping only for a
+    track they hold in one of their own buckets. Not owner-only, and not
+    "whoever created the row" — see PlaybackService._has_standing.
+    """
+
+
+class PlaybackVideoUnusableError(Exception):
+    """videos.list says the proposed video cannot be embedded and played (-> 422).
+
+    Raised BEFORE any write. The mapping table is global, so a video that fails
+    verification must never reach it — one member's bad pick would otherwise be
+    every member's dead playback.
+    """
+
+
+class PlaybackMappingGoneError(Exception):
+    """The provider mapping EXISTS but is no longer playable (-> 410 Gone).
+
+    FEAT-youtube-playback-provider OQ8. Distinct from PlaybackItemNotFoundError
+    (-> 404, "never mapped") because the two demand different UI: 404 is a
+    durable miss the front may cache for the tab, while this one drives the
+    "wrong video, pick another" affordance and must never be cached durably —
+    the A5 refresh job or a member re-pick can clear it at any time.
+    """
+
+
 class PlaybackItemNotFoundError(Exception):
     """No catalog Album/Track with that id, or the row has no spotify_id, or the id is
     malformed — the resolve route maps this to 404 (FEAT-spotify-streaming-playback Step 2)."""
@@ -71,6 +109,27 @@ _SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 # from a plain public search.list. Enforced at resolve time as well as by the
 # Step-A5 sweep, because a sweep that is down is not a sweep.
 _YT_RETENTION_DAYS = 30
+
+# Twin of myblog_music/app/services/youtube_candidate_service.py. The `T`
+# section is OPTIONAL because a live stream reports a bare `P0D` — measured
+# against the live API 2026-09-06. Zero reads as UNKNOWN, never as a
+# zero-second video.
+_ISO_DURATION = re.compile(
+    r"^P(?:(?P<d>\d+)D)?(?:T(?:(?P<h>\d+)H)?(?:(?P<m>\d+)M)?(?:(?P<s>\d+)S)?)?$"
+)
+
+
+def _parse_iso8601_duration(value: Optional[str]) -> Optional[int]:
+    """`PT4M13S` -> 253. None for anything unparseable or zero."""
+    # isinstance(str), not truthiness: re.match raises TypeError on a truthy
+    # non-string. Twin of the music parser.
+    if not isinstance(value, str) or not value:
+        return None
+    m = _ISO_DURATION.match(value)
+    if not m:
+        return None
+    d, h, mi, sec = (int(m.group(k) or 0) for k in ("d", "h", "m", "s"))
+    return (d * 86400 + h * 3600 + mi * 60 + sec) or None
 
 # The streaming creds change only when the owner re-consents (~never), so cache the secret
 # read across warm Lambda invocations rather than hitting SSM on every play-token refresh.
@@ -120,13 +179,19 @@ class PlaybackService:
         rather than a guess at a playlist.
 
         A YouTube row only resolves while it is actually playable AND still inside its
-        retention window. Three conditions, each load-bearing for a different reason:
+        retention window. Since Step A3 (OQ8) a row that EXISTS but fails any of the
+        three conditions raises ``PlaybackMappingGoneError`` (-> 410), not
+        ``PlaybackItemNotFoundError`` (-> 404): the front-end caches a 404 durably for
+        the tab, and a dead mapping must not be remembered that way — the A5 job or a
+        member re-pick can clear it at any moment. 404 now means "never mapped" and
+        nothing else.
+
+        Three conditions, each load-bearing for a different reason:
 
         * ``verify_state='live'`` — a mapping the Step-A5 refresh job has since marked
-          'gone' or 'not_embeddable' resolves to 404, NOT to a dead videoId. Handing the
-          IFrame player an id we already know is dead turns a clean "no mapping" into an
-          opaque player error. 404 is what the shipped ``uris.ts`` already treats as a
-          durable miss.
+          'gone' or 'not_embeddable' resolves to 410, NOT to a dead videoId. Handing the
+          IFrame player an id we already know is dead turns a clean answer into an
+          opaque player error.
         * ``last_verified_at`` inside 30 days — this is the COMPLIANCE condition, and it
           is enforced at READ time on purpose. YouTube Developer Policy III.E.4.c/.d cap
           stored API data at 30 calendar days; the Step-A5 job is what deletes such rows,
@@ -134,17 +199,18 @@ class PlaybackService:
           Serving a 45-day-old mapping because the sweep is broken is exactly the failure
           the policy is about, so resolve refuses it on its own rather than trusting a
           background job to have run.
-        * ``embeddable IS NOT FALSE`` — a known non-embeddable video cannot play in an
-          IFrame at all. NULL passes: it means videos.list has not been asked yet, which
-          is not the same as "known unplayable". NOTE that in v1 this tolerance protects
-          nothing — Step A3's PUT verifies with videos.list BEFORE writing, so the only
-          writer always has the value. It matters only if a future writer (a Milestone-B
-          import) skips that verification, and if A3 instead lands the column NOT NULL
-          this can tighten to ``IS TRUE``. Tracked as an open question on the RFC.
+        * ``embeddable IS TRUE`` — a known non-embeddable video cannot play in an IFrame
+          at all. This was ``IS NOT FALSE`` in A1, to admit a NULL meaning "videos.list
+          has not been asked yet". OQ9 closed that: V56 makes the column NOT NULL, and
+          A3's PUT verifies with videos.list BEFORE writing, so no writer can produce
+          NULL. With the column NOT NULL the two spellings are equivalent; ``IS TRUE`` is
+          used because ``IS NOT FALSE`` implies a NULL case that can no longer exist.
 
         Raises PlaybackItemNotFoundError (→404) for a malformed/unknown id, a row with no
-        spotify_id, or an absent/unplayable provider mapping. ``item_type`` is constrained
-        to 'album'|'track' and ``provider`` to 'spotify'|'youtube' by the route's Literals.
+        spotify_id, or a provider mapping that was NEVER MADE; PlaybackMappingGoneError
+        (→410) for one that exists but is dead, expired or unplayable. ``item_type`` is
+        constrained to 'album'|'track' and ``provider`` to 'spotify'|'youtube' by the
+        route's Literals.
         """
         try:
             uuid.UUID(str(item_id))  # str() so a non-str caller can't raise an uncaught error
@@ -155,29 +221,254 @@ class PlaybackService:
             if item_type != "track":
                 # No YouTube analogue of an album context_uri — see the docstring.
                 raise PlaybackItemNotFoundError(f"youtube:{item_type}:{item_id}")
-            video_id = db.execute(
-                select(TrackProviderRef.external_id).where(
+            # ONE round trip that answers both questions: does a row exist, and
+            # is it still playable. The playability predicate is evaluated in
+            # SQL rather than in Python so the RETENTION CLOCK IS THE DATABASE'S
+            # — comparing `last_verified_at` against a Python `now()` would let
+            # a skewed Lambda clock serve API data past the III.E.4 ceiling.
+            row = db.execute(
+                select(
+                    TrackProviderRef.external_id,
+                    and_(
+                        TrackProviderRef.verify_state == "live",
+                        # The III.E.4 retention window, enforced at READ time so a
+                        # stalled refresh job cannot make us serve expired API data.
+                        TrackProviderRef.last_verified_at
+                        > func.now() - text("interval '%d days'" % _YT_RETENTION_DAYS),
+                        # V56 (OQ9): IS TRUE, not IS NOT FALSE. `embeddable` is now
+                        # NOT NULL, so the NULL tolerance the A1 version carried has
+                        # no value left to admit — and IS NOT FALSE on a NOT NULL
+                        # column reads as if it might.
+                        TrackProviderRef.embeddable.is_(True),
+                    ).label("playable"),
+                ).where(
                     TrackProviderRef.track_id == item_id,
                     TrackProviderRef.provider == "youtube",
-                    TrackProviderRef.verify_state == "live",
-                    # The III.E.4 retention window, enforced at read time so a
-                    # stalled refresh job cannot make us serve expired API data.
-                    TrackProviderRef.last_verified_at
-                    > func.now() - text("interval '%d days'" % _YT_RETENTION_DAYS),
-                    # IS NOT FALSE, not "== True": NULL means "not yet checked by
-                    # videos.list", which is not the same as "known unplayable".
-                    TrackProviderRef.embeddable.isnot(False),
                 )
-            ).scalar_one_or_none()
-            if not video_id:
+            ).first()
+            if row is None:
+                # No mapping was ever made. The caller may offer to create one.
                 raise PlaybackItemNotFoundError(f"youtube:track:{item_id}")
-            return f"youtube:video:{video_id}"
+            if not row.external_id:
+                # A1 had this guard and the restructure dropped it as a side
+                # effect rather than as a decision. `external_id` is NOT NULL but
+                # carries no non-empty CHECK, and `youtube:video:` is a URI the
+                # player cannot do anything with. Unreachable while A3 is the
+                # only writer; restored because "unreachable" is a property of
+                # today's writers, not of the column.
+                raise PlaybackItemNotFoundError(f"youtube:track:{item_id}")
+            if not row.playable:
+                # OQ8: the row EXISTS but is dead, expired, or no longer
+                # embeddable. This is a different answer from "never mapped" and
+                # the front-end must be able to tell them apart: a 404 is a
+                # durable miss it may cache for the tab, while this state drives
+                # the "wrong video, pick another" affordance and must never be
+                # cached durably — the A5 job or a re-pick can clear it.
+                raise PlaybackMappingGoneError(f"youtube:track:{item_id}")
+            return f"youtube:video:{row.external_id}"
 
         model = Album if item_type == "album" else Track
         spotify_id = db.query(model.spotify_id).filter(model.id == item_id).scalar()
         if not spotify_id:
             raise PlaybackItemNotFoundError(f"{item_type}:{item_id}")
         return f"spotify:{item_type}:{spotify_id}"
+
+    # ------------------------------------------------------------------
+    # FEAT-youtube-playback-provider Step A3 — mapping writes.
+    # ------------------------------------------------------------------
+
+    def _has_standing(self, db: Session, *, member_id: uuid.UUID, track_id: str) -> bool:
+        """Does this member hold the track in one of their OWN buckets? (OQ7)
+
+        CROSS-REPO TWIN: `myblog_music/app/api/routers/search.py` applies the same
+        join and filter before spending a `search.list` unit. This is duplicated
+        AUTHORIZATION code, so CLAUDE.md's sweep rule applies — a change here
+        (excluding a bucket kind, handling a non-UUID sub, soft-deleted buckets)
+        belongs in both copies in the same change.
+
+        ONE DELIBERATE DIVERGENCE: under the ENV=local|dev bypass music skips the
+        predicate entirely (its `require_cognito_token` returns `{}`, so there is
+        no sub to scope by), while this copy still evaluates it against the
+        local-dev member id. Backend is the stricter of the two, which is the
+        right direction for a write path.
+
+        This is the authorization predicate for both mutations, and it is
+        STANDING rather than ownership on purpose. `track_provider_refs` is
+        GLOBAL — one row per track for everyone — so "who created the row" is
+        not a meaningful permission: the row affects every member equally.
+
+        `require_owner` was the obvious alternative and was rejected on a
+        MEASUREMENT, not on taste: the 29 live `item_type='playback'` rows split
+        owner 16 / one non-owner member 13, so an owner-only gate would lock the
+        second-heaviest user of this exact surface out of fixing their own bad
+        matches.
+
+        `created_by_member_id` exists on the row and is NEVER read here. Reading
+        it would reintroduce per-member ownership through the back door, which
+        is precisely what OQ7 decided against.
+
+        No `item_type` filter, deliberately: a track in the member's system
+        playback queue counts, because pressing play is exactly how a member
+        discovers that a mapping is wrong. Restricting to 'track' rows would
+        deny standing to the person best placed to notice the defect.
+
+        Known and accepted limitation: a track NOBODY has bucketed cannot be
+        mapped. An album-view picker must bucket first.
+        """
+        return db.execute(
+            select(ReviewBucketItem.id)
+            .join(ReviewBucket, ReviewBucket.id == ReviewBucketItem.bucket_id)
+            .where(
+                ReviewBucketItem.track_id == track_id,
+                ReviewBucket.user_id == member_id,
+            )
+            .limit(1)
+        ).first() is not None
+
+    def set_youtube_mapping(
+        self,
+        db: Session,
+        *,
+        member_id: uuid.UUID,
+        track_id: str,
+        video_id: str,
+    ) -> Dict:
+        """Verify a videoId with the API, then upsert the global mapping.
+
+        THE VERIFICATION IS NOT OPTIONAL AND IS NOT THE CLIENT'S TO SUPPLY.
+        Because the row is global, accepting `embeddable` / `privacy_status`
+        from the request body would let one member write a mapping every other
+        member resolves and fails to play. The four status fields come from
+        `videos.list` on the server or the write does not happen.
+
+        Session lifecycle: the outbound call happens BEFORE any write and the
+        read that precedes it is committed first, so no transaction is held
+        across the network call (the recurring bug class that produced the Neon
+        ProtocolViolation).
+
+        ACCEPTED CONSEQUENCE of that boundary: standing is evaluated on the other
+        side of the commit from the write, so a member who removes the track from
+        their last bucket DURING the `videos.list` call still lands the write.
+        They held standing when they asked, the window is one HTTP round trip,
+        and the alternative — holding the transaction across the network call —
+        is the bug this shape exists to avoid. Stated rather than left implied.
+        """
+        try:
+            uuid.UUID(str(track_id))
+        except ValueError:
+            raise PlaybackItemNotFoundError(f"youtube:track:{track_id}")
+
+        exists = db.execute(
+            select(Track.id).where(Track.id == track_id).limit(1)
+        ).first()
+        if exists is None:
+            raise PlaybackItemNotFoundError(f"youtube:track:{track_id}")
+        if not self._has_standing(db, member_id=member_id, track_id=track_id):
+            raise PlaybackMappingForbiddenError(track_id)
+
+        # Release the transaction before the outbound call.
+        db.commit()
+
+        from app.clients.youtube_client import youtube
+
+        details = youtube.list_videos([video_id])
+        item = details.get(video_id)
+        if item is None:
+            # videos.list reports a deleted/private/nonexistent id by OMISSION.
+            # Refusing here is what keeps a dead id out of the global table.
+            raise PlaybackVideoUnusableError(f"{video_id}: not found, deleted or private")
+        status = item.get("status") or {}
+        if status.get("embeddable") is not True:
+            raise PlaybackVideoUnusableError(f"{video_id}: embedding disabled by the owner")
+        if status.get("privacyStatus") != "public":
+            raise PlaybackVideoUnusableError(f"{video_id}: not public")
+
+        duration_sec = _parse_iso8601_duration((item.get("contentDetails") or {}).get("duration"))
+
+        # ONE STATEMENT, not read-then-write. The read this method started with is
+        # separated from the write by a commit AND by up to `YOUTUBE_HTTP_TIMEOUT`
+        # seconds of `videos.list`, so two callers both saw "no row" and both
+        # INSERTed — violating `uq_tpr_track_provider` and surfacing as an
+        # unhandled IntegrityError (a 500). That is not a remote race: OQ7's whole
+        # design is that several members may re-point the same global row, and a
+        # single member double-clicking "confirm" reproduces it alone.
+        #
+        # `created_by_member_id` is deliberately ABSENT from the update set: it
+        # records who FIRST confirmed this mapping. Rewriting it on every re-pick
+        # would destroy the only thing the column is for.
+        now = datetime.now(timezone.utc)
+        stmt = (
+            pg_insert(TrackProviderRef)
+            .values(
+                track_id=track_id,
+                provider="youtube",
+                external_id=video_id,
+                external_kind="video",
+                source="user_confirmed",
+                created_by_member_id=member_id,
+                embeddable=True,
+                privacy_status=status.get("privacyStatus"),
+                made_for_kids=status.get("madeForKids"),
+                duration_sec=duration_sec,
+                verify_state="live",
+                last_verified_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_update(
+                constraint="uq_tpr_track_provider",
+                set_={
+                    "external_id": video_id,
+                    "embeddable": True,
+                    "privacy_status": status.get("privacyStatus"),
+                    "made_for_kids": status.get("madeForKids"),
+                    "duration_sec": duration_sec,
+                    "verify_state": "live",
+                    "last_verified_at": now,
+                    "updated_at": now,
+                },
+            )
+        )
+        db.execute(stmt)
+        db.commit()
+        return {
+            "track_id": str(track_id),
+            "provider": "youtube",
+            "video_id": video_id,
+            "duration_sec": duration_sec,
+            "verified_at": now,
+        }
+
+    def delete_youtube_mapping(
+        self, db: Session, *, member_id: uuid.UUID, track_id: str
+    ) -> None:
+        """The "wrong video" action. Same standing check as the write.
+
+        Idempotent: deleting a mapping that is not there is a 204, not a 404.
+        The caller's intent — "this track must not resolve to that video" — is
+        satisfied either way, and a 404 here would make the UI report a failure
+        for a state the member asked for.
+        """
+        try:
+            uuid.UUID(str(track_id))
+        except ValueError:
+            raise PlaybackItemNotFoundError(f"youtube:track:{track_id}")
+        # Existence BEFORE standing, matching the PUT. Without it the two routes
+        # disagree about an unknown track — 404 from one, 403 from the other —
+        # and a caller cannot tell "this track does not exist" from "you may not
+        # touch it".
+        if db.execute(
+            select(Track.id).where(Track.id == track_id).limit(1)
+        ).first() is None:
+            raise PlaybackItemNotFoundError(f"youtube:track:{track_id}")
+        if not self._has_standing(db, member_id=member_id, track_id=track_id):
+            raise PlaybackMappingForbiddenError(track_id)
+        db.execute(
+            delete(TrackProviderRef).where(
+                TrackProviderRef.track_id == track_id,
+                TrackProviderRef.provider == "youtube",
+            )
+        )
+        db.commit()
 
     def _load_streaming_creds(self) -> Dict[str, str]:
         """Resolve {client_id, client_secret, streaming_refresh_token}. Settings (env)

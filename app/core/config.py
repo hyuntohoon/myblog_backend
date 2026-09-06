@@ -105,6 +105,25 @@ class Settings(BaseSettings):
     # SSM SecureString name only (CHORE-secrets-ssm-migration).
     SPOTIFY_SECRETS_PARAM: str = ""
 
+    # YouTube Data API v3 (FEAT-youtube-playback-provider Step A3).
+    # `videos.list` ONLY here — discovery (`search.list`, 100 units) lives in
+    # myblog_music and must not gain a second home. Backend calls this to VERIFY
+    # a videoId before writing it into the GLOBAL mapping table: if the write
+    # trusted the request body, one member could poison a row every other member
+    # resolves.
+    #
+    # Its own SSM parameter, shared with music and (at A5) worker — one key, one
+    # home, one rotation. Deliberately NOT in REQUIRED_SECRET_KEYS: backend must
+    # keep booting when YouTube is unconfigured, and the mapping routes fail
+    # closed with 503 on their own. An absent credential must never widen
+    # anything, and it must not take the site down either.
+    YOUTUBE_SECRETS_PARAM: str = ""
+    YOUTUBE_API_KEY: str = ""
+    YOUTUBE_API_BASE: str = "https://www.googleapis.com/youtube/v3"
+    # ONE call per request here (unlike music's two), but the same reasoning: it
+    # must fit inside the Lambda timeout with room for the DB work either side.
+    YOUTUBE_HTTP_TIMEOUT: float = 4.0
+
     # FEAT-pocket-buckit Step 3 (D3 / OQ8): the async Spotify Web Playback SDK token mint
     # (GET /api/playback/spotify-token) exchanges a per-listener `streaming`-scope refresh
     # token for a short-lived access token. These are read from the myblog/spotify secret
@@ -317,6 +336,19 @@ def get_settings() -> Settings:
     # SSM call, and are unaffected by the required-key contract above.
     if s.SECRETS_PARAM:
         _apply_secrets(s, _load_secrets(s.SECRETS_PARAM), s.SECRETS_PARAM)
+
+    # Loaded separately and NOT required — see YOUTUBE_SECRETS_PARAM above. The
+    # failure is logged and swallowed, which is correct HERE and nowhere else in
+    # this function, precisely because the fallback state is "refuse" (the
+    # mapping routes 503 on an empty key) rather than "proceed on a default".
+    if s.YOUTUBE_SECRETS_PARAM and not s.YOUTUBE_API_KEY:
+        try:
+            s.YOUTUBE_API_KEY = _load_secrets(s.YOUTUBE_SECRETS_PARAM).get("YOUTUBE_API_KEY", "")
+        except Exception:
+            logger.error(
+                "YouTube secret load failed for %s; the mapping routes will fail closed.",
+                s.YOUTUBE_SECRETS_PARAM,
+            )
 
     logger.debug("ENV=%s DATABASE_URL=%s", s.ENV, _mask(s.DATABASE_URL))
     return s
