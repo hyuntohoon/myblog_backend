@@ -394,6 +394,20 @@ class TestRepickAndDelete:
             {"t": track},
         ).scalar_one() == 0
 
+    def test_deleting_an_UNKNOWN_track_is_404_not_403(
+        self, db, svc, stub_youtube
+    ):
+        """PUT and DELETE must agree about a track that does not exist.
+
+        Checking only standing answers 403 for an unknown id — which reads as
+        "you may not touch it" for something there is nothing to touch, and
+        differs from what PUT says about the same id.
+        """
+        stub_youtube(_StubYouTube())
+        member = _member(db, "holder")
+        with pytest.raises(PlaybackItemNotFoundError):
+            svc.delete_youtube_mapping(db, member_id=member, track_id=str(uuid.uuid4()))
+
     def test_deleting_an_absent_mapping_is_not_an_error(
         self, db, svc, catalog, stub_youtube
     ):
@@ -411,6 +425,98 @@ class TestRepickAndDelete:
 # ---------------------------------------------------------------------------
 # V56 as a database fact
 # ---------------------------------------------------------------------------
+
+class TestResolveRefusesAnEmptyExternalId:
+    def test_a_blank_video_id_does_not_resolve_to_a_bare_prefix(self, db, catalog):
+        """`external_id` is NOT NULL but carries no non-empty CHECK.
+
+        A blank one is a playable-looking row that resolves to `youtube:video:`,
+        a URI the player can do nothing with. Unreachable while A3 is the only
+        writer — but "unreachable" is a property of today's writers, not of the
+        column, and the guard was dropped as a side effect of a restructure
+        rather than as a decision.
+        """
+        from app.services.playback_service import PlaybackItemNotFoundError
+
+        track = catalog.track_ids[0]
+        db.execute(
+            text(
+                "INSERT INTO track_provider_refs "
+                "(track_id, provider, external_id, external_kind, source, embeddable) "
+                "VALUES (:t, 'youtube', '', 'video', 'user_confirmed', TRUE)"
+            ),
+            {"t": track},
+        )
+        db.flush()
+        with pytest.raises(PlaybackItemNotFoundError):
+            PlaybackService().resolve_uri(
+                db, item_type="track", item_id=track, provider="youtube"
+            )
+
+
+class TestConcurrentConfirmDoesNotCollide:
+    """The review's second blocker, pinned against a real UNIQUE constraint.
+
+    The first revision was a read-then-write separated by a commit AND by up to
+    `YOUTUBE_HTTP_TIMEOUT` seconds of `videos.list`. Two callers both saw "no
+    row" and both INSERTed, violating `uq_tpr_track_provider` — and
+    `_map_mapping_errors` had no IntegrityError branch, so it surfaced as a 500.
+
+    This is NOT a remote race. OQ7's whole design is that several members may
+    re-point the same global row, and a single member double-clicking "confirm"
+    reproduces it alone. A mock cannot show any of it: the constraint is the
+    database's.
+    """
+
+    def test_a_second_confirm_of_the_same_track_upserts_rather_than_raising(
+        self, db, svc, catalog, stub_youtube
+    ):
+        """Simulates the interleaving: BOTH callers observe an empty table, then
+        both write. Under the old read-then-write the second raised."""
+        stub_youtube(_StubYouTube())
+        a, b = _member(db, "racer-a"), _member(db, "racer-b")
+        track = catalog.track_ids[0]
+        _bucket_with_track(db, a, track)
+        _bucket_with_track(db, b, track)
+
+        # Both "reads" happen before either write — the state each caller
+        # validated against.
+        assert db.execute(
+            text("SELECT count(*) FROM track_provider_refs WHERE track_id = :t"),
+            {"t": track},
+        ).scalar_one() == 0
+
+        svc.set_youtube_mapping(db, member_id=a, track_id=track, video_id=VIDEO)
+        svc.set_youtube_mapping(db, member_id=b, track_id=track, video_id=OTHER_VIDEO)
+
+        rows = db.execute(
+            text(
+                "SELECT external_id, created_by_member_id FROM track_provider_refs "
+                "WHERE track_id = :t"
+            ),
+            {"t": track},
+        ).all()
+        assert len(rows) == 1, "the upsert must not duplicate the row"
+        assert rows[0][0] == OTHER_VIDEO, "the later confirm wins"
+        assert rows[0][1] == a, "attribution still names the FIRST confirmer"
+
+    def test_the_same_member_confirming_twice_is_idempotent(
+        self, db, svc, catalog, stub_youtube
+    ):
+        """The double-click case, which needs no second member at all."""
+        stub_youtube(_StubYouTube())
+        member = _member(db, "double-clicker")
+        track = catalog.track_ids[0]
+        _bucket_with_track(db, member, track)
+
+        svc.set_youtube_mapping(db, member_id=member, track_id=track, video_id=VIDEO)
+        svc.set_youtube_mapping(db, member_id=member, track_id=track, video_id=VIDEO)
+
+        assert db.execute(
+            text("SELECT count(*) FROM track_provider_refs WHERE track_id = :t"),
+            {"t": track},
+        ).scalar_one() == 1
+
 
 class TestV56ConstraintsAreReallyEnforced:
     def test_embeddable_rejects_null(self, db, catalog):

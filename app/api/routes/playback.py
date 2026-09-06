@@ -15,6 +15,7 @@ import uuid
 from typing import Dict, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.routes.me import _member_id, provisioned_member_id
@@ -80,7 +81,23 @@ def spotify_token(
     )
 
 
-@router.get("/resolve", response_model=PlaybackResolveResponse)
+@router.get(
+    "/resolve",
+    response_model=PlaybackResolveResponse,
+    # `raise HTTPException` is INVISIBLE to FastAPI's schema generator, so
+    # without this the 410 that OQ8 exists to give the front-end would live only
+    # in prose — and A4 is specced to branch on 410 vs 404.
+    responses={
+        404: {"description": "No such item, or no provider mapping was ever made."},
+        410: {
+            "description": (
+                "The provider mapping EXISTS but is dead, past the 30-day retention "
+                "window, or no longer embeddable. Distinct from 404 on purpose: a 404 "
+                "may be cached durably for the tab, this may not."
+            )
+        },
+    },
+)
 def resolve_playback_uri(
     item_type: Literal["album", "track"] = Query(..., alias="type"),
     item_id: str = Query(..., alias="id"),
@@ -105,8 +122,12 @@ def resolve_playback_uri(
     otherwise edge_guard-only (unified search, bucket reads), so there is nothing to
     JWT-gate. A YouTube videoId is public in the same sense, and the mapping table holds no
     per-member data, so the gating does not change here either. rule #9 holds: a direct
-    catalog DB read, never a synchronous provider content call. Bad type or bad provider →
-    422 (Literal); unknown/empty id, or a track with no usable mapping → 404."""
+    catalog DB read, never a synchronous provider content call.
+
+    Status codes: bad type or bad provider → 422 (Literal); unknown/empty id, or a
+    provider mapping that was NEVER MADE → 404; a mapping that EXISTS but is dead,
+    expired or unplayable → 410 (OQ8). The 404/410 split is not cosmetic — the front
+    caches a 404 durably for the tab and must not cache the 410."""
     try:
         uri = svc.resolve_uri(
             db, item_type=item_type, item_id=item_id, provider=provider
@@ -154,6 +175,15 @@ def _map_mapping_errors(e: Exception) -> HTTPException:
         )
     if isinstance(e, PlaybackItemNotFoundError):
         return HTTPException(status_code=404, detail="No such track")
+    if isinstance(e, IntegrityError):
+        # Two callers confirming the same track can still collide even with the
+        # upsert — a concurrent DELETE of the row between the INSERT and the
+        # conflict resolution, or a FK gone from under us. 409 rather than 500:
+        # the request was valid and the caller can simply try again.
+        return HTTPException(
+            status_code=409,
+            detail="mapping_conflict: another change landed first — retry.",
+        )
     if isinstance(e, PlaybackVideoUnusableError):
         # 422: the request was well-formed and authorized, but the video the
         # member picked cannot be embedded and played. The mapping is global, so

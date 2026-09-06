@@ -8768,7 +8768,7 @@
     },
     "/api/playback/resolve": {
       "get": {
-        "description": "Map a catalog DB id \u2192 a playback URI for the requested provider.\n\nDefault and historical behaviour: a Spotify URI (spotify:album|track:<spotify_id>) for\nthe Web Playback SDK (FEAT-spotify-streaming-playback Step 2). `provider` is OPTIONAL\nand defaults to 'spotify', so every caller that predates\nFEAT-youtube-playback-provider Step A1 is unaffected \u2014 the parameter is additive, which\nis why this needs no contract-breaking change and no frontend change to keep working.\n\n`provider=youtube` reads the Step-A1 `track_provider_refs` mapping and returns\nyoutube:video:<videoId>. Track-only (YouTube has no album-context equivalent), and only\nwhile the mapping is still playable \u2014 see PlaybackService.resolve_uri.\n\nUnlike /spotify-token this is edge_guard-only \u2014 NO Cognito JWT, NO dedicated\ninfra/apigateway.tf route: spotify_id is a public identifier and the catalog is\notherwise edge_guard-only (unified search, bucket reads), so there is nothing to\nJWT-gate. A YouTube videoId is public in the same sense, and the mapping table holds no\nper-member data, so the gating does not change here either. rule #9 holds: a direct\ncatalog DB read, never a synchronous provider content call. Bad type or bad provider \u2192\n422 (Literal); unknown/empty id, or a track with no usable mapping \u2192 404.",
+        "description": "Map a catalog DB id \u2192 a playback URI for the requested provider.\n\nDefault and historical behaviour: a Spotify URI (spotify:album|track:<spotify_id>) for\nthe Web Playback SDK (FEAT-spotify-streaming-playback Step 2). `provider` is OPTIONAL\nand defaults to 'spotify', so every caller that predates\nFEAT-youtube-playback-provider Step A1 is unaffected \u2014 the parameter is additive, which\nis why this needs no contract-breaking change and no frontend change to keep working.\n\n`provider=youtube` reads the Step-A1 `track_provider_refs` mapping and returns\nyoutube:video:<videoId>. Track-only (YouTube has no album-context equivalent), and only\nwhile the mapping is still playable \u2014 see PlaybackService.resolve_uri.\n\nUnlike /spotify-token this is edge_guard-only \u2014 NO Cognito JWT, NO dedicated\ninfra/apigateway.tf route: spotify_id is a public identifier and the catalog is\notherwise edge_guard-only (unified search, bucket reads), so there is nothing to\nJWT-gate. A YouTube videoId is public in the same sense, and the mapping table holds no\nper-member data, so the gating does not change here either. rule #9 holds: a direct\ncatalog DB read, never a synchronous provider content call.\n\nStatus codes: bad type or bad provider \u2192 422 (Literal); unknown/empty id, or a\nprovider mapping that was NEVER MADE \u2192 404; a mapping that EXISTS but is dead,\nexpired or unplayable \u2192 410 (OQ8). The 404/410 split is not cosmetic \u2014 the front\ncaches a 404 durably for the tab and must not cache the 410.",
         "operationId": "resolve_playback_uri_api_playback_resolve_get",
         "parameters": [
           {
@@ -8818,6 +8818,12 @@
               }
             },
             "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such item, or no provider mapping was ever made."
+          },
+          "410": {
+            "description": "The provider mapping EXISTS but is dead, past the 30-day retention window, or no longer embeddable. Distinct from 404 on purpose: a 404 may be cached durably for the tab, this may not."
           },
           "422": {
             "content": {

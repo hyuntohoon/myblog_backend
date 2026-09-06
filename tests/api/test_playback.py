@@ -872,6 +872,28 @@ class TestMappingErrorTaxonomy:
         finally:
             app.dependency_overrides.clear()
 
+    def test_an_integrity_error_is_409_not_500(self, client, app):
+        """The taxonomy's most likely member, and the one it was missing.
+
+        `_map_mapping_errors` falls through to `raise e` for anything it does not
+        name, so before this branch a UNIQUE collision surfaced as an unhandled
+        500. 409 says "another change landed first — retry", which is both true
+        and actionable.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        svc = MagicMock()
+        svc.set_youtube_mapping.side_effect = IntegrityError("stmt", {}, Exception("dup"))
+        _override_mapping_path(app, svc)
+        try:
+            resp = client.put(
+                f"/api/playback/track/{_UUID}/youtube-mapping", json={"video_id": _VIDEO}
+            )
+            assert resp.status_code == 409, resp.text
+            assert "mapping_conflict" in str(resp.json()["detail"])
+        finally:
+            app.dependency_overrides.clear()
+
     def test_no_standing_is_403_not_404(self, client, app):
         """403, not 404: the track exists and the caller simply lacks standing.
 
@@ -904,6 +926,65 @@ class TestMappingErrorTaxonomy:
         assert got["daily"][0] == got["window"][0] == 429
         assert int(got["daily"][1]) > int(got["window"][1])
         assert "midnight" in got["daily"][2] and "midnight" not in got["window"][2]
+
+
+class TestMappingSessionLifecycle:
+    """The "no transaction held across the network call" claim, asserted.
+
+    It had NO test, and the integration harness structurally cannot supply one:
+    that fixture binds the Session to an outer connection with
+    `join_transaction_mode="create_savepoint"`, so deleting the `db.commit()`
+    before the outbound call — or moving it after — still passes there. A unit
+    test with an ordered log is the only place this is observable.
+    """
+
+    def _run(self, order):
+        from app.services.playback_service import PlaybackService
+
+        db = MagicMock()
+        db.commit.side_effect = lambda: order.append("commit")
+
+        first = MagicMock()
+        first.first.return_value = (uuid.UUID(_UUID),)
+        db.execute.side_effect = lambda *a, **k: (order.append("execute"), first)[1]
+
+        client = MagicMock()
+
+        def list_videos(ids):
+            order.append("http")
+            return {ids[0]: {
+                "id": ids[0],
+                "snippet": {},
+                "status": {"embeddable": True, "privacyStatus": "public", "madeForKids": False},
+                "contentDetails": {"duration": "PT3M33S"},
+            }}
+
+        client.list_videos.side_effect = list_videos
+        with patch("app.clients.youtube_client.youtube", client):
+            PlaybackService().set_youtube_mapping(
+                db, member_id=_MEMBER, track_id=_UUID, video_id=_VIDEO
+            )
+
+    def test_the_read_is_committed_before_the_outbound_call(self):
+        order = []
+        self._run(order)
+        first_http = order.index("http")
+        assert "commit" in order[:first_http], (
+            "the validating read must be committed BEFORE videos.list — holding a "
+            "transaction across an external API call is the recurring bug class "
+            "that produced the Neon ProtocolViolation"
+        )
+
+    def test_the_write_happens_after_the_outbound_call(self):
+        """Control for the test above: committing early must not mean writing early.
+
+        Without this, a service that committed and then never wrote would pass.
+        """
+        order = []
+        self._run(order)
+        first_http = order.index("http")
+        assert "execute" in order[first_http:], "the upsert must run after verification"
+        assert order.count("commit") >= 2, "the write needs its own short transaction"
 
 
 class TestMappingRoutesAreAuthenticated:

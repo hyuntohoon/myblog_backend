@@ -101,7 +101,7 @@ class YouTubeClient:
             raise YouTubeError(f"YouTube {endpoint} forbidden: {reason}")
 
         if r.status_code >= 400:
-            logger.warning("YouTube %s HTTP %s", endpoint, r.status_code)
+            logger.warning("YouTube %s HTTP %s (reason=%s)", endpoint, r.status_code, self._error_reason(r))
             raise YouTubeError(f"YouTube {endpoint} returned HTTP {r.status_code}")
 
         # A 200 whose body is not the documented shape is an UPSTREAM failure and
@@ -114,6 +114,20 @@ class YouTubeClient:
         if not isinstance(body, dict):
             raise YouTubeError(f"YouTube {endpoint} returned {type(body).__name__}, expected an object")
         return body
+
+    @staticmethod
+    def _items(body: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """`items`, with every non-object entry dropped.
+
+        Factored out rather than inlined so the hardening is ONE GREPPABLE METHOD
+        in all three copies. The TWIN NOTICE names malformed-payload handling as
+        the shared surface, and a sweep cannot find a shape that is a method in
+        one copy and inline in another.
+        """
+        raw = body.get("items")
+        if not isinstance(raw, list):
+            return []
+        return [it for it in raw if isinstance(it, dict)]
 
     @staticmethod
     def _error_reason(r: httpx.Response) -> str:
@@ -146,12 +160,10 @@ class YouTubeClient:
                 f"videos.list accepts at most {VIDEOS_LIST_MAX_IDS} ids, got {len(ids)}"
             )
         body = self._get("videos", {"part": "snippet,status,contentDetails", "id": ",".join(ids)})
-        raw = body.get("items")
-        items = [it for it in raw if isinstance(it, dict)] if isinstance(raw, list) else []
         # `isinstance(str)`, not truthiness: a non-string `id` (an object) is
         # unhashable and would raise TypeError building this dict — the exact
-        # sibling asymmetry the hardening above exists to prevent.
-        return {it["id"]: it for it in items if isinstance(it.get("id"), str)}
+        # sibling asymmetry `_items` exists to prevent.
+        return {it["id"]: it for it in self._items(body) if isinstance(it.get("id"), str)}
 
 
 youtube = YouTubeClient()
