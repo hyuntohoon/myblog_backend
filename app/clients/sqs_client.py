@@ -7,6 +7,10 @@
 #   {"job": "spotify_follow_import", "user_id": ...}
 #                                     — owner followed-artists snapshot import
 #                                       (FEAT-for-you-releases Step 2)
+#   {"job": "lyrics_member_bootstrap", "user_id": ...}
+#                                     — member album-demand bootstrap right after a
+#                                       Spotify connect (FEAT-lyrics-listening-
+#                                       experience Step 4)
 #   {"album_ids": [...]}              — catalog album-sync for the 분석 버킷 분류하기
 #                                       (worker _process_batch → AlbumSyncService +
 #                                       S1 genre mapping)
@@ -99,6 +103,38 @@ class SqsClient:
             MessageBody=json.dumps({"job": "spotify_follow_import", "user_id": user_id}),
         )
         logger.info("enqueued spotify follow import job")
+        return True
+
+    def send_member_demand_bootstrap(self, user_id: str) -> bool:
+        """Enqueue the member's album-demand bootstrap ({"job":
+        "lyrics_member_bootstrap", "user_id": ...}) right after a Spotify connect
+        commits (FEAT-lyrics-listening-experience Step 4).
+
+        Latency only, never the system of record: the worker's 15-minute member cron
+        reconciles every connected member with the same code, so a message this call
+        fails to send costs at most one cron interval. That is why the caller treats a
+        failure here as a log line rather than an error — the credentials are already
+        committed and the connect must not fail because a broker hiccuped. Returns
+        False (and logs) when no queue is configured — e.g. local dev."""
+        if not self.queue_url:
+            logger.info(
+                "SQS_QUEUE_URL unset; member demand bootstrap not enqueued (local/dev)"
+            )
+            return False
+        import boto3
+
+        sqs = boto3.client(
+            "sqs",
+            region_name=settings.AWS_DEFAULT_REGION,
+            endpoint_url=(settings.LOCALSTACK_ENDPOINT or None),
+        )
+        sqs.send_message(
+            QueueUrl=self.queue_url,
+            MessageBody=json.dumps(
+                {"job": "lyrics_member_bootstrap", "user_id": user_id}
+            ),
+        )
+        logger.info("enqueued member demand bootstrap job")
         return True
 
     def send_album_sync(self, album_sids) -> int:

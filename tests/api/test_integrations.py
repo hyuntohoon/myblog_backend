@@ -7,13 +7,17 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
-def _override(app, svc):
+def _override(app, svc, sqs=None):
     # get_db lazily imported (module-top import pulls app.core.config early).
     from app.db.session import get_db
-    from app.di import get_integration_service
+    from app.di import get_integration_service, get_sqs_client
 
     app.dependency_overrides[get_integration_service] = lambda: svc
     app.dependency_overrides[get_db] = lambda: MagicMock()
+    # Always overridden, even when a test does not care: without it the real SqsClient
+    # is constructed and a connect test would depend on whatever SQS_QUEUE_URL happens
+    # to be set to in the environment.
+    app.dependency_overrides[get_sqs_client] = lambda: (sqs or MagicMock())
 
 
 class TestIntegrationRoutes:
@@ -112,6 +116,7 @@ class TestSpotifyConnectRoutes:
             status="connected",
             last_synced_at=None,
             payload='{"v":1,"ciphertext":"S3VCRT"}',  # must NOT leak
+            user_id=uuid.uuid4(),  # Step 4 reads it to address the bootstrap job
         )
         _override(app, svc)
         resp = client.put("/api/integrations/spotify", json={"code": "AQD..x"})
@@ -168,6 +173,64 @@ class TestSpotifyConnectRoutes:
         resp = client.delete("/api/integrations/spotify")
         assert resp.status_code == 204
         assert svc.disconnect.call_args.args[-1] == "spotify"
+        app.dependency_overrides.clear()
+
+    def test_connect_schedules_the_member_demand_bootstrap(self, client, app):
+        """FEAT-lyrics-listening-experience Step 4: the connect enqueues the member's
+        bootstrap and nothing else — no Spotify content read on this request."""
+        uid = uuid.uuid4()
+        svc = MagicMock()
+        svc.connect_spotify.return_value = SimpleNamespace(
+            provider="spotify", username=None, status="connected",
+            last_synced_at=None, payload="{}", user_id=uid,
+        )
+        sqs = MagicMock()
+        _override(app, svc, sqs=sqs)
+        resp = client.put("/api/integrations/spotify", json={"code": "AQD..x"})
+        assert resp.status_code == 200
+        sqs.send_member_demand_bootstrap.assert_called_once_with(str(uid))
+        app.dependency_overrides.clear()
+
+    def test_a_broker_failure_never_fails_a_connect(self, client, app):
+        """The connection row is already committed when the enqueue runs. Failing the
+        request here would leave the member connected but telling them it did not work
+        — and the 15-minute member cron reconciles them anyway."""
+        svc = MagicMock()
+        svc.connect_spotify.return_value = SimpleNamespace(
+            provider="spotify", username=None, status="connected",
+            last_synced_at=None, payload="{}", user_id=uuid.uuid4(),
+        )
+        sqs = MagicMock()
+        sqs.send_member_demand_bootstrap.side_effect = RuntimeError("SQS unavailable")
+        _override(app, svc, sqs=sqs)
+        resp = client.put("/api/integrations/spotify", json={"code": "AQD..x"})
+        assert resp.status_code == 200
+        assert resp.json()["provider"] == "spotify"
+        app.dependency_overrides.clear()
+
+    def test_a_rejected_connect_schedules_nothing(self, client, app):
+        """No connection, no bootstrap — the enqueue must sit after the success path."""
+        from app.services.integration_service import SpotifyCodeRejectedError
+
+        svc = MagicMock()
+        svc.connect_spotify.side_effect = SpotifyCodeRejectedError()
+        sqs = MagicMock()
+        _override(app, svc, sqs=sqs)
+        assert client.put("/api/integrations/spotify",
+                          json={"code": "expired"}).status_code == 400
+        sqs.send_member_demand_bootstrap.assert_not_called()
+        app.dependency_overrides.clear()
+
+    def test_connecting_lastfm_schedules_no_spotify_bootstrap(self, client, app):
+        svc = MagicMock()
+        svc.connect_lastfm.return_value = SimpleNamespace(
+            provider="lastfm", username="rj", status="connected", last_synced_at=None,
+        )
+        sqs = MagicMock()
+        _override(app, svc, sqs=sqs)
+        assert client.put("/api/integrations/lastfm",
+                          json={"username": "rj"}).status_code == 200
+        sqs.send_member_demand_bootstrap.assert_not_called()
         app.dependency_overrides.clear()
 
     def test_list_never_exposes_payload(self, client, app):
