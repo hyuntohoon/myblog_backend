@@ -40,6 +40,26 @@ def safe_enqueue_bucket(db, research_svc, bucket) -> None:
         )
 
 
+def safe_enqueue_member_demand_bootstrap(sqs, user_id) -> bool:
+    """Fire-and-forget member album-demand bootstrap after a Spotify connect
+    (FEAT-lyrics-listening-experience Step 4).
+
+    Best-effort by design, and it is the *reconciliation* that makes that safe rather
+    than optimism: the worker's 15-minute member cron reconciles every connected
+    member through the identical code path, so a dropped message delays the first
+    sync by at most one interval and loses nothing. The credentials are already
+    committed when this runs — failing the connect over a broker hiccup would be
+    strictly worse than being one tick late."""
+    try:
+        return sqs.send_member_demand_bootstrap(str(user_id))
+    except Exception:
+        logger.warning(
+            "member demand bootstrap enqueue failed for user %s "
+            "(continuing; the member cron reconciles it)", user_id, exc_info=True,
+        )
+        return False
+
+
 def safe_enqueue_catalog_sync(sqs, album_sids) -> int:
     """Fire-and-forget catalog album-sync enqueue for the 분석 버킷 분류하기: send the
     distinct spotify album ids to the worker's album-sync queue, which catalogs them

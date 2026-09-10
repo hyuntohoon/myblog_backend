@@ -25,7 +25,8 @@ from app.api.schemas import (
 )
 from app.core.auth import require_cognito_token
 from app.db.session import get_db
-from app.di import get_integration_service
+from app.di import get_integration_service, get_sqs_client
+from app.services.enqueue import safe_enqueue_member_demand_bootstrap
 from app.services.integration_service import (
     LASTFM_PROVIDER,
     SPOTIFY_PROVIDER,
@@ -101,11 +102,23 @@ def connect_spotify(
     claims: Dict[str, Any] = Depends(require_cognito_token),
     db: Session = Depends(get_db),
     svc: IntegrationService = Depends(get_integration_service),
+    sqs=Depends(get_sqs_client),
 ):
     """FEAT-multi-user 3b-c: exchange the callback `?code` server-side and store
     the KMS-enveloped refresh token. Rule #9: a member-initiated mutation against
     the Spotify AUTH host (the playback-mint exception) — no sync content call.
     Fail-closed: missing KMS key / app creds ⇒ 503 before any outbound call."""
+    # FEAT-lyrics-listening-experience Step 4 schedules the member's album-demand
+    # bootstrap once the connection row is committed — an enqueue only, never a library
+    # read on this request (rule #9, and the RFC's "never run full library loops inside
+    # the connect request"). Best-effort: the 15-minute member cron reconciles the same
+    # member through the same code, so a broker hiccup costs one interval, not the
+    # initial sync.
+    #
+    # Deliberately a comment and not part of the docstring: scripts/export_openapi.py
+    # publishes a route docstring as the operation's `description`, so extending it here
+    # would push a prose-only change through openapi.json, the workspace contract and the
+    # frontend's generated types for no contract reason at all.
     try:
         row = svc.connect_spotify(db, _member_id(claims), claims, payload.code)
     except SpotifyConnectNotConfiguredError:
@@ -119,6 +132,7 @@ def connect_spotify(
         )
     except SpotifyProviderError as e:
         raise HTTPException(status_code=502, detail=str(e))
+    safe_enqueue_member_demand_bootstrap(sqs, row.user_id)
     return _integration_response(row)
 
 

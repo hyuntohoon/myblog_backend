@@ -16,6 +16,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from myblog_shared_db.lyrics_demand import LyricsDemandStore
 from myblog_shared_db.models import (
     LastfmRecentTrack,
     SpotifyMemberNowPlaying,
@@ -32,6 +33,13 @@ logger = logging.getLogger(__name__)
 
 LASTFM_PROVIDER = "lastfm"
 SPOTIFY_PROVIDER = "spotify"
+
+# The lyrics discovery origins a Spotify connection feeds (FEAT-lyrics-listening-
+# experience Step 4). Must stay in step with the worker's
+# lyrics_member_demand_service.{SAVED,RECENT}_ORIGIN: an origin produced there but
+# missing here would keep producing demand after a disconnect. Step 5 adds 'follow'
+# and must extend BOTH.
+SPOTIFY_DISCOVERY_ORIGINS = ("saved", "recent")
 
 # accounts.spotify.com is the AUTH host (code/token exchange), NOT the Web API
 # content host — the rule-#9-blessed exception (same constant as PlaybackService).
@@ -242,7 +250,21 @@ class IntegrationService:
     def disconnect(self, db: Session, member_id: uuid.UUID, provider: str) -> bool:
         """Remove the member's integration for a provider. Idempotent (returns False
         if there was nothing to disconnect). Scrobble history is left in place (it is
-        the member's own data and cascades on account deletion)."""
+        the member's own data and cascades on account deletion).
+
+        Disconnecting Spotify also revokes that member's lyrics discovery scopes in
+        the SAME transaction as the credential delete (OQ6, resolved 2026-09-09).
+        Atomicity is the whole point: between a committed delete and a separate
+        revoke there is a window where the member has withdrawn their connection
+        while their saved albums and plays still create translation demand. The
+        revoke rotates each origin's generation fence, so an observation already
+        in flight in a worker tick is rejected rather than resurrecting removed
+        demand. Completed global translations are retained — they are shared catalog
+        work, not this member's data (OQ6 again).
+
+        A failure inside the revoke therefore rolls the delete back too, and the
+        member sees an error instead of a disconnect that silently kept producing.
+        """
         row = db.scalar(
             select(UserIntegration).where(
                 UserIntegration.user_id == member_id,
@@ -252,6 +274,11 @@ class IntegrationService:
         if row is None:
             return False
         db.delete(row)
+        if provider == SPOTIFY_PROVIDER:
+            db.flush()
+            LyricsDemandStore(db.connection()).revoke_scopes(
+                member_id, list(SPOTIFY_DISCOVERY_ORIGINS)
+            )
         db.commit()
         return True
 
