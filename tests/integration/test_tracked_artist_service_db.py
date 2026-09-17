@@ -141,3 +141,108 @@ def test_bucket_preview_expands_album_and_hides_cross_member_bucket(db, artist_i
     assert artist_ids[0] in {artist.id for artist in artists}
     with pytest.raises(BucketNotFoundError):
         BucketService().bucket_catalog_artists(db, MEMBER_B, bucket.id)
+
+
+# ── FEAT-lyrics-listening-experience Step 5 — provenance and exclusions ──────
+#
+# From Step 5 the worker reconciles Spotify follows into this same table every 15
+# minutes, which changes what these two routes mean: an add has to record WHY the
+# edge exists, and a delete has to say something the next reconcile will respect.
+# Both are SQL properties (a composite FK, an ON CONFLICT, one transaction), so they
+# are proved here against real Postgres rather than against a mock.
+
+def _origins(db, user_id, artist_id):
+    return set(db.execute(
+        text("SELECT origin FROM user_artist_track_origins "
+             "WHERE user_id = :u AND artist_id = :a"),
+        {"u": str(user_id), "a": str(artist_id)},
+    ).scalars())
+
+
+def _excluded(db, user_id, artist_id):
+    return db.execute(
+        text("SELECT 1 FROM user_artist_follow_exclusions "
+             "WHERE user_id = :u AND artist_id = :a"),
+        {"u": str(user_id), "a": str(artist_id)},
+    ).first() is not None
+
+
+def test_adding_an_artist_records_manual_provenance(db, artist_ids):
+    svc = TrackedArtistService()
+    svc.add_tracks(db, MEMBER_A, [artist_ids[0]])
+
+    assert _origins(db, MEMBER_A, artist_ids[0]) == {"manual"}
+    # Member B is the control: provenance is member-scoped like the edge itself.
+    assert _origins(db, MEMBER_B, artist_ids[0]) == set()
+
+
+def test_adding_an_artist_already_followed_on_spotify_adds_manual_alongside_it(
+        db, artist_ids):
+    """The union in OQ2. Without this the later unfollow would take the edge with it."""
+    svc = TrackedArtistService()
+    db.execute(
+        text("INSERT INTO user_artist_tracks (user_id, artist_id) VALUES (:u, :a)"),
+        {"u": str(MEMBER_A), "a": str(artist_ids[0])},
+    )
+    db.execute(
+        text("INSERT INTO user_artist_track_origins (user_id, artist_id, origin) "
+             "VALUES (:u, :a, 'spotify_follow')"),
+        {"u": str(MEMBER_A), "a": str(artist_ids[0])},
+    )
+
+    added, already = svc.add_tracks(db, MEMBER_A, [artist_ids[0]])
+
+    assert (added, already) == (0, 1), "the edge already existed"
+    assert _origins(db, MEMBER_A, artist_ids[0]) == {"manual", "spotify_follow"}
+
+
+def test_deleting_a_tracked_artist_records_an_exclusion(db, artist_ids):
+    """Without the exclusion, a removal is a 15-minute pause: the worker's next
+    reconcile still sees the follow at the provider and re-imports the artist."""
+    svc = TrackedArtistService()
+    svc.add_tracks(db, MEMBER_A, [artist_ids[0], artist_ids[1]])
+
+    assert svc.delete_track(db, MEMBER_A, artist_ids[0]) is True
+
+    assert _excluded(db, MEMBER_A, artist_ids[0])
+    # The artist they kept is the control — a delete must not exclude the batch.
+    assert not _excluded(db, MEMBER_A, artist_ids[1])
+    # Provenance cascades with the edge (V58's composite FK).
+    assert _origins(db, MEMBER_A, artist_ids[0]) == set()
+    assert _origins(db, MEMBER_A, artist_ids[1]) == {"manual"}
+
+
+def test_deleting_an_untracked_artist_records_nothing(db, artist_ids):
+    svc = TrackedArtistService()
+
+    assert svc.delete_track(db, MEMBER_A, artist_ids[0]) is False
+
+    assert not _excluded(db, MEMBER_A, artist_ids[0]), (
+        "a no-op delete must not create a fence the member never asked for"
+    )
+
+
+def test_adding_an_excluded_artist_back_clears_the_exclusion(db, artist_ids):
+    """The 'until cleared' half of OQ2: the fence is against automatic re-import,
+    not against the member changing their mind."""
+    svc = TrackedArtistService()
+    svc.add_tracks(db, MEMBER_A, [artist_ids[0]])
+    svc.delete_track(db, MEMBER_A, artist_ids[0])
+    assert _excluded(db, MEMBER_A, artist_ids[0])
+
+    svc.add_tracks(db, MEMBER_A, [artist_ids[0]])
+
+    assert not _excluded(db, MEMBER_A, artist_ids[0])
+    assert _origins(db, MEMBER_A, artist_ids[0]) == {"manual"}
+
+
+def test_one_members_exclusion_does_not_reach_another_member(db, artist_ids):
+    svc = TrackedArtistService()
+    svc.add_tracks(db, MEMBER_A, [artist_ids[0]])
+    svc.add_tracks(db, MEMBER_B, [artist_ids[0]])
+
+    svc.delete_track(db, MEMBER_A, artist_ids[0])
+
+    assert _excluded(db, MEMBER_A, artist_ids[0])
+    assert not _excluded(db, MEMBER_B, artist_ids[0])
+    assert _origins(db, MEMBER_B, artist_ids[0]) == {"manual"}

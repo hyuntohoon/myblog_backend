@@ -35,11 +35,12 @@ LASTFM_PROVIDER = "lastfm"
 SPOTIFY_PROVIDER = "spotify"
 
 # The lyrics discovery origins a Spotify connection feeds (FEAT-lyrics-listening-
-# experience Step 4). Must stay in step with the worker's
-# lyrics_member_demand_service.{SAVED,RECENT}_ORIGIN: an origin produced there but
-# missing here would keep producing demand after a disconnect. Step 5 adds 'follow'
-# and must extend BOTH.
-SPOTIFY_DISCOVERY_ORIGINS = ("saved", "recent")
+# experience Steps 4 and 5). Must stay in step with the worker's
+# lyrics_member_demand_service.DISCOVERY_ORIGINS: an origin produced there but missing
+# here would keep producing demand after a disconnect — the member would have withdrawn
+# their connection while their library, plays and follows still create translation work.
+# A change to either list lands in both in the same PR.
+SPOTIFY_DISCOVERY_ORIGINS = ("saved", "recent", "follow")
 
 # accounts.spotify.com is the AUTH host (code/token exchange), NOT the Web API
 # content host — the rule-#9-blessed exception (same constant as PlaybackService).
