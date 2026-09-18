@@ -35,11 +35,12 @@ LASTFM_PROVIDER = "lastfm"
 SPOTIFY_PROVIDER = "spotify"
 
 # The lyrics discovery origins a Spotify connection feeds (FEAT-lyrics-listening-
-# experience Step 4). Must stay in step with the worker's
-# lyrics_member_demand_service.{SAVED,RECENT}_ORIGIN: an origin produced there but
-# missing here would keep producing demand after a disconnect. Step 5 adds 'follow'
-# and must extend BOTH.
-SPOTIFY_DISCOVERY_ORIGINS = ("saved", "recent")
+# experience Steps 4 and 5). Must stay in step with the worker's
+# lyrics_member_demand_service.DISCOVERY_ORIGINS: an origin produced there but missing
+# here would keep producing demand after a disconnect — the member would have withdrawn
+# their connection while their library, plays and follows still create translation work.
+# A change to either list lands in both in the same PR.
+SPOTIFY_DISCOVERY_ORIGINS = ("saved", "recent", "follow")
 
 # accounts.spotify.com is the AUTH host (code/token exchange), NOT the Web API
 # content host — the rule-#9-blessed exception (same constant as PlaybackService).
@@ -276,9 +277,16 @@ class IntegrationService:
         db.delete(row)
         if provider == SPOTIFY_PROVIDER:
             db.flush()
-            LyricsDemandStore(db.connection()).revoke_scopes(
-                member_id, list(SPOTIFY_DISCOVERY_ORIGINS)
-            )
+            store = LyricsDemandStore(db.connection())
+            store.revoke_scopes(member_id, list(SPOTIFY_DISCOVERY_ORIGINS))
+            # Step 5's second artefact, and the second half of what OQ6 asks for. The
+            # revoke above removes the member's demand; this removes the copy of WHOM
+            # THEY FOLLOW that Step 5 writes into their site tracking. Without it a
+            # disconnected member keeps a row-for-row copy of their Spotify follow graph
+            # for ever — they are no longer polled, so the reconciler that used to prune
+            # it cannot run either, and their only remedy would be deleting the artists
+            # one at a time. Manual edges survive: only the 'spotify_follow' origin goes.
+            store.revoke_provider_follows(member_id)
         db.commit()
         return True
 

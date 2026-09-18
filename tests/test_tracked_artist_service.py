@@ -70,10 +70,15 @@ def test_bulk_insert_values_are_sorted_by_user_artist_conflict_key():
     # prod psycopg reported -1 for this statement shape).
     insert_result = ScalarRows([ARTIST_A, ARTIST_B, ARTIST_C])
     db = MagicMock()
+    # Step 5 added two more statements after the edge insert — the 'manual' provenance
+    # upsert and the exclusion clear — so the script has to reach them or the call under
+    # test raises StopIteration before it commits.
     db.execute.side_effect = [
         ScalarRows([ARTIST_A, ARTIST_B, ARTIST_C]),
         ScalarRows([]),
         insert_result,
+        ScalarRows([]),
+        ScalarRows([]),
     ]
     db.scalar.return_value = 0
 
@@ -90,3 +95,13 @@ def test_bulk_insert_values_are_sorted_by_user_artist_conflict_key():
     assert inserted_ids == [ARTIST_A, ARTIST_B, ARTIST_C]
     assert result == (3, 0)
     db.commit.assert_called_once_with()
+
+    # The provenance upsert carries the same sorted id set. Asserting it here keeps the
+    # bulk-upsert ordering rule true for BOTH inserts: a second statement that took the
+    # same rows in observation order would take unique-index locks in a different order
+    # from the first and deadlock against a concurrent batch.
+    provenance = db.execute.call_args_list[3].args[0]
+    prov_params = provenance.compile(dialect=postgresql.dialect()).params
+    assert [prov_params[f"artist_id_m{i}"] for i in range(3)] == [
+        ARTIST_A, ARTIST_B, ARTIST_C]
+    assert {prov_params[f"origin_m{i}"] for i in range(3)} == {"manual"}
