@@ -277,9 +277,16 @@ class IntegrationService:
         db.delete(row)
         if provider == SPOTIFY_PROVIDER:
             db.flush()
-            LyricsDemandStore(db.connection()).revoke_scopes(
-                member_id, list(SPOTIFY_DISCOVERY_ORIGINS)
-            )
+            store = LyricsDemandStore(db.connection())
+            store.revoke_scopes(member_id, list(SPOTIFY_DISCOVERY_ORIGINS))
+            # Step 5's second artefact, and the second half of what OQ6 asks for. The
+            # revoke above removes the member's demand; this removes the copy of WHOM
+            # THEY FOLLOW that Step 5 writes into their site tracking. Without it a
+            # disconnected member keeps a row-for-row copy of their Spotify follow graph
+            # for ever — they are no longer polled, so the reconciler that used to prune
+            # it cannot run either, and their only remedy would be deleting the artists
+            # one at a time. Manual edges survive: only the 'spotify_follow' origin goes.
+            store.revoke_provider_follows(member_id)
         db.commit()
         return True
 

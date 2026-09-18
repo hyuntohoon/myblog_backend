@@ -84,11 +84,22 @@ class TrackedArtistService:
         already_ids = self.tracked_artist_ids(db, user_id, unique_ids)
         rows_to_create = len(unique_ids) - len(already_ids)
         if daily_cap is not None and rows_to_create:
+            # Counts the member's OWN adds only. From Step 5 the worker also writes
+            # edges here, one per Spotify follow, and a member who follows 500 artists
+            # would otherwise arrive at a cap they never spent — their next manual add
+            # would 429 for 24 hours because of rows they did not create. The join to
+            # provenance is what separates the two.
             recent = db.scalar(
                 select(func.count())
                 .select_from(UserArtistTrack)
+                .join(
+                    UserArtistTrackOrigin,
+                    (UserArtistTrackOrigin.user_id == UserArtistTrack.user_id)
+                    & (UserArtistTrackOrigin.artist_id == UserArtistTrack.artist_id),
+                )
                 .where(
                     UserArtistTrack.user_id == user_id,
+                    UserArtistTrackOrigin.origin == MANUAL_ORIGIN,
                     UserArtistTrack.added_at
                     >= func.now() - text("interval '24 hours'"),
                 )

@@ -179,7 +179,7 @@ def test_disconnecting_lastfm_leaves_spotify_demand_alone(factory, member):
         assert IntegrationService().disconnect(db, member, LASTFM_PROVIDER) is True
     # ...and a real Last.fm disconnect must not touch Spotify-derived demand either.
     assert _state(factory, member) == {
-        "demands": 2, "active_scopes": 2, "connections": 1}
+        "demands": _SEEDED, "active_scopes": _SEEDED, "connections": 1}
 
 
 def test_a_disconnect_cannot_reach_another_members_demand(factory, member):
@@ -213,3 +213,48 @@ def test_a_disconnect_cannot_reach_another_members_demand(factory, member):
             {"s": shared}).scalar()
     assert others == [shared]
     assert cancelled is False
+
+
+def test_disconnect_removes_the_spotify_follow_mirror_and_keeps_manual_tracking(
+        factory, member):
+    """OQ6's second half: the demand AND the member/artist provenance derived from it.
+
+    Step 5 writes a row-for-row copy of whom the member follows on Spotify into their
+    site tracking. A disconnected member is no longer polled, so the reconciler that
+    prunes those edges can never run again — a copy left here is permanent, not stale.
+    """
+    with factory() as s, s.begin():
+        mirrored = uuid.uuid4()
+        also_manual = uuid.uuid4()
+        for artist_id in (mirrored, also_manual):
+            s.execute(text("INSERT INTO artists (id, name, spotify_id) "
+                           "VALUES (:i, 'Disc test', :sp)"),
+                      {"i": str(artist_id), "sp": f"{_PREFIX}{artist_id.hex[:12]}"})
+            s.execute(text("INSERT INTO user_artist_tracks (user_id, artist_id) "
+                           "VALUES (:u, :a)"), {"u": str(member), "a": str(artist_id)})
+            s.execute(text("INSERT INTO user_artist_track_origins (user_id, artist_id, "
+                           "origin) VALUES (:u, :a, 'spotify_follow')"),
+                      {"u": str(member), "a": str(artist_id)})
+        # This one the member also added by hand — OQ2's union must hold it up.
+        s.execute(text("INSERT INTO user_artist_track_origins (user_id, artist_id, "
+                       "origin) VALUES (:u, :a, 'manual')"),
+                  {"u": str(member), "a": str(also_manual)})
+
+    with factory() as db:
+        assert IntegrationService().disconnect(db, member, SPOTIFY_PROVIDER) is True
+
+    with factory() as s:
+        edges = set(s.execute(
+            text("SELECT artist_id FROM user_artist_tracks WHERE user_id = :u"),
+            {"u": str(member)}).scalars())
+        origins = set(s.execute(
+            text("SELECT artist_id, origin FROM user_artist_track_origins "
+                 "WHERE user_id = :u"), {"u": str(member)}).all())
+    assert edges == {also_manual}, "the pure Spotify mirror goes, the manual edge stays"
+    assert origins == {(also_manual, "manual")}
+
+    with factory() as s, s.begin():
+        s.execute(text("DELETE FROM user_artist_tracks WHERE user_id = :u"),
+                  {"u": str(member)})
+        s.execute(text("DELETE FROM artists WHERE spotify_id LIKE :p"),
+                  {"p": f"{_PREFIX}%"})

@@ -246,3 +246,31 @@ def test_one_members_exclusion_does_not_reach_another_member(db, artist_ids):
     assert _excluded(db, MEMBER_A, artist_ids[0])
     assert not _excluded(db, MEMBER_B, artist_ids[0])
     assert _origins(db, MEMBER_B, artist_ids[0]) == {"manual"}
+
+
+def test_the_daily_cap_counts_only_the_members_own_adds(db, artist_ids):
+    """From Step 5 the worker writes edges here too, one per Spotify follow.
+
+    Counting those against the member's rolling cap would hand them a 429 on their next
+    manual add because of rows they never created — a member who follows 500 artists on
+    Spotify would be locked out of their own button for 24 hours.
+    """
+    svc = TrackedArtistService()
+    # A worker-created edge: present, recent, and not the member's doing.
+    db.execute(
+        text("INSERT INTO user_artist_tracks (user_id, artist_id) VALUES (:u, :a)"),
+        {"u": str(MEMBER_A), "a": str(artist_ids[0])},
+    )
+    db.execute(
+        text("INSERT INTO user_artist_track_origins (user_id, artist_id, origin) "
+             "VALUES (:u, :a, 'spotify_follow')"),
+        {"u": str(MEMBER_A), "a": str(artist_ids[0])},
+    )
+
+    # A cap of 1 must still admit the member's first manual add.
+    added, _already = svc.add_tracks(db, MEMBER_A, [artist_ids[1]], daily_cap=1)
+    assert added == 1
+
+    # ...and the control: their own add DOES count, so the next one is refused.
+    with pytest.raises(TrackedArtistRateLimitError):
+        svc.add_tracks(db, MEMBER_A, [artist_ids[2]], daily_cap=1)
