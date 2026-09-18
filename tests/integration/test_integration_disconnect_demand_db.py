@@ -122,9 +122,17 @@ def _state(factory, uid):
     return {"demands": demands, "active_scopes": actives, "connections": creds}
 
 
+# The fixture seeds exactly one demand per origin by looping SPOTIFY_DISCOVERY_ORIGINS,
+# so the expected count IS the length of that list — deriving it here is not the same
+# as the worker's revoke test, where a literal was right because Step 5's `follow` scope
+# only opens when there is a follow observation. Step 5 made this three; the assertion
+# that matters is that disconnect takes it to zero whatever the list holds.
+_SEEDED = len(SPOTIFY_DISCOVERY_ORIGINS)
+
+
 def test_disconnect_revokes_every_spotify_origin(factory, member):
     before = _state(factory, member)
-    assert before == {"demands": 2, "active_scopes": 2, "connections": 1}
+    assert before == {"demands": _SEEDED, "active_scopes": _SEEDED, "connections": 1}
 
     with factory() as db:
         assert IntegrationService().disconnect(db, member, SPOTIFY_PROVIDER) is True
@@ -154,14 +162,14 @@ def test_the_revoke_and_the_delete_are_one_transaction(factory, member, monkeypa
 
     # Nothing moved: the whole unit rolled back.
     assert _state(factory, member) == {
-        "demands": 2, "active_scopes": 2, "connections": 1}
+        "demands": _SEEDED, "active_scopes": _SEEDED, "connections": 1}
 
 
 def test_disconnecting_lastfm_leaves_spotify_demand_alone(factory, member):
     with factory() as db:
         # No Last.fm row exists, so this is the idempotent no-op path...
         assert IntegrationService().disconnect(db, member, LASTFM_PROVIDER) is False
-    assert _state(factory, member)["demands"] == 2
+    assert _state(factory, member)["demands"] == _SEEDED
 
     with factory() as db, db.begin():
         db.execute(text("INSERT INTO user_integrations (user_id, provider, username, "
