@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     # infra/lambda.tf so a client can be added or retired without a code deploy.
     COGNITO_ALLOWED_CLIENT_IDS: str = ""
 
+    # Dedicated Chat connection; never accepted by the SPA's authentication guard.
+    CHAT_MCP_RESOURCE_URL: str = ""
+    CHAT_MCP_CLIENT_ID: str = ""
+    CHAT_MCP_COGNITO_DOMAIN: str = ""
+    CHAT_MCP_SCOPE: str = "myblog-chat/translate"
+    CHAT_TRANSLATION_DAILY_CAP: int = 10
+
     # FEAT-multi-user-accounts 0d: the owner's Cognito sub. DELETE /api/me
     # refuses this sub (403) so the blog-admin identity can't self-delete via the
     # member flow. Empty (guard off) until the owner sub lands in the Lambda env

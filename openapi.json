@@ -5608,6 +5608,44 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/.well-known/oauth-authorization-server/mcp-auth": {
+      "get": {
+        "operationId": "oauth_metadata__well_known_oauth_authorization_server_mcp_auth_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Oauth Metadata",
+        "tags": [
+          "chat-translation"
+        ]
+      }
+    },
+    "/.well-known/oauth-protected-resource/mcp": {
+      "get": {
+        "operationId": "protected_resource__well_known_oauth_protected_resource_mcp_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Protected Resource",
+        "tags": [
+          "chat-translation"
+        ]
+      }
+    },
     "/api/buckets": {
       "get": {
         "operationId": "list_buckets_api_buckets_get",
@@ -10090,6 +10128,25 @@
           }
         },
         "summary": "Health"
+      }
+    },
+    "/mcp": {
+      "post": {
+        "operationId": "mcp_mcp_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Mcp",
+        "tags": [
+          "chat-translation"
+        ]
       }
     }
   }
