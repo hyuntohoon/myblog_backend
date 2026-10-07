@@ -1110,8 +1110,10 @@ class BucketService:
           untouched and returns ``([], [])`` — the same no-op ``expand_album_tracks`` answers,
           and the reason the front can show NO_TRACKS rather than an emptied queue.
         - **Daily cap.** Inserts count against ``BUCKET_ITEM_DAILY_CAP`` (OQ2), checked before
-          the delete — the displaced rows are still counted, so repeated replaces cannot churn
-          past the cap.
+          the delete, so the displaced rows still count toward *this* call. It is not a churn
+          bound: the cap counts rows that still exist, so once deleted they stop counting and a
+          replace can be repeated. That is the same property POST /items + DELETE always had;
+          what bounds one call is the request's 200-track limit.
         - **Track ids** resolve like ``_add_typed_item``: our PK first, then ``spotify_id``. Any
           miss is a TrackNotFoundError before anything is written.
 
