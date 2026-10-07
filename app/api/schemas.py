@@ -1,6 +1,6 @@
 # app/api/schemas.py
-from pydantic import BaseModel, Field, model_validator
-from typing import Optional, List, Literal, Dict, Any
+from pydantic import BaseModel, Field, StringConstraints, model_validator
+from typing import Annotated, Optional, List, Literal, Dict, Any
 from datetime import date, datetime
 from uuid import UUID
 
@@ -410,6 +410,48 @@ class BucketItemResponse(BaseModel):
     # FEAT-my-buckit-artist (V32): present on artist rows, null otherwise. (A source_* artist
     # EXPANSION returns the separate ArtistExpansionResponse, not this model.)
     artist: Optional[ArtistBrief] = None
+    # ARCH-playback-queue-atomic-replace Step 1: `spotify:track:<tracks.spotify_id>` on a
+    # playback row (null on every other kind), so the player plays the row without a
+    # per-track GET /api/playback/resolve. tracks.spotify_id is NOT NULL UNIQUE.
+    spotify_uri: Optional[str] = None
+
+
+# ARCH-playback-queue-atomic-replace Step 1 (OQ3): the largest replace one request may carry.
+# A ▶ sends one album; an Undo replays the queue it displaced, which can be longer. 200 bounds
+# the transaction and the insert count without clipping any album in the catalog.
+PLAYBACK_QUEUE_REPLACE_MAX_TRACKS = 200
+
+PlaybackTrackRef = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+
+
+class ReplacePlaybackQueueRequest(BaseModel):
+    """PUT /api/buckets/{id}/playback-queue body: EXACTLY ONE of ``album_id`` (the album's
+    tracks, in album order — a ▶ on an album) or ``track_ids`` (these tracks, in this order —
+    a ▶ on a track, or an Undo replaying ``displaced_track_ids``). A track id is our UUID or a
+    Spotify track id, resolved the same way as POST /items."""
+    model_config = {"extra": "forbid"}
+
+    album_id: Optional[UUID] = None
+    track_ids: Optional[List[PlaybackTrackRef]] = Field(
+        default=None, min_length=1, max_length=PLAYBACK_QUEUE_REPLACE_MAX_TRACKS
+    )
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> "ReplacePlaybackQueueRequest":
+        if (self.album_id is None) == (self.track_ids is None):
+            raise ValueError("requires exactly one of album_id / track_ids")
+        return self
+
+
+class ReplacePlaybackQueueResponse(BaseModel):
+    """The queue after the replace, and what it displaced.
+
+    ``items`` are the new playback rows in queue order, each carrying ``spotify_uri``.
+    ``displaced_track_ids`` are the replaced rows' track ids in their old order — send them
+    back as ``track_ids`` to undo. Both empty ⇒ nothing to queue (an album with no synced
+    tracks) and the queue was left untouched."""
+    items: List[BucketItemResponse] = Field(default_factory=list)
+    displaced_track_ids: List[str] = Field(default_factory=list)
 
 
 class BucketResponse(BaseModel):

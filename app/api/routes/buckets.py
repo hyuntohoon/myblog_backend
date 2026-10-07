@@ -26,6 +26,8 @@ from app.api.schemas import (
     PublicBucketOwner,
     PublicBucketsResponse,
     ReorderRequest,
+    ReplacePlaybackQueueRequest,
+    ReplacePlaybackQueueResponse,
     SpotifyLibraryAlbumState,
     SpotifyLibraryStateResponse,
     SpotifyLibrarySyncResponse,
@@ -39,6 +41,7 @@ from app.api.routes.me import provisioned_member_id, provisioned_owner_id
 from app.clients.sqs_client import get_spotify_connection_status
 from app.core.authz import require_owner_or_draft_agent
 from app.core.config import get_settings
+from app.core.ids import parse_uuid_or_404
 from app.db.session import get_db
 from app.di import (
     get_bucket_service,
@@ -158,7 +161,15 @@ def _item_response(
         album=_album_brief(album, genres) if album is not None else None,
         track=_track_brief(track) if track is not None else None,
         artist=_artist_brief(artist) if artist is not None else None,
+        spotify_uri=_spotify_uri(track) if item_type == "playback" else None,
     )
+
+
+def _spotify_uri(track) -> str | None:
+    # ARCH-playback-queue-atomic-replace: the URI the player sends to PUT /me/player/play,
+    # built from the catalog column so a playback row needs no resolve round-trip.
+    spotify_id = getattr(track, "spotify_id", None) if track is not None else None
+    return f"spotify:track:{spotify_id}" if isinstance(spotify_id, str) and spotify_id else None
 
 
 # ── tree serialization ──────────────────────────────────────────────────────
@@ -699,6 +710,54 @@ def add_item(
         if bucket is not None and bucket.research_mode == "all":
             _safe_enqueue_album(db, research_svc, item.album_id)
     return resp
+
+
+@router.put(
+    "/{bucket_id}/playback-queue",
+    response_model=ReplacePlaybackQueueResponse,
+)
+def replace_playback_queue(
+    bucket_id: str,
+    req: ReplacePlaybackQueueRequest,
+    db: Session = Depends(get_db),
+    svc: BucketService = Depends(get_bucket_service),
+    member_id: uuid.UUID = Depends(provisioned_member_id),
+):
+    # ARCH-playback-queue-atomic-replace Step 1: ▶ replaces the member's queue in ONE request
+    # and ONE transaction — the queue ends fully replaced or untouched, never a mix. Scoped to
+    # the authenticated member like every item route; another member's bucket id is a 404.
+    # A malformed id cannot name a bucket — 404 here rather than a driver error (AUDIT A-3).
+    bid = parse_uuid_or_404(bucket_id, detail="Bucket not found")
+    try:
+        rows, displaced = svc.replace_playback_queue(
+            db,
+            member_id,
+            str(bid),
+            album_id=str(req.album_id) if req.album_id is not None else None,
+            track_ids=req.track_ids,
+            daily_cap=get_settings().BUCKET_ITEM_DAILY_CAP,
+        )
+    except BucketNotFoundError:
+        raise HTTPException(status_code=404, detail="Bucket not found")
+    except AlbumNotFoundError:
+        raise HTTPException(status_code=404, detail="Album not found")
+    except TrackNotFoundError:
+        raise HTTPException(status_code=404, detail="Track not found")
+    except BucketTypeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except BucketItemRateLimitError:
+        raise HTTPException(
+            status_code=429,
+            detail="Daily bucket item limit reached — try again later",
+        )
+    except SystemBucketError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    # Playback rows carry no album, so the album-only enrichments (reviewed/research/genres)
+    # do not apply — same as the non-album branch of add_item.
+    return ReplacePlaybackQueueResponse(
+        items=[_item_response(row, False) for row in rows],
+        displaced_track_ids=displaced,
+    )
 
 
 @router.patch(

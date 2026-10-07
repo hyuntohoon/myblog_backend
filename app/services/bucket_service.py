@@ -1084,6 +1084,175 @@ class BucketService:
         db.commit()
         return tracks
 
+    def replace_playback_queue(
+        self,
+        db: Session,
+        user_id: uuid.UUID,
+        bucket_id: str,
+        *,
+        album_id: Optional[str] = None,
+        track_ids: Optional[Sequence[str]] = None,
+        daily_cap: Optional[int] = None,
+    ) -> Tuple[List[ReviewBucketItem], List[str]]:
+        """ARCH-playback-queue-atomic-replace Step 1: make the queue hold exactly ``album_id``'s
+        tracks (album order) or ``track_ids`` (request order), in ONE transaction.
+
+        Returns ``(new_rows, displaced_track_ids)``. ``displaced_track_ids`` is the replaced
+        queue's track ids in position order — the Undo payload, replayed as ``track_ids``.
+
+        Replaces the front's write-then-delete sequence (``rewriteQueue``/``deleteRows``), which
+        under Lambda throttling left some displaced rows at the head of the queue. Here the
+        delete and the insert commit together or not at all.
+
+        - **Lock.** ``SELECT … FOR UPDATE`` on the bucket row serializes two overlapping presses
+          on the same queue, so neither reads a displaced set the other is deleting.
+        - **Nothing to queue = no-op.** An album whose tracks were never synced leaves the queue
+          untouched and returns ``([], [])`` — the same no-op ``expand_album_tracks`` answers,
+          and the reason the front can show NO_TRACKS rather than an emptied queue.
+        - **Daily cap.** Inserts count against ``BUCKET_ITEM_DAILY_CAP`` (OQ2), checked before
+          the delete — the displaced rows are still counted, so repeated replaces cannot churn
+          past the cap.
+        - **Track ids** resolve like ``_add_typed_item``: our PK first, then ``spotify_id``. Any
+          miss is a TrackNotFoundError before anything is written.
+
+        No external call happens inside the transaction.
+        """
+        if (album_id is None) == (track_ids is None):
+            raise ValueError("exactly one of album_id / track_ids required")
+
+        bucket = (
+            db.query(ReviewBucket)
+            .filter(ReviewBucket.id == bucket_id, ReviewBucket.user_id == user_id)
+            .with_for_update()
+            .first()
+        )
+        if bucket is None:
+            raise BucketNotFoundError(bucket_id)
+        # Replace is a queue verb: only the Playback Bucket holds a queue. A general bucket's
+        # playback rows (if any ever exist) are not "the queue" and must not be swapped wholesale.
+        if getattr(bucket, "type", "general") != PLAYBACK_BUCKET_TYPE:
+            raise BucketTypeError("only the playback queue can be replaced")
+        self._assert_manual_add_allowed(bucket)
+
+        try:
+            tracks = (
+                self._album_tracks_in_order(db, album_id)
+                if album_id is not None
+                else self._resolve_tracks_in_order(db, track_ids or [])
+            )
+            if not tracks:
+                db.rollback()  # releases the row lock; nothing was written
+                return [], []
+
+            self._check_item_rate_limit(db, user_id, daily_cap, rows_to_create=len(tracks))
+
+            displaced = (
+                db.query(ReviewBucketItem)
+                .filter(
+                    ReviewBucketItem.bucket_id == bucket.id,
+                    ReviewBucketItem.item_type == "playback",
+                )
+                .order_by(ReviewBucketItem.position, ReviewBucketItem.id)
+                .all()
+            )
+            displaced_track_ids = [str(it.track_id) for it in displaced if it.track_id]
+            for it in displaced:
+                db.delete(it)
+            # Flush the deletes before the inserts so positions 0..n are free again; the
+            # transaction is still open, so a failure below rolls both back together.
+            db.flush()
+
+            new_ids = [row.id for row in self._insert_queue_rows(db, bucket.id, tracks)]
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        # Re-read after commit with the serializer's relationships eager-loaded: _track_brief
+        # reads track.artists and track.album, which would otherwise lazy-load per row.
+        new_rows = (
+            db.query(ReviewBucketItem)
+            .options(
+                selectinload(ReviewBucketItem.track).selectinload(Track.artists),
+                selectinload(ReviewBucketItem.track).selectinload(Track.album),
+            )
+            .filter(ReviewBucketItem.id.in_(new_ids))
+            .order_by(ReviewBucketItem.position)
+            .all()
+        )
+        return new_rows, displaced_track_ids
+
+    @staticmethod
+    def _album_tracks_in_order(db: Session, album_id: str) -> List[Track]:
+        """``album_id``'s tracks in the ``expand_album_tracks`` order. AlbumNotFoundError on a
+        miss. Kept identical to that method's ORDER BY so ▶ and a board drop queue the same
+        sequence."""
+        album = db.query(Album).filter(Album.id == album_id).first()
+        if album is None:
+            raise AlbumNotFoundError(album_id)
+        return (
+            db.query(Track)
+            .filter(Track.album_id == album.id)
+            .order_by(
+                Track.disc_no.asc().nullslast(),
+                Track.track_no.asc().nullslast(),
+                Track.created_at.asc(),
+                Track.id.asc(),
+            )
+            .all()
+        )
+
+    @staticmethod
+    def _resolve_tracks_in_order(db: Session, track_ids: Sequence[str]) -> List[Track]:
+        """Resolve each id (PK or spotify_id) in request order, duplicates kept (D8). Two
+        queries, not one per id: an Undo replays a whole queue."""
+        uuids: set[uuid.UUID] = set()
+        for raw in track_ids:
+            try:
+                uuids.add(uuid.UUID(raw))
+            except ValueError:
+                pass
+        by_pk = (
+            {str(t.id): t for t in db.query(Track).filter(Track.id.in_(uuids)).all()}
+            if uuids
+            else {}
+        )
+        by_spotify = {
+            t.spotify_id: t
+            for t in db.query(Track).filter(Track.spotify_id.in_(list(track_ids))).all()
+        }
+        out: List[Track] = []
+        for raw in track_ids:
+            track = None
+            try:
+                track = by_pk.get(str(uuid.UUID(raw)))
+            except ValueError:
+                pass
+            if track is None:
+                track = by_spotify.get(raw)
+            if track is None:
+                raise TrackNotFoundError(raw)
+            out.append(track)
+        return out
+
+    @staticmethod
+    def _insert_queue_rows(
+        db: Session, bucket_id: Any, tracks: Sequence[Track]
+    ) -> List[ReviewBucketItem]:
+        """Insert ``tracks`` as playback rows at positions 0..n-1. Separate method so the
+        integration test can fail it between the delete and the insert."""
+        rows = [
+            ReviewBucketItem(
+                bucket_id=bucket_id,
+                item_type="playback",
+                track_id=track.id,
+                position=pos,
+            )
+            for pos, track in enumerate(tracks)
+        ]
+        db.add_all(rows)
+        db.flush()
+        return rows
+
     @staticmethod
     def _credited_artists(source: Album | Track) -> List[Artist]:
         """Return a source's distinct catalog credits, excluding the VA sentinel.

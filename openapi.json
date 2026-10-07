@@ -785,6 +785,17 @@
             ],
             "title": "Review Target Id"
           },
+          "spotify_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spotify Uri"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -3569,6 +3580,65 @@
         "title": "ReorderRequest",
         "type": "object"
       },
+      "ReplacePlaybackQueueRequest": {
+        "additionalProperties": false,
+        "description": "PUT /api/buckets/{id}/playback-queue body: EXACTLY ONE of ``album_id`` (the album's\ntracks, in album order \u2014 a \u25b6 on an album) or ``track_ids`` (these tracks, in this order \u2014\na \u25b6 on a track, or an Undo replaying ``displaced_track_ids``). A track id is our UUID or a\nSpotify track id, resolved the same way as POST /items.",
+        "properties": {
+          "album_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album Id"
+          },
+          "track_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Ids"
+          }
+        },
+        "title": "ReplacePlaybackQueueRequest",
+        "type": "object"
+      },
+      "ReplacePlaybackQueueResponse": {
+        "description": "The queue after the replace, and what it displaced.\n\n``items`` are the new playback rows in queue order, each carrying ``spotify_uri``.\n``displaced_track_ids`` are the replaced rows' track ids in their old order \u2014 send them\nback as ``track_ids`` to undo. Both empty \u21d2 nothing to queue (an album with no synced\ntracks) and the queue was left untouched.",
+        "properties": {
+          "displaced_track_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Displaced Track Ids",
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BucketItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "title": "ReplacePlaybackQueueResponse",
+        "type": "object"
+      },
       "ResearchStatusMapResponse": {
         "description": "Batched album_id -> research status, for the cover dots. One query for a\nwhole board instead of one GET per cover (the per-cover fan-out throttled the\nLambda \u2192 503s). Albums with no note are simply absent from the map.",
         "properties": {
@@ -6177,6 +6247,63 @@
           }
         ],
         "summary": "Move Bucket",
+        "tags": [
+          "buckets"
+        ]
+      }
+    },
+    "/api/buckets/{bucket_id}/playback-queue": {
+      "put": {
+        "operationId": "replace_playback_queue_api_buckets__bucket_id__playback_queue_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bucket_id",
+            "required": true,
+            "schema": {
+              "title": "Bucket Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplacePlaybackQueueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplacePlaybackQueueResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Replace Playback Queue",
         "tags": [
           "buckets"
         ]
