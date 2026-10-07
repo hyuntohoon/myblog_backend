@@ -3,14 +3,19 @@ from __future__ import annotations
 from datetime import date
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.di import get_bucket_service
 from app.services.bucket_service import (
     AlbumNotFoundError,
     ArtistNotFoundError,
+    BucketItemRateLimitError,
     BucketNotFoundError,
     BucketTypeError,
     DuplicateItemError,
     ItemNotFoundError,
+    SystemBucketError,
+    TrackNotFoundError,
 )
 
 
@@ -1283,4 +1288,141 @@ class TestMoveBucket:
         _override(app, MagicMock())
         resp = client.put("/api/buckets/bk-1/move", json={"parent_id": None})
         assert resp.status_code == 422
+        app.dependency_overrides.clear()
+
+
+# ── ARCH-playback-queue-atomic-replace Step 1 ─────────────────────────────────────
+
+_QUEUE_ID = "11111111-1111-1111-1111-111111111111"
+_ALBUM_ID = "22222222-2222-2222-2222-222222222222"
+
+
+def _queue_row(item_id, track_id, spotify_id, position):
+    it = _nonalbum_item(item_id=item_id, item_type="playback", track_id=track_id)
+    it.position = position
+    it.note = None
+    it.review_target_id = None
+    it.artist_id = None
+    it.artist = None
+    it.track.spotify_id = spotify_id
+    return it
+
+
+class TestReplacePlaybackQueue:
+    URL = f"/api/buckets/{_QUEUE_ID}/playback-queue"
+
+    def test_album_replace_returns_rows_with_spotify_uri_and_displaced(self, client, app):
+        svc = MagicMock()
+        svc.replace_playback_queue.return_value = (
+            [_queue_row("i1", "t1", "sp1", 0), _queue_row("i2", "t2", "sp2", 1)],
+            ["old-1", "old-2"],
+        )
+        _override(app, svc)
+
+        resp = client.put(self.URL, json={"album_id": _ALBUM_ID})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert [i["spotify_uri"] for i in body["items"]] == [
+            "spotify:track:sp1", "spotify:track:sp2",
+        ]
+        assert [i["id"] for i in body["items"]] == ["i1", "i2"]
+        assert body["displaced_track_ids"] == ["old-1", "old-2"]
+        kwargs = svc.replace_playback_queue.call_args.kwargs
+        assert kwargs["album_id"] == _ALBUM_ID and kwargs["track_ids"] is None
+        assert svc.replace_playback_queue.call_args.args[2] == _QUEUE_ID
+        app.dependency_overrides.clear()
+
+    def test_track_ids_pass_through_in_order(self, client, app):
+        svc = MagicMock()
+        svc.replace_playback_queue.return_value = ([], [])
+        _override(app, svc)
+
+        resp = client.put(self.URL, json={"track_ids": ["b", "a", "b"]})
+
+        assert resp.status_code == 200
+        assert svc.replace_playback_queue.call_args.kwargs["track_ids"] == ["b", "a", "b"]
+        app.dependency_overrides.clear()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {},
+            {"album_id": _ALBUM_ID, "track_ids": ["a"]},
+            {"track_ids": []},
+            {"track_ids": ["x"] * 201},  # OQ3 cap
+            {"track_ids": ["x" * 65]},
+            {"album_id": "not-a-uuid"},
+            {"album_id": _ALBUM_ID, "extra": 1},
+        ],
+    )
+    def test_malformed_body_is_422_and_never_reaches_the_service(self, client, app, body):
+        svc = MagicMock()
+        _override(app, svc)
+
+        resp = client.put(self.URL, json=body)
+
+        assert resp.status_code == 422
+        svc.replace_playback_queue.assert_not_called()
+        app.dependency_overrides.clear()
+
+    def test_two_hundred_tracks_is_accepted(self, client, app):
+        svc = MagicMock()
+        svc.replace_playback_queue.return_value = ([], [])
+        _override(app, svc)
+
+        resp = client.put(self.URL, json={"track_ids": ["x"] * 200})
+
+        assert resp.status_code == 200
+        app.dependency_overrides.clear()
+
+    def test_malformed_bucket_id_is_404_without_touching_the_service(self, client, app):
+        svc = MagicMock()
+        _override(app, svc)
+
+        resp = client.put("/api/buckets/not-a-uuid/playback-queue", json={"album_id": _ALBUM_ID})
+
+        assert resp.status_code == 404
+        svc.replace_playback_queue.assert_not_called()
+        app.dependency_overrides.clear()
+
+    @pytest.mark.parametrize(
+        "exc,status",
+        [
+            (BucketNotFoundError("x"), 404),
+            (AlbumNotFoundError("x"), 404),
+            (TrackNotFoundError("x"), 404),
+            (BucketTypeError("x"), 400),
+            (BucketItemRateLimitError("x"), 429),
+            (SystemBucketError("x"), 409),
+        ],
+    )
+    def test_service_errors_map_to_status(self, client, app, exc, status):
+        svc = MagicMock()
+        svc.replace_playback_queue.side_effect = exc
+        _override(app, svc)
+
+        resp = client.put(self.URL, json={"album_id": _ALBUM_ID})
+
+        assert resp.status_code == status
+        app.dependency_overrides.clear()
+
+
+class TestTreeSpotifyUri:
+    def test_playback_row_carries_spotify_uri_and_other_kinds_do_not(self, client, app):
+        svc = MagicMock()
+        track_row = _nonalbum_item(item_id="it-t", item_type="track", track_id="t9")
+        track_row.track.spotify_id = "sp9"
+        svc.list_buckets.return_value = [
+            _bucket(items=[_item(), track_row, _queue_row("i1", "t1", "sp1", 0)])
+        ]
+        svc.reviewed_album_ids.return_value = set()
+        _override(app, svc)
+
+        resp = client.get("/api/buckets")
+
+        items = {i["item_type"]: i for i in resp.json()["buckets"][0]["items"]}
+        assert items["playback"]["spotify_uri"] == "spotify:track:sp1"
+        assert items["album"]["spotify_uri"] is None
+        assert items["track"]["spotify_uri"] is None
         app.dependency_overrides.clear()

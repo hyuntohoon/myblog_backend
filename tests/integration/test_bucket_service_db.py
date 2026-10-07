@@ -19,7 +19,7 @@ import uuid
 from datetime import date
 
 import pytest
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
@@ -28,6 +28,7 @@ from tests.integration.catalog import seed_catalog
 from app.services.bucket_service import (
     AlbumNotFoundError,
     ArtistNotFoundError,
+    BucketItemRateLimitError,
     BucketNotFoundError,
     BucketService,
     BucketTypeError,
@@ -1334,3 +1335,160 @@ class TestPlaybackBucketCreateGuard:
         # singleton index and outside the delete guard. Rejected at the service.
         with pytest.raises(ValueError):
             svc.create_bucket(db, user_id, name="가짜 대기열", type="playback")
+
+
+# ── ARCH-playback-queue-atomic-replace Step 1 ─────────────────────────────────────
+# Real-engine on purpose: the claim under test is transactional (delete + insert commit
+# together or not at all) and the FOR UPDATE row lock — neither exists in a mocked session.
+
+
+def _seed_queue(db, svc, user_id, n, title="Old"):
+    """A Playback Bucket holding ``n`` playback rows of a fresh album, positions 0..n-1."""
+    queue = svc.get_or_create_playback_bucket(db, user_id)
+    alb = _mk_album(db, title=title)
+    tracks = [_mk_track(db, alb, f"{title} {i}", i + 1) for i in range(n)]
+    for pos, t in enumerate(tracks):
+        db.add(
+            ReviewBucketItem(
+                bucket_id=queue.id, item_type="playback", track_id=t.id, position=pos
+            )
+        )
+    # Commit (= release the fixture's savepoint): the rows a member already has were committed
+    # by earlier requests, so a rollback inside the replace must not be able to reach them.
+    # Without this the service's rollback would erase the seed and fake an "emptied" queue.
+    db.commit()
+    return queue, [str(t.id) for t in tracks]
+
+
+class TestReplacePlaybackQueue:
+    def test_album_replace_leaves_exactly_the_album_in_album_order(self, db, svc, user_id):
+        queue, old_ids = _seed_queue(db, svc, user_id, 14)
+        alb = _mk_album(db, title="Popstar")
+        # Inserted out of order, so a missing ORDER BY would show.
+        t3 = _mk_track(db, alb, "c", 3)
+        t1 = _mk_track(db, alb, "a", 1)
+        t2 = _mk_track(db, alb, "b", 2)
+
+        rows, displaced = svc.replace_playback_queue(
+            db, user_id, str(queue.id), album_id=str(alb.id)
+        )
+
+        expected = [(0, str(t1.id)), (1, str(t2.id)), (2, str(t3.id))]
+        assert _queue_track_ids(db, queue.id) == expected
+        assert [(r.position, str(r.track_id)) for r in rows] == expected
+        assert displaced == old_ids
+        # The serializer's relationships come back eager-loaded (no per-row lazy load).
+        state = inspect(rows[0])
+        assert "track" not in state.unloaded
+        assert "artists" not in inspect(rows[0].track).unloaded
+        assert rows[0].track.spotify_id == t1.spotify_id
+
+    def test_track_ids_keep_request_order_duplicates_and_spotify_ids(self, db, svc, user_id):
+        queue, _ = _seed_queue(db, svc, user_id, 2)
+        alb = _mk_album(db)
+        a = _mk_track(db, alb, "a", 1)
+        b = _mk_track(db, alb, "b", 2)
+
+        svc.replace_playback_queue(
+            db, user_id, str(queue.id), track_ids=[str(b.id), a.spotify_id, str(b.id)]
+        )
+
+        assert _queue_track_ids(db, queue.id) == [
+            (0, str(b.id)), (1, str(a.id)), (2, str(b.id)),
+        ]
+
+    def test_undo_round_trip_restores_the_displaced_queue(self, db, svc, user_id):
+        queue, old_ids = _seed_queue(db, svc, user_id, 5)
+        alb = _mk_album(db, title="New")
+        _mk_track(db, alb, "x", 1)
+
+        _, displaced = svc.replace_playback_queue(
+            db, user_id, str(queue.id), album_id=str(alb.id)
+        )
+        svc.replace_playback_queue(db, user_id, str(queue.id), track_ids=displaced)
+
+        assert [t for _, t in _queue_track_ids(db, queue.id)] == old_ids
+
+    def test_failure_between_delete_and_insert_leaves_the_queue_untouched(
+        self, db, svc, user_id, monkeypatch
+    ):
+        # The RFC's atomicity claim. The insert fails AFTER the displaced rows were deleted
+        # and flushed; the old queue must still be there, unchanged.
+        queue, old_ids = _seed_queue(db, svc, user_id, 14)
+        alb = _mk_album(db, title="Popstar")
+        _mk_track(db, alb, "a", 1)
+        before = _queue_track_ids(db, queue.id)
+
+        def boom(*_a, **_k):
+            raise RuntimeError("insert failed")
+
+        monkeypatch.setattr(BucketService, "_insert_queue_rows", staticmethod(boom))
+        with pytest.raises(RuntimeError):
+            svc.replace_playback_queue(db, user_id, str(queue.id), album_id=str(alb.id))
+
+        assert _queue_track_ids(db, queue.id) == before
+        assert [t for _, t in before] == old_ids
+
+    def test_another_members_bucket_is_not_found_and_untouched(self, db, svc, user_id):
+        queue, _ = _seed_queue(db, svc, user_id, 3)
+        before = _queue_track_ids(db, queue.id)
+        other = uuid.UUID("00000000-0000-0000-0000-0000000000b3")
+        db.execute(
+            text(
+                "INSERT INTO users (id, handle, display_name) VALUES (:id, :h, :d) "
+                "ON CONFLICT (id) DO NOTHING"
+            ),
+            {"id": str(other), "h": "test-bucketsvc-3", "d": "Test BucketSvc 3"},
+        )
+        db.flush()
+        alb = _mk_album(db)
+        _mk_track(db, alb, "a", 1)
+
+        with pytest.raises(BucketNotFoundError):
+            svc.replace_playback_queue(db, other, str(queue.id), album_id=str(alb.id))
+        assert _queue_track_ids(db, queue.id) == before
+
+    def test_album_without_tracks_is_a_no_op(self, db, svc, user_id):
+        queue, _ = _seed_queue(db, svc, user_id, 3)
+        before = _queue_track_ids(db, queue.id)
+        empty = _mk_album(db, title="no tracks synced")
+
+        rows, displaced = svc.replace_playback_queue(
+            db, user_id, str(queue.id), album_id=str(empty.id)
+        )
+
+        assert (rows, displaced) == ([], [])
+        assert _queue_track_ids(db, queue.id) == before
+
+    def test_unknown_track_id_writes_nothing(self, db, svc, user_id):
+        queue, _ = _seed_queue(db, svc, user_id, 3)
+        before = _queue_track_ids(db, queue.id)
+        alb = _mk_album(db)
+        a = _mk_track(db, alb, "a", 1)
+
+        with pytest.raises(TrackNotFoundError):
+            svc.replace_playback_queue(
+                db, user_id, str(queue.id), track_ids=[str(a.id), "no-such-track"]
+            )
+        assert _queue_track_ids(db, queue.id) == before
+
+    def test_daily_cap_rejects_before_anything_is_deleted(self, db, svc, user_id):
+        queue, _ = _seed_queue(db, svc, user_id, 3)
+        before = _queue_track_ids(db, queue.id)
+        alb = _mk_album(db)
+        _mk_track(db, alb, "a", 1)
+        _mk_track(db, alb, "b", 2)
+
+        # 3 rows already added in the last 24h; +2 would exceed a cap of 4.
+        with pytest.raises(BucketItemRateLimitError):
+            svc.replace_playback_queue(
+                db, user_id, str(queue.id), album_id=str(alb.id), daily_cap=4
+            )
+        assert _queue_track_ids(db, queue.id) == before
+
+    def test_a_general_bucket_cannot_be_replaced(self, db, svc, user_id):
+        general = svc.create_bucket(db, user_id, name="일반")
+        alb = _mk_album(db)
+        _mk_track(db, alb, "a", 1)
+        with pytest.raises(BucketTypeError):
+            svc.replace_playback_queue(db, user_id, str(general.id), album_id=str(alb.id))
