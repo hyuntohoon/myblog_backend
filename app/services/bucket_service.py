@@ -5,7 +5,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, List, Optional, Sequence, Tuple
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -130,6 +130,15 @@ PLAYBACK_BUCKET_NAME = "재생 대기열"
 # the product offers no delete action for any of them — see SystemBucketError for why the
 # guard covers all three rather than only the new one.
 SYSTEM_BUCKET_KINDS = ("playback_queue", "spotify_library", "to_listen")
+
+# Album order for every album → playback-rows expansion (board drop and ▶ replace), in ONE place
+# so the two cannot drift. Same ordering as myblog_music track_repo.py; see expand_album_tracks.
+ALBUM_TRACK_ORDER = (
+    Track.disc_no.asc().nullslast(),
+    Track.track_no.asc().nullslast(),
+    Track.created_at.asc(),
+    Track.id.asc(),
+)
 
 
 class BucketService:
@@ -1049,12 +1058,7 @@ class BucketService:
             # track.artists — eager-load it so a 20-track album is one extra SELECT, not 20.
             .options(selectinload(Track.artists))
             .filter(Track.album_id == album.id)
-            .order_by(
-                Track.disc_no.asc().nullslast(),
-                Track.track_no.asc().nullslast(),
-                Track.created_at.asc(),
-                Track.id.asc(),
-            )
+            .order_by(*ALBUM_TRACK_ORDER)
             .all()
         )
         if not tracks:
@@ -1098,7 +1102,10 @@ class BucketService:
         tracks (album order) or ``track_ids`` (request order), in ONE transaction.
 
         Returns ``(new_rows, displaced_track_ids)``. ``displaced_track_ids`` is the replaced
-        queue's track ids in position order — the Undo payload, replayed as ``track_ids``.
+        queue's track ids in position order — the Undo payload, replayed as ``track_ids``. It is
+        replayable only when it holds 1..200 ids (the request bounds): an empty queue has nothing
+        to undo, and a queue longer than 200 (reachable only through unbounded POST /items
+        appends) cannot be restored in one call — the caller does not offer Undo in either case.
 
         Replaces the front's write-then-delete sequence (``rewriteQueue``/``deleteRows``), which
         under Lambda throttling left some displaced rows at the head of the queue. Here the
@@ -1148,21 +1155,28 @@ class BucketService:
 
             self._check_item_rate_limit(db, user_id, daily_cap, rows_to_create=len(tracks))
 
-            displaced = (
-                db.query(ReviewBucketItem)
-                .filter(
+            # One set-based DELETE scoped to THIS bucket, not N deletes by row id: a row a
+            # concurrent reorder moved to another bucket while we waited on its lock is
+            # re-checked against bucket_id and left alone. Still inside the transaction, so a
+            # failure below rolls the delete back with the insert.
+            displaced = db.execute(
+                delete(ReviewBucketItem)
+                .where(
                     ReviewBucketItem.bucket_id == bucket.id,
                     ReviewBucketItem.item_type == "playback",
                 )
-                .order_by(ReviewBucketItem.position, ReviewBucketItem.id)
-                .all()
-            )
-            displaced_track_ids = [str(it.track_id) for it in displaced if it.track_id]
-            for it in displaced:
-                db.delete(it)
-            # Flush the deletes before the inserts so positions 0..n are free again; the
-            # transaction is still open, so a failure below rolls both back together.
-            db.flush()
+                .returning(
+                    ReviewBucketItem.track_id,
+                    ReviewBucketItem.position,
+                    ReviewBucketItem.id,
+                )
+                .execution_options(synchronize_session=False)
+            ).all()
+            displaced_track_ids = [
+                str(r.track_id)
+                for r in sorted(displaced, key=lambda r: (r.position, str(r.id)))
+                if r.track_id
+            ]
 
             new_ids = [row.id for row in self._insert_queue_rows(db, bucket.id, tracks)]
             db.commit()
@@ -1194,12 +1208,7 @@ class BucketService:
         return (
             db.query(Track)
             .filter(Track.album_id == album.id)
-            .order_by(
-                Track.disc_no.asc().nullslast(),
-                Track.track_no.asc().nullslast(),
-                Track.created_at.asc(),
-                Track.id.asc(),
-            )
+            .order_by(*ALBUM_TRACK_ORDER)
             .all()
         )
 

@@ -3619,7 +3619,7 @@
         "type": "object"
       },
       "ReplacePlaybackQueueResponse": {
-        "description": "The queue after the replace, and what it displaced.\n\n``items`` are the new playback rows in queue order, each carrying ``spotify_uri``.\n``displaced_track_ids`` are the replaced rows' track ids in their old order \u2014 send them\nback as ``track_ids`` to undo. Both empty \u21d2 nothing to queue (an album with no synced\ntracks) and the queue was left untouched.",
+        "description": "The queue after the replace, and what it displaced.\n\n``items`` are the new playback rows in queue order, each carrying ``spotify_uri``.\n``displaced_track_ids`` are the replaced rows' track ids in their old order \u2014 send them\nback as ``track_ids`` to undo \u2014 replayable only when it holds 1..200 ids, so a client offers\nno Undo when it is empty or longer than the request cap. Both empty \u21d2 nothing to queue (an\nalbum with no synced tracks) and the queue was left untouched.",
         "properties": {
           "displaced_track_ids": {
             "items": {

@@ -448,8 +448,9 @@ class ReplacePlaybackQueueResponse(BaseModel):
 
     ``items`` are the new playback rows in queue order, each carrying ``spotify_uri``.
     ``displaced_track_ids`` are the replaced rows' track ids in their old order — send them
-    back as ``track_ids`` to undo. Both empty ⇒ nothing to queue (an album with no synced
-    tracks) and the queue was left untouched."""
+    back as ``track_ids`` to undo — replayable only when it holds 1..200 ids, so a client offers
+    no Undo when it is empty or longer than the request cap. Both empty ⇒ nothing to queue (an
+    album with no synced tracks) and the queue was left untouched."""
     items: List[BucketItemResponse] = Field(default_factory=list)
     displaced_track_ids: List[str] = Field(default_factory=list)
 

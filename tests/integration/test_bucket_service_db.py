@@ -19,7 +19,7 @@ import uuid
 from datetime import date
 
 import pytest
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
@@ -1377,7 +1377,10 @@ class TestReplacePlaybackQueue:
         assert _queue_track_ids(db, queue.id) == expected
         assert [(r.position, str(r.track_id)) for r in rows] == expected
         assert displaced == old_ids
-        # The serializer's relationships come back loaded, spotify_id included.
+        # The serializer's relationships come back eager-loaded (no per-row lazy load).
+        state = inspect(rows[0])
+        assert "track" not in state.unloaded
+        assert "artists" not in inspect(rows[0].track).unloaded
         assert rows[0].track.spotify_id == t1.spotify_id
 
     def test_track_ids_keep_request_order_duplicates_and_spotify_ids(self, db, svc, user_id):
