@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -243,6 +244,73 @@ def test_album_job_detail_titles_oldest_first_and_backoff(db):
     assert by[("pending", f"it_{tag}_ahead")] == (1, 1)
     assert by[("pending", f"it_{tag}_due")] == (1, 0)
     assert first[6] > read.observed_at and second[6] < read.observed_at
+
+
+def test_oldest_filters_order_and_flow_definitions(db):
+    """Which rows count as waiting, in what order, and what moves the flow.
+
+    Each seed sits on the far side of a filter: a finished research row, an
+    ineligible Genius annotation, a GPT publish that nobody requested. Deltas
+    only — the target may already hold rows.
+    """
+    cat = seed_catalog(db)
+    before = {k: _detail(db, k) for k in
+              ("album_research", "genre_backfill_requests", "track_genius_annotations", "track_lyrics_translations")}
+
+    # album_research: one queued from long ago, one finished just now.
+    queued_id, done_id = (
+        db.execute(
+            text("INSERT INTO album_research (album_id, prompt_version, status, requested_at, started_at, finished_at) "
+                 "VALUES (:a, :p, :s, :req, :st, :fin) RETURNING id"),
+            {"a": cat.album_ids[i], "p": f"it-{uuid.uuid4()}", "s": s, "req": req, "st": req if fin else None, "fin": fin},
+        ).scalar_one()
+        for i, s, req, fin in [
+            (0, "queued", _ago(3650), None),
+            (1, "done", _ago(3649), _ago(0)),
+        ]
+    )
+    # genre_backfill_requests: two pending, inserted newest first.
+    newer = db.execute(text("INSERT INTO genre_backfill_requests (requested_at) VALUES (now() - interval '3649 days') "
+                            "RETURNING id")).scalar_one()
+    older = db.execute(text("INSERT INTO genre_backfill_requests (requested_at) VALUES (now() - interval '3650 days') "
+                            "RETURNING id")).scalar_one()
+    # track_genius_annotations: pending but ineligible (no source body) — never waiting.
+    ineligible = 9_100_000_000 + int(uuid.uuid4().hex[:6], 16)
+    db.execute(
+        text("INSERT INTO track_genius_annotations (genius_annotation_id, track_id, fragment, referent_ordinal, "
+             "body_source, created_at) VALUES (:g, :t, 'it', 0, '', now() - interval '3650 days')"),
+        {"g": ineligible, "t": cat.track_ids[0]},
+    )
+    # track_lyrics_translations: a GPT publish nobody requested (requested_at =
+    # translated_at, as _publish writes it) and a real request.
+    db.execute(
+        text("INSERT INTO track_lyrics_translations (track_id, status, segments, source_fingerprint, origin, "
+             "translated_at) VALUES (:t, 'done', '[]'::jsonb, :fp, 'poller', now())"),
+        {"t": cat.track_ids[1], "fp": "e" * 64},
+    )
+    db.execute(text("INSERT INTO track_lyrics_translations (track_id, status) VALUES (:t, 'requested')"),
+               {"t": cat.track_ids[2]})
+
+    research = _detail(db, "album_research")
+    assert research.oldest[0][0] == str(queued_id)
+    assert str(done_id) not in [r[0] for r in research.oldest]
+    assert research.flow[1] - before["album_research"].flow[1] == 1  # finished_at, not requested_at
+    assert research.flow[0] == before["album_research"].flow[0]
+
+    genre = _detail(db, "genre_backfill_requests")
+    assert [r[0] for r in genre.oldest[:2]] == [str(older), str(newer)]
+
+    genius = _detail(db, "track_genius_annotations")
+    assert str(ineligible) not in [r[0] for r in genius.oldest]
+
+    tlt = _detail(db, "track_lyrics_translations")
+    assert tlt.flow[0] - before["track_lyrics_translations"].flow[0] == 1  # the request, not the publish
+    assert tlt.flow[1] is None
+    assert cat.track_ids[2] in [r[0] for r in tlt.oldest] or len(tlt.oldest) == catalog.OLDEST_WAITING_LIMIT
+
+
+def _ago(days: int):
+    return datetime.now(timezone.utc) - timedelta(days=days)
 
 
 def test_detail_runs_inside_a_read_only_service_transaction(engine):

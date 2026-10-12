@@ -492,7 +492,7 @@ QUEUE_DETAILS: Dict[str, QueueDetailDef] = {
             ORDER BY j.created_at, j.id LIMIT :limit
         """,
         entered_basis="Jobs created in the window.",
-        left_basis="Jobs now complete or cancelled whose last update is in the window.",
+        left_basis="Approximate: jobs now complete or cancelled whose last update is in the window.",
         wait_basis="Since the job was created.",
     ),
     "lyrics_album_tracks": QueueDetailDef(
@@ -507,14 +507,14 @@ QUEUE_DETAILS: Dict[str, QueueDetailDef] = {
             FROM lyrics_album_tracks
         """,
         oldest_sql=f"""
-            SELECT lt.track_id::text, t.title, lt.source_state, {reason_code_sql('lt.last_reason')},
+            SELECT lt.job_id::text || ':' || lt.track_id::text, t.title, lt.source_state, {reason_code_sql('lt.last_reason')},
                    NULL::int, lt.updated_at, lt.next_attempt_at
             FROM lyrics_album_tracks lt LEFT JOIN tracks t ON t.id = lt.track_id
             WHERE lt.source_state = 'source_pending'
             ORDER BY lt.updated_at, lt.job_id, lt.track_id LIMIT :limit
         """,
         entered_basis="Not measurable: the table has no created_at.",
-        left_basis="Tracks now linked or not_required whose last update is in the window.",
+        left_basis="Approximate: tracks now linked or not_required whose last update is in the window.",
         wait_basis="Since the row was last touched (the table has no created_at).",
     ),
     "lyrics_artist_discographies": QueueDetailDef(
@@ -536,9 +536,9 @@ QUEUE_DETAILS: Dict[str, QueueDetailDef] = {
             WHERE NOT d.complete
             ORDER BY d.created_at, d.spotify_artist_id LIMIT :limit
         """,
-        entered_basis="Artists added in the window.",
+        entered_basis="Artists added in the window (a re-opened artist keeps its original created_at and is not counted).",
         left_basis="Artists whose enumeration completed in the window.",
-        wait_basis="Since the artist was added.",
+        wait_basis="Since the artist was first added (a re-opened artist keeps that date).",
     ),
     "album_research": QueueDetailDef(
         reasons_sql="SELECT status, NULL::text, count(*), NULL::bigint FROM album_research GROUP BY 1",
@@ -583,8 +583,9 @@ QUEUE_DETAILS: Dict[str, QueueDetailDef] = {
             GROUP BY 1
         """,
         flow_sql=f"""
-            SELECT count(*) FILTER (WHERE requested_at >= {_IN_WINDOW}),
-                   count(*) FILTER (WHERE status IN ('done', 'failed') AND updated_at >= {_IN_WINDOW})
+            SELECT count(*) FILTER (WHERE requested_at >= {_IN_WINDOW}
+                                    AND (translated_at IS NULL OR requested_at < translated_at)),
+                   NULL::bigint
             FROM track_lyrics_translations
         """,
         oldest_sql="""
@@ -594,8 +595,12 @@ QUEUE_DETAILS: Dict[str, QueueDetailDef] = {
             WHERE x.status = 'requested' AND t.spotify_id IS NOT NULL
             ORDER BY x.requested_at, x.track_id LIMIT :limit
         """,
-        entered_basis="Requests whose requested_at is in the window.",
-        left_basis="Requests now done or failed whose last update is in the window.",
+        # The GPT worker publishes album-demand translations into this table too
+        # (gpt_translation_store._publish inserts them straight as 'done', with
+        # requested_at = translated_at), so those are excluded from "entered" and
+        # "left" cannot tell a drained request from a publish.
+        entered_basis="Requests made in the window (results the GPT worker published without a request are excluded).",
+        left_basis="Not measurable: GPT album translations publish into this table too, so a finished row cannot be told apart from a drained request.",
         wait_basis="Since the request was made.",
         reasons_note=_RAW_ERROR_ONLY,
     ),
@@ -607,7 +612,7 @@ QUEUE_DETAILS: Dict[str, QueueDetailDef] = {
         """,
         flow_sql=f"""
             SELECT count(*) FILTER (WHERE created_at >= {_IN_WINDOW}),
-                   count(*) FILTER (WHERE translation_status IN ('done', 'failed') AND updated_at >= {_IN_WINDOW})
+                   count(*) FILTER (WHERE translation_status = 'done' AND translated_at >= {_IN_WINDOW})
             FROM track_genius_annotations
         """,
         oldest_sql=f"""
@@ -619,7 +624,7 @@ QUEUE_DETAILS: Dict[str, QueueDetailDef] = {
             ORDER BY a.created_at, a.genius_annotation_id LIMIT :limit
         """,
         entered_basis="Annotations fetched in the window.",
-        left_basis="Annotations now done or failed whose last update is in the window.",
+        left_basis="Annotations translated in the window (a re-fetch bumps updated_at, so translated_at is used; failures carry no timestamp).",
         wait_basis="Since the annotation was fetched.",
         reasons_note=_NO_REASON_COLUMN,
     ),
@@ -646,7 +651,7 @@ TRANSLATION_WORK_DETAIL = QueueDetailDef(
         ORDER BY w.created_at, w.id LIMIT :limit
     """,
     entered_basis="Work rows created in the window.",
-    left_basis="Work rows now done or cancelled whose last update is in the window.",
+    left_basis="Approximate: work rows now done or cancelled whose last update is in the window.",
     wait_basis="Since the work row was created.",
 )
 
