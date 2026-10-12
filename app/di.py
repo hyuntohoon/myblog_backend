@@ -10,6 +10,7 @@ from app.services.genre_service import GenreService
 from app.services.lyrics_service import LyricsService
 from app.services.todays_pick_service import TodaysPickService
 from app.services.tracked_artist_service import TrackedArtistService
+from app.services.automation_service import AutomationService
 from app.repositories.post_repository import PostRepository
 from app.repositories.section_repository import SectionRepository
 from app.repositories.tag_repository import TagRepository
@@ -54,6 +55,13 @@ def get_todays_pick_service() -> TodaysPickService:
 
 def get_tracked_artist_service() -> TrackedArtistService:
     return TrackedArtistService()
+
+
+def get_automation_service() -> AutomationService:
+    # Lazy: app.db.session builds the engine from settings at import time.
+    from app.db.session import SessionLocal
+
+    return AutomationService(SessionLocal)
 
 
 def get_sqs_client():

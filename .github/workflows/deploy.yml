@@ -173,7 +173,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: hyuntohoon/myblog_shared_db
-          ref: 98875c8450388f8b308730206c3e6883ecc87b67
+          ref: d31b0600bf866a9ddf60f6b1ebbdc8e00460f7da
           token: ${{ secrets.SHARED_DB_PAT }}
           persist-credentials: false
           path: shared-db-schema
