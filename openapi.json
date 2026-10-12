@@ -993,6 +993,207 @@
         "title": "AutomationQueue",
         "type": "object"
       },
+      "AutomationQueueDetail": {
+        "properties": {
+          "flow": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutomationQueueFlow"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "frozen": {
+            "title": "Frozen",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "oldest_limit": {
+            "title": "Oldest Limit",
+            "type": "integer"
+          },
+          "oldest_waiting": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AutomationWaitingItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Waiting"
+          },
+          "reasons": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AutomationReasonCount"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasons"
+          },
+          "reasons_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasons Note"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "table": {
+            "title": "Table",
+            "type": "string"
+          },
+          "wait_basis": {
+            "title": "Wait Basis",
+            "type": "string"
+          },
+          "waiting_states": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Waiting States",
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "table",
+          "label",
+          "frozen",
+          "waiting_states",
+          "status",
+          "wait_basis",
+          "oldest_limit"
+        ],
+        "title": "AutomationQueueDetail",
+        "type": "object"
+      },
+      "AutomationQueueFlow": {
+        "properties": {
+          "entered": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entered"
+          },
+          "entered_basis": {
+            "title": "Entered Basis",
+            "type": "string"
+          },
+          "left": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Left"
+          },
+          "left_basis": {
+            "title": "Left Basis",
+            "type": "string"
+          },
+          "window_hours": {
+            "title": "Window Hours",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "window_hours",
+          "entered_basis",
+          "left_basis"
+        ],
+        "title": "AutomationQueueFlow",
+        "type": "object"
+      },
+      "AutomationReasonCount": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "deferred": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deferred"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "count"
+        ],
+        "title": "AutomationReasonCount",
+        "type": "object"
+      },
       "AutomationSnapshot": {
         "properties": {
           "catalog_as_of": {
@@ -1095,6 +1296,81 @@
           "status"
         ],
         "title": "AutomationSource",
+        "type": "object"
+      },
+      "AutomationWaitingItem": {
+        "properties": {
+          "attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempts"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "next_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "waiting_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting Since"
+          }
+        },
+        "required": [
+          "id",
+          "state"
+        ],
+        "title": "AutomationWaitingItem",
         "type": "object"
       },
       "BucketItemExpansion": {
@@ -6160,6 +6436,58 @@
           }
         ],
         "summary": "Get Automation Snapshot",
+        "tags": [
+          "admin-automation"
+        ]
+      }
+    },
+    "/api/admin/automation/queue-detail": {
+      "get": {
+        "description": "Why one queue's rows wait, and whether it drains (FEAT-automation-admin 2f).\n\nReason codes only \u2014 never stored error text. Same read-only transaction\nshape as the snapshot; opening it starts nothing.",
+        "operationId": "get_automation_queue_detail_api_admin_automation_queue_detail_get",
+        "parameters": [
+          {
+            "description": "A queue key from the snapshot",
+            "in": "query",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "description": "A queue key from the snapshot",
+              "maxLength": 256,
+              "minLength": 1,
+              "title": "Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationQueueDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Automation Queue Detail",
         "tags": [
           "admin-automation"
         ]

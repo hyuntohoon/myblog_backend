@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Literal, Optional, Tuple
+from typing import Dict, Literal, Optional, Tuple
 
 CATALOG_AS_OF = date(2026, 10, 12)
 
@@ -390,3 +390,265 @@ JOBS: Tuple[JobDef, ...] = (
         note="A repository guard, not a site job.",
     ),
 )
+
+
+# ── queue detail (FEAT-automation-admin 2f) ─────────────────────────────────────
+#
+# Why rows wait and whether a queue drains, per queue. Same rules as above: the
+# SQL is constant (the only bind parameters are `:limit` and, for translation
+# work, `:version`), and it runs inside the snapshot's read-only transaction
+# shape.
+#
+# Reasons leave the database as CODES only. `lyrics_translation_work.last_reason`
+# holds `engine_validation: <exception text>` for the legacy Claude rows, and
+# `album_research.error` / `track_lyrics_translations.error` are raw exception
+# text, so the code is cut out in SQL and anything that is not code-shaped comes
+# back as `unrecognized`. The raw text never reaches Python, let alone the page.
+
+OLDEST_WAITING_LIMIT = 5
+FLOW_WINDOW_HOURS = 24
+UNRECOGNIZED_REASON = "unrecognized"
+
+_CODE = "[a-z][a-z0-9_]{0,63}"
+
+
+def reason_code_sql(column: str) -> str:
+    """SQL that maps a reason column to its code, `unrecognized`, or NULL.
+
+    A value is a code when it is exactly `_CODE`, or `_CODE` followed by `:`
+    and free text (the writer's own `code: detail` form) — then only the code
+    is returned. `column` is always a constant from this module.
+    """
+    return (
+        f"CASE WHEN {column} IS NULL THEN NULL"
+        f" WHEN {column} ~ '^{_CODE}(:|$)' THEN substring({column} from '^{_CODE}')"
+        f" ELSE '{UNRECOGNIZED_REASON}' END"
+    )
+
+
+_NO_REASON_COLUMN = "This table has no reason column."
+_RAW_ERROR_ONLY = "This table records failures only as free text (`error`), which is not shown."
+
+_IN_WINDOW = f"now() - interval '{FLOW_WINDOW_HOURS} hours'"
+
+
+@dataclass(frozen=True)
+class QueueDetailDef:
+    """Detail reads for one queue.
+
+    * `reasons_sql` → rows of (state, reason, n, deferred). `state` uses the
+      same expression as the snapshot's `QueueDef.sql`, so the two agree;
+      `deferred` counts rows whose `next_attempt_at` is still ahead (NULL when
+      the table has no retry schedule).
+    * `flow_sql` → one row of (entered, left) over the last
+      `FLOW_WINDOW_HOURS`. A column is NULL when the table cannot measure it.
+    * `oldest_sql` → up to `:limit` waiting rows of (id, title, state, reason,
+      attempts, waiting_since, next_attempt_at), oldest first.
+    """
+
+    reasons_sql: str
+    flow_sql: str
+    oldest_sql: str
+    entered_basis: str
+    left_basis: str
+    wait_basis: str
+    reasons_note: Optional[str] = None  # None = the table records reason codes
+
+
+_JOB_STATE = ("CASE WHEN j.cancelled THEN 'cancelled' WHEN j.enumeration_complete THEN 'complete' "
+              "ELSE 'pending' END")
+_TLT_STATE = ("CASE WHEN x.status = 'requested' AND t.spotify_id IS NULL "
+              "THEN 'requested_ineligible' ELSE x.status END")
+_GENIUS_ELIGIBLE = """
+    CROSS JOIN LATERAL (SELECT (
+        btrim(coalesce(a.body_source, '')) <> ''
+        AND EXISTS (SELECT 1 FROM tracks t2 WHERE t2.id = a.track_id AND t2.spotify_id IS NOT NULL)
+        AND EXISTS (SELECT 1 FROM track_genius_songs g
+                    WHERE g.track_id = a.track_id AND g.match_status = 'matched')
+    ) AS eligible) e
+"""
+_GENIUS_STATE = ("CASE WHEN a.translation_status = 'pending' AND NOT e.eligible "
+                 "THEN 'pending_ineligible' ELSE a.translation_status END")
+_GENRE_STATE = ("CASE WHEN finished_at IS NOT NULL THEN 'finished' "
+                "WHEN claimed_at IS NOT NULL THEN 'claimed' ELSE 'pending' END")
+
+QUEUE_DETAILS: Dict[str, QueueDetailDef] = {
+    "lyrics_album_jobs": QueueDetailDef(
+        reasons_sql=f"""
+            SELECT {_JOB_STATE}, {reason_code_sql('j.last_reason')}, count(*),
+                   count(*) FILTER (WHERE j.next_attempt_at > now())
+            FROM lyrics_album_jobs j GROUP BY 1, 2
+        """,
+        flow_sql=f"""
+            SELECT count(*) FILTER (WHERE created_at >= {_IN_WINDOW}),
+                   count(*) FILTER (WHERE (cancelled OR enumeration_complete) AND updated_at >= {_IN_WINDOW})
+            FROM lyrics_album_jobs
+        """,
+        oldest_sql=f"""
+            SELECT j.spotify_album_id, al.title, 'pending', {reason_code_sql('j.last_reason')},
+                   NULL::int, j.created_at, j.next_attempt_at
+            FROM lyrics_album_jobs j LEFT JOIN albums al ON al.id = j.album_id
+            WHERE NOT j.cancelled AND NOT j.enumeration_complete
+            ORDER BY j.created_at, j.id LIMIT :limit
+        """,
+        entered_basis="Jobs created in the window.",
+        left_basis="Jobs now complete or cancelled whose last update is in the window.",
+        wait_basis="Since the job was created.",
+    ),
+    "lyrics_album_tracks": QueueDetailDef(
+        reasons_sql=f"""
+            SELECT source_state, {reason_code_sql('last_reason')}, count(*),
+                   count(*) FILTER (WHERE next_attempt_at > now())
+            FROM lyrics_album_tracks GROUP BY 1, 2
+        """,
+        flow_sql=f"""
+            SELECT NULL::bigint,
+                   count(*) FILTER (WHERE source_state <> 'source_pending' AND updated_at >= {_IN_WINDOW})
+            FROM lyrics_album_tracks
+        """,
+        oldest_sql=f"""
+            SELECT lt.track_id::text, t.title, lt.source_state, {reason_code_sql('lt.last_reason')},
+                   NULL::int, lt.updated_at, lt.next_attempt_at
+            FROM lyrics_album_tracks lt LEFT JOIN tracks t ON t.id = lt.track_id
+            WHERE lt.source_state = 'source_pending'
+            ORDER BY lt.updated_at, lt.job_id, lt.track_id LIMIT :limit
+        """,
+        entered_basis="Not measurable: the table has no created_at.",
+        left_basis="Tracks now linked or not_required whose last update is in the window.",
+        wait_basis="Since the row was last touched (the table has no created_at).",
+    ),
+    "lyrics_artist_discographies": QueueDetailDef(
+        reasons_sql=f"""
+            SELECT CASE WHEN complete THEN 'complete' ELSE 'enumerating' END,
+                   {reason_code_sql('last_reason')}, count(*),
+                   count(*) FILTER (WHERE next_attempt_at > now())
+            FROM lyrics_artist_discographies GROUP BY 1, 2
+        """,
+        flow_sql=f"""
+            SELECT count(*) FILTER (WHERE created_at >= {_IN_WINDOW}),
+                   count(*) FILTER (WHERE complete AND last_complete_at >= {_IN_WINDOW})
+            FROM lyrics_artist_discographies
+        """,
+        oldest_sql=f"""
+            SELECT d.spotify_artist_id, ar.name, 'enumerating', {reason_code_sql('d.last_reason')},
+                   NULL::int, d.created_at, d.next_attempt_at
+            FROM lyrics_artist_discographies d LEFT JOIN artists ar ON ar.spotify_id = d.spotify_artist_id
+            WHERE NOT d.complete
+            ORDER BY d.created_at, d.spotify_artist_id LIMIT :limit
+        """,
+        entered_basis="Artists added in the window.",
+        left_basis="Artists whose enumeration completed in the window.",
+        wait_basis="Since the artist was added.",
+    ),
+    "album_research": QueueDetailDef(
+        reasons_sql="SELECT status, NULL::text, count(*), NULL::bigint FROM album_research GROUP BY 1",
+        flow_sql=f"""
+            SELECT count(*) FILTER (WHERE requested_at >= {_IN_WINDOW}),
+                   count(*) FILTER (WHERE finished_at >= {_IN_WINDOW})
+            FROM album_research
+        """,
+        oldest_sql="""
+            SELECT r.id::text, al.title, r.status, NULL::text, NULL::int, r.requested_at, NULL::timestamptz
+            FROM album_research r LEFT JOIN albums al ON al.id = r.album_id
+            WHERE r.status = 'queued'
+            ORDER BY r.requested_at, r.id LIMIT :limit
+        """,
+        entered_basis="Requests made in the window.",
+        left_basis="Requests finished (done or failed) in the window.",
+        wait_basis="Since the request was made.",
+        reasons_note=_RAW_ERROR_ONLY,
+    ),
+    "genre_backfill_requests": QueueDetailDef(
+        reasons_sql=f"SELECT {_GENRE_STATE}, NULL::text, count(*), NULL::bigint FROM genre_backfill_requests GROUP BY 1",
+        flow_sql=f"""
+            SELECT count(*) FILTER (WHERE requested_at >= {_IN_WINDOW}),
+                   count(*) FILTER (WHERE finished_at >= {_IN_WINDOW})
+            FROM genre_backfill_requests
+        """,
+        oldest_sql="""
+            SELECT id::text, NULL::text, 'pending', NULL::text, NULL::int, requested_at, NULL::timestamptz
+            FROM genre_backfill_requests
+            WHERE finished_at IS NULL AND claimed_at IS NULL
+            ORDER BY requested_at, id LIMIT :limit
+        """,
+        entered_basis="Requests made in the window.",
+        left_basis="Requests finished in the window.",
+        wait_basis="Since the request was made.",
+        reasons_note=_NO_REASON_COLUMN,
+    ),
+    "track_lyrics_translations": QueueDetailDef(
+        reasons_sql=f"""
+            SELECT {_TLT_STATE}, NULL::text, count(*), NULL::bigint
+            FROM track_lyrics_translations x LEFT JOIN tracks t ON t.id = x.track_id
+            GROUP BY 1
+        """,
+        flow_sql=f"""
+            SELECT count(*) FILTER (WHERE requested_at >= {_IN_WINDOW}),
+                   count(*) FILTER (WHERE status IN ('done', 'failed') AND updated_at >= {_IN_WINDOW})
+            FROM track_lyrics_translations
+        """,
+        oldest_sql="""
+            SELECT x.track_id::text, t.title, 'requested', NULL::text, NULL::int,
+                   x.requested_at, NULL::timestamptz
+            FROM track_lyrics_translations x JOIN tracks t ON t.id = x.track_id
+            WHERE x.status = 'requested' AND t.spotify_id IS NOT NULL
+            ORDER BY x.requested_at, x.track_id LIMIT :limit
+        """,
+        entered_basis="Requests whose requested_at is in the window.",
+        left_basis="Requests now done or failed whose last update is in the window.",
+        wait_basis="Since the request was made.",
+        reasons_note=_RAW_ERROR_ONLY,
+    ),
+    "track_genius_annotations": QueueDetailDef(
+        reasons_sql=f"""
+            SELECT {_GENIUS_STATE}, NULL::text, count(*), NULL::bigint
+            FROM track_genius_annotations a {_GENIUS_ELIGIBLE}
+            GROUP BY 1
+        """,
+        flow_sql=f"""
+            SELECT count(*) FILTER (WHERE created_at >= {_IN_WINDOW}),
+                   count(*) FILTER (WHERE translation_status IN ('done', 'failed') AND updated_at >= {_IN_WINDOW})
+            FROM track_genius_annotations
+        """,
+        oldest_sql=f"""
+            SELECT a.genius_annotation_id::text, t.title, 'pending', NULL::text, NULL::int,
+                   a.created_at, NULL::timestamptz
+            FROM track_genius_annotations a {_GENIUS_ELIGIBLE}
+            LEFT JOIN tracks t ON t.id = a.track_id
+            WHERE a.translation_status = 'pending' AND e.eligible
+            ORDER BY a.created_at, a.genius_annotation_id LIMIT :limit
+        """,
+        entered_basis="Annotations fetched in the window.",
+        left_basis="Annotations now done or failed whose last update is in the window.",
+        wait_basis="Since the annotation was fetched.",
+        reasons_note=_NO_REASON_COLUMN,
+    ),
+}
+
+# One definition for every translator version; `:version` selects the slice.
+TRANSLATION_WORK_DETAIL = QueueDetailDef(
+    reasons_sql=f"""
+        SELECT status, {reason_code_sql('last_reason')}, count(*),
+               count(*) FILTER (WHERE next_attempt_at > now())
+        FROM lyrics_translation_work WHERE translator_version = :version
+        GROUP BY 1, 2
+    """,
+    flow_sql=f"""
+        SELECT count(*) FILTER (WHERE created_at >= {_IN_WINDOW}),
+               count(*) FILTER (WHERE status IN ('done', 'cancelled') AND updated_at >= {_IN_WINDOW})
+        FROM lyrics_translation_work WHERE translator_version = :version
+    """,
+    oldest_sql=f"""
+        SELECT w.id::text, t.title, w.status, {reason_code_sql('w.last_reason')}, w.attempts,
+               w.created_at, w.next_attempt_at
+        FROM lyrics_translation_work w LEFT JOIN tracks t ON t.id = w.track_id
+        WHERE w.translator_version = :version AND w.status IN ('ready', 'retryable_error')
+        ORDER BY w.created_at, w.id LIMIT :limit
+    """,
+    entered_basis="Work rows created in the window.",
+    left_basis="Work rows now done or cancelled whose last update is in the window.",
+    wait_basis="Since the work row was created.",
+)
+
+# The CHECK on lyrics_translation_work.translator_version (ck_lyrics_work_version).
+MAX_TRANSLATOR_VERSION_LENGTH = 128

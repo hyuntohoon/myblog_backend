@@ -46,6 +46,7 @@ _GUARD_NAMES = {"require_owner", "require_owner_or_draft_agent", "require_cognit
 # Owner-only: editorial authoring/publish, genre taxonomy, and the owner's
 # buckets/library/playback. A member token must not reach any of these.
 OWNER_ONLY = [
+    'app.api.routes.admin_automation:get_automation_queue_detail',   # GET /api/admin/automation/queue-detail
     'app.api.routes.admin_automation:get_automation_snapshot',       # GET /api/admin/automation
     'app.api.routes.buckets:spotify_library_state',                  # GET /api/buckets/spotify-library/state
     'app.api.routes.buckets:spotify_library_sync',                   # POST /api/buckets/spotify-library/sync
