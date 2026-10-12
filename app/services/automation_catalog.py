@@ -152,14 +152,16 @@ QUEUES: Tuple[QueueDef, ...] = (
                         WHEN claimed_at IS NOT NULL THEN 'claimed'
                         ELSE 'pending' END,
                    count(*),
-                   min(requested_at) FILTER (WHERE claimed_at IS NULL),
+                   min(requested_at) FILTER (WHERE finished_at IS NULL AND claimed_at IS NULL),
                    GREATEST(max(requested_at), max(claimed_at), max(finished_at)),
                    NULL::bigint
             FROM genre_backfill_requests GROUP BY 1
         """,
     ),
     # The GPT worker's other two inputs (gpt_queue_worker.CANDIDATES): manual
-    # lyrics requests and pending Genius annotations. The retired Claude pollers
+    # lyrics requests and pending Genius annotations. Rows the worker's filter
+    # can never pick up are counted under a separate `*_ineligible` state, so a
+    # permanent backlog does not read as a stuck worker. The retired Claude pollers
     # drained the same tables, so the RFC's Step 1 table C called them frozen; they
     # are not — the GPT worker reads and publishes to both since 2026-10-09.
     QueueDef(
@@ -169,11 +171,14 @@ QUEUES: Tuple[QueueDef, ...] = (
         frozen=False,
         waiting_states=("requested",),
         sql="""
-            SELECT status, count(*),
-                   min(requested_at) FILTER (WHERE status = 'requested'),
-                   max(updated_at),
+            SELECT CASE WHEN x.status = 'requested' AND t.spotify_id IS NULL
+                        THEN 'requested_ineligible' ELSE x.status END,
+                   count(*),
+                   min(x.requested_at) FILTER (WHERE x.status = 'requested' AND t.spotify_id IS NOT NULL),
+                   max(x.updated_at),
                    NULL::bigint
-            FROM track_lyrics_translations GROUP BY 1
+            FROM track_lyrics_translations x LEFT JOIN tracks t ON t.id = x.track_id
+            GROUP BY 1
         """,
     ),
     QueueDef(
@@ -183,11 +188,20 @@ QUEUES: Tuple[QueueDef, ...] = (
         frozen=False,
         waiting_states=("pending",),
         sql="""
-            SELECT translation_status, count(*),
-                   min(created_at) FILTER (WHERE translation_status = 'pending'),
-                   max(updated_at),
+            SELECT CASE WHEN a.translation_status = 'pending' AND NOT e.eligible
+                        THEN 'pending_ineligible' ELSE a.translation_status END,
+                   count(*),
+                   min(a.created_at) FILTER (WHERE a.translation_status = 'pending' AND e.eligible),
+                   max(a.updated_at),
                    NULL::bigint
-            FROM track_genius_annotations GROUP BY 1
+            FROM track_genius_annotations a
+            CROSS JOIN LATERAL (SELECT (
+                btrim(coalesce(a.body_source, '')) <> ''
+                AND EXISTS (SELECT 1 FROM tracks t WHERE t.id = a.track_id AND t.spotify_id IS NOT NULL)
+                AND EXISTS (SELECT 1 FROM track_genius_songs g
+                            WHERE g.track_id = a.track_id AND g.match_status = 'matched')
+            ) AS eligible) e
+            GROUP BY 1
         """,
     ),
 )
@@ -292,6 +306,8 @@ _GPT_QUEUES = (
     translation_queue_key(GPT_GENIUS_VERSION),
     "track_lyrics_translations",
     "track_genius_annotations",
+    # CANDIDATES' album branch links source_pending/linked rows to work rows.
+    "lyrics_album_tracks",
 )
 
 JOBS: Tuple[JobDef, ...] = (
@@ -353,7 +369,7 @@ JOBS: Tuple[JobDef, ...] = (
     _message("sqs_manual_overrides", "Lyrics reassessment / demand source / artist photo with overrides", "no producer on main", state="manual_only"),
     _message("sqs_dropped_jobs", "isrc_backfill / youtube_ref_refresh / disc_no_backfill", "no producer", state="dropped", note="The consumer has no branch for these: logged as \"Unknown message format\" and deleted unrun. Only a direct Lambda invoke runs them."),
     # ── C/D. Local launch agents (owner's Mac) ─────────────────────────────────
-    _agent("gpt-translate-poller", "GPT translation worker", "Translate lyrics and Genius annotations with the local GPT worker", "every 60 s", 60, state="active", drains=(TRANSLATION_WORK_TABLE, "track_lyrics_translations", "track_genius_annotations"), queue_keys=_GPT_QUEUES, ai_provider="OpenAI ChatGPT plan (local worker)", note="Plan usage on chatgpt.com is external; the page can only show the worker's own totals."),
+    _agent("gpt-translate-poller", "GPT translation worker", "Translate lyrics and Genius annotations with the local GPT worker", "every 60 s", 60, state="active", drains=(TRANSLATION_WORK_TABLE, "track_lyrics_translations", "track_genius_annotations", "lyrics_album_tracks"), queue_keys=_GPT_QUEUES, ai_provider="OpenAI ChatGPT plan (local worker)", note="Plan usage on chatgpt.com is external; the page can only show the worker's own totals."),
     _agent("buckit-nightly", "Buckit nightly drafts", "Draft reports from checked review-bucket memos", "daily 03:00", DAY, state="disabled", ai_provider="Claude CLI (subscription)", note="Not reloaded since the 2026-09-27 reboot; OPS-project-stabilization Step 2D gates the reload."),
     _agent("research-poller", "Album research poller", "Drain album research requests", "every 60 s", 60, state="disabled", drains=("album_research",), queue_keys=("album_research",), ai_provider="Claude CLI (subscription)", note="Not reloaded since the 2026-09-27 reboot; the bucket research_mode producer is still live."),
     _agent("genre-heal-poller", "Genre heal poller", "Drain 장르 채우기 requests through the genre backfill pipeline", "every 30 min", 1800, state="disabled", drains=("genre_backfill_requests",), queue_keys=("genre_backfill_requests",), ai_provider="Claude CLI (subscription)", note="Not reloaded since the 2026-09-27 reboot; the 장르 채우기 button is still live."),

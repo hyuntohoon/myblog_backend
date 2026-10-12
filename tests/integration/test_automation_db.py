@@ -3,11 +3,12 @@
 The unit suite proves the folding and the session shape with a fake session,
 which cannot see whether the catalog's SQL is valid, whether the tables exist,
 or whether `SET TRANSACTION READ ONLY` actually holds on a pooled connection.
-This file does, against the Neon test branch.
+This file does, against whatever TEST_DB_URL names: the Neon test branch
+locally, postgres:16 loaded with shared_db's canonical schema in CI.
 
 It creates no schema (V59 must already be applied — asserted, not created) and
 commits nothing: seeds go into the per-test transaction that teardown rolls
-back. The branch is a copy of production, so assertions are on DELTAS.
+back. The target may already hold rows, so assertions are on DELTAS.
 """
 from __future__ import annotations
 

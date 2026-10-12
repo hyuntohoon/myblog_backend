@@ -111,10 +111,18 @@ class TestCatalog:
         # gpt_queue_worker.CANDIDATES reads requested lyrics rows and pending Genius
         # annotations as well as its own work rows — none of them is frozen.
         gpt = next(j for j in catalog.JOBS if j.key == "gpt-translate-poller")
-        assert {"track_lyrics_translations", "track_genius_annotations"} <= set(gpt.queue_keys)
+        assert {"track_lyrics_translations", "track_genius_annotations", "lyrics_album_tracks"} <= set(gpt.queue_keys)
         frozen = {q.key for q in catalog.QUEUES if q.frozen}
         assert not frozen & set(gpt.queue_keys)
         assert [v.version for v in catalog.TRANSLATION_VERSIONS if v.frozen] == ["claude.sonnet/v2"]
+
+    def test_waiting_states_are_labels_the_sql_can_produce(self):
+        # A renamed CASE label or a typo here would leave "waiting" silently 0.
+        for q in catalog.QUEUES:
+            for state in q.waiting_states:
+                assert f"'{state}'" in q.sql, (q.key, state)
+        for state in catalog.TRANSLATION_WAITING_STATES:
+            assert f"'{state}'" in catalog.TRANSLATION_WORK_SQL
 
     def test_no_controls_in_step_2(self):
         assert all(j.controls == () for j in catalog.JOBS)
@@ -158,6 +166,11 @@ class TestAssembleWithoutDb:
 
 
 class TestAssembleWithDb:
+    def test_heartbeat_source_says_how_many_agents_report(self):
+        snap = assemble(_db(), fallback_now=NOW)
+        hb = next(src for src in snap.sources if src.key == "heartbeat")
+        assert hb.detail == "0 agent(s) reporting."
+
     def test_no_heartbeat_means_unknown_for_every_agent(self):
         # 2a shipped the table empty; until 2e every agent must render unknown.
         snap = assemble(_db(), fallback_now=NOW)
@@ -176,6 +189,12 @@ class TestAssembleWithDb:
     def test_bound_edge(self, age, status):
         snap = assemble(_db([_hb("research-poller", age)]), fallback_now=NOW)
         assert _job(snap, "research-poller").liveness.status == status
+
+    def test_heartbeat_a_few_seconds_ahead_is_fresh(self):
+        # Committed after the reader's now() under READ COMMITTED — a real fresh row.
+        snap = assemble(_db([_hb("gpt-translate-poller", -3)]), fallback_now=NOW)
+        live = _job(snap, "gpt-translate-poller").liveness
+        assert (live.status, live.age_seconds) == ("fresh", 0)
 
     def test_heartbeat_from_the_future_is_unknown(self):
         snap = assemble(_db([_hb("gpt-translate-poller", -30)]), fallback_now=NOW)
@@ -357,3 +376,20 @@ class TestRoute:
             resp = client.get(PATH)
         assert resp.status_code == 200
         svc.snapshot.assert_called_once()
+
+
+def test_ci_schema_ref_matches_the_shared_db_pin():
+    """The integration job loads shared_db's canonical schema at a pinned ref.
+
+    Moving requirements.txt without it left CI on a schema missing the table the
+    code now reads (caught in review of this change; #178 moved both together).
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    pin = re.search(r"myblog_shared_db\.git@([0-9a-f]{40})", (root / "requirements.txt").read_text())
+    refs = re.findall(
+        r"repository: hyuntohoon/myblog_shared_db\s+ref: ([0-9a-f]{40})",
+        (root / ".github/workflows/deploy.yml").read_text(),
+    )
+    assert pin and refs and set(refs) == {pin.group(1)}

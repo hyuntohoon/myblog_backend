@@ -109,6 +109,8 @@ def read_db_state(db: Session) -> DbRead:
 
 # ── assembly (pure) ─────────────────────────────────────────────────────────────
 
+FUTURE_TOLERANCE_SECONDS = 5
+
 _UNKNOWN_BY_GROUP = {
     "aws_schedule": "AWS adapter not wired yet (FEAT-automation-admin 2d).",
     "aws_scheduler": "AWS adapter not wired yet (FEAT-automation-admin 2d).",
@@ -134,6 +136,10 @@ def _liveness(
     if hb is None:
         return AutomationLiveness(status="unknown", reason="No heartbeat reported.")
     age = _age(db_read.observed_at, hb.observed_at)
+    if -FUTURE_TOLERANCE_SECONDS <= age < 0:
+        # A writer that committed after this read's now() was taken (READ
+        # COMMITTED: each statement sees newer commits). That is a fresh row.
+        age = 0
     if age < 0:
         # Writers set observed_at = now() on the DB side; a future value means
         # one did not, and its freshness proves nothing.
@@ -215,7 +221,10 @@ def assemble(db_read: Optional[DbRead], *, fallback_now: datetime) -> Automation
     sources = [
         AutomationSource(key="catalog", status="ok", detail=f"Step 1 inventory as of {catalog.CATALOG_AS_OF.isoformat()}."),
         AutomationSource(key="db", status=db_status, observed_at=db_read.observed_at if db_read else None, detail=db_detail),
-        AutomationSource(key="heartbeat", status=db_status, observed_at=db_read.observed_at if db_read else None, detail=db_detail),
+        AutomationSource(
+            key="heartbeat", status=db_status, observed_at=db_read.observed_at if db_read else None,
+            detail=db_detail if db_read is None else f"{len(db_read.heartbeats)} agent(s) reporting.",
+        ),
         AutomationSource(key="aws", status="not_wired", detail="FEAT-automation-admin 2d."),
     ]
 
