@@ -637,6 +637,466 @@
         "title": "ArtistExpansionResponse",
         "type": "object"
       },
+      "AutomationHeartbeatView": {
+        "properties": {
+          "age_seconds": {
+            "title": "Age Seconds",
+            "type": "integer"
+          },
+          "agent_key": {
+            "title": "Agent Key",
+            "type": "string"
+          },
+          "catalogued": {
+            "title": "Catalogued",
+            "type": "boolean"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "last_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Outcome"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_key",
+          "observed_at",
+          "age_seconds",
+          "catalogued"
+        ],
+        "title": "AutomationHeartbeatView",
+        "type": "object"
+      },
+      "AutomationJob": {
+        "properties": {
+          "ai_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Provider"
+          },
+          "controls": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Controls",
+            "type": "array"
+          },
+          "declared_state": {
+            "enum": [
+              "active",
+              "disabled",
+              "obsolete",
+              "manual_only",
+              "consumer_only",
+              "dropped"
+            ],
+            "title": "Declared State",
+            "type": "string"
+          },
+          "drains": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Drains",
+            "type": "array"
+          },
+          "executor": {
+            "title": "Executor",
+            "type": "string"
+          },
+          "group": {
+            "enum": [
+              "aws_schedule",
+              "aws_scheduler",
+              "aws_queue_message",
+              "local_agent",
+              "other_scheduler"
+            ],
+            "title": "Group",
+            "type": "string"
+          },
+          "heartbeat_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat Key"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "liveness": {
+            "$ref": "#/components/schemas/AutomationLiveness"
+          },
+          "location": {
+            "enum": [
+              "aws",
+              "mac",
+              "github"
+            ],
+            "title": "Location",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "queue_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Queue Keys",
+            "type": "array"
+          },
+          "stale_after_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale After Seconds"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "group",
+          "name",
+          "purpose",
+          "trigger",
+          "executor",
+          "location",
+          "declared_state",
+          "liveness"
+        ],
+        "title": "AutomationJob",
+        "type": "object"
+      },
+      "AutomationLiveness": {
+        "properties": {
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Seconds"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "fresh",
+              "stale",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "title": "AutomationLiveness",
+        "type": "object"
+      },
+      "AutomationQueue": {
+        "properties": {
+          "counts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counts"
+          },
+          "frozen": {
+            "title": "Frozen",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "last_update_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Update At"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "oldest_waiting_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Waiting At"
+          },
+          "stale_running": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale Running"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "table": {
+            "title": "Table",
+            "type": "string"
+          },
+          "waiting_states": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Waiting States",
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "table",
+          "label",
+          "frozen",
+          "waiting_states",
+          "status"
+        ],
+        "title": "AutomationQueue",
+        "type": "object"
+      },
+      "AutomationSnapshot": {
+        "properties": {
+          "catalog_as_of": {
+            "format": "date",
+            "title": "Catalog As Of",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "heartbeats": {
+            "items": {
+              "$ref": "#/components/schemas/AutomationHeartbeatView"
+            },
+            "title": "Heartbeats",
+            "type": "array"
+          },
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/AutomationJob"
+            },
+            "title": "Jobs",
+            "type": "array"
+          },
+          "queues": {
+            "items": {
+              "$ref": "#/components/schemas/AutomationQueue"
+            },
+            "title": "Queues",
+            "type": "array"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/AutomationSource"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "generated_at",
+          "catalog_as_of",
+          "sources",
+          "jobs",
+          "queues",
+          "heartbeats"
+        ],
+        "title": "AutomationSnapshot",
+        "type": "object"
+      },
+      "AutomationSource": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "key": {
+            "enum": [
+              "catalog",
+              "db",
+              "heartbeat",
+              "aws"
+            ],
+            "title": "Key",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "unavailable",
+              "not_wired"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "status"
+        ],
+        "title": "AutomationSource",
+        "type": "object"
+      },
       "BucketItemExpansion": {
         "description": "FEAT-my-buckit-artist (V32): the result of a source_* artist add \u2014 a featuring track /\ncompilation album expanded into its credited artists (Various Artists excluded). Present\nONLY on the add response for a source_* artist add; the source row itself is never stored.\n`added` = artists newly inserted this call; `skipped` = credited artists already present\nin the bucket (dedup), so the front can toast \"N \ub2f4\uc74c \u00b7 M \uc911\ubcf5 \uac74\ub108\ub700\".",
         "properties": {
@@ -5678,6 +6138,33 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/admin/automation": {
+      "get": {
+        "description": "Every catalogued job with its evidence; unwired sources render unknown.",
+        "operationId": "get_automation_snapshot_api_admin_automation_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationSnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Automation Snapshot",
+        "tags": [
+          "admin-automation"
+        ]
+      }
+    },
     "/api/buckets": {
       "get": {
         "operationId": "list_buckets_api_buckets_get",

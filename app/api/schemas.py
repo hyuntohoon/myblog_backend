@@ -1629,3 +1629,76 @@ class ReleaseFeedItem(BaseModel):
 class ReleaseFeedResponse(BaseModel):
     upcoming: List[ReleaseFeedItem] = Field(default_factory=list)
     recent: List[ReleaseFeedItem] = Field(default_factory=list)
+
+
+# ====== FEAT-automation-admin 2b: owner automation snapshot ======
+# Read-only. `declared_state` is the Step 1 inventory (catalog_as_of), never
+# runtime evidence; `liveness` is the only runtime claim a job row makes, and
+# it is "fresh" only with an observed_at inside the job's staleness bound.
+
+class AutomationLiveness(BaseModel):
+    status: Literal["fresh", "stale", "unknown"]
+    observed_at: Optional[datetime] = None
+    age_seconds: Optional[int] = None
+    reason: str
+
+
+class AutomationJob(BaseModel):
+    key: str
+    group: Literal["aws_schedule", "aws_scheduler", "aws_queue_message", "local_agent", "other_scheduler"]
+    name: str
+    purpose: str
+    trigger: str
+    timezone: Optional[str] = None
+    executor: str
+    location: Literal["aws", "mac", "github"]
+    declared_state: Literal["active", "disabled", "obsolete", "manual_only", "consumer_only", "dropped"]
+    drains: List[str] = Field(default_factory=list)
+    queue_keys: List[str] = Field(default_factory=list)
+    ai_provider: Optional[str] = None
+    note: Optional[str] = None
+    controls: List[str] = Field(default_factory=list)
+    heartbeat_key: Optional[str] = None
+    stale_after_seconds: Optional[int] = None
+    liveness: AutomationLiveness
+
+
+class AutomationQueue(BaseModel):
+    key: str
+    table: str
+    label: str
+    frozen: bool
+    waiting_states: List[str]
+    # unknown = the DB read failed; counts are then null, never an empty {}.
+    status: Literal["ok", "unknown"]
+    observed_at: Optional[datetime] = None
+    counts: Optional[Dict[str, int]] = None
+    oldest_waiting_at: Optional[datetime] = None
+    last_update_at: Optional[datetime] = None
+    stale_running: Optional[int] = None
+
+
+class AutomationHeartbeatView(BaseModel):
+    agent_key: str
+    observed_at: datetime
+    age_seconds: int
+    enabled: Optional[bool] = None
+    last_outcome: Optional[str] = None
+    details: Dict[str, Any] = Field(default_factory=dict)
+    catalogued: bool
+
+
+class AutomationSource(BaseModel):
+    key: Literal["catalog", "db", "heartbeat", "aws"]
+    status: Literal["ok", "unavailable", "not_wired"]
+    observed_at: Optional[datetime] = None
+    detail: Optional[str] = None
+
+
+class AutomationSnapshot(BaseModel):
+    generated_at: datetime
+    catalog_as_of: date
+    sources: List[AutomationSource]
+    jobs: List[AutomationJob]
+    queues: List[AutomationQueue]
+    heartbeats: List[AutomationHeartbeatView]
