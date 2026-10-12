@@ -31,8 +31,12 @@ from app.api.schemas import (
     AutomationJob,
     AutomationLiveness,
     AutomationQueue,
+    AutomationQueueDetail,
+    AutomationQueueFlow,
+    AutomationReasonCount,
     AutomationSnapshot,
     AutomationSource,
+    AutomationWaitingItem,
 )
 from app.services import automation_catalog as catalog
 
@@ -245,6 +249,105 @@ def assemble(db_read: Optional[DbRead], *, fallback_now: datetime) -> Automation
     )
 
 
+# ── queue detail (2f) ───────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class DetailTarget:
+    key: str
+    table: str
+    label: str
+    frozen: bool
+    waiting_states: Tuple[str, ...]
+    definition: catalog.QueueDetailDef
+    params: Dict[str, Any]
+
+
+def resolve_queue(key: str) -> Optional[DetailTarget]:
+    """Map a snapshot queue key to its detail reads; None for anything else.
+
+    Only keys the snapshot itself can produce resolve: the fixed queues, and
+    `lyrics_translation_work:<version>` for any version (the snapshot lists
+    versions the catalog has not heard of, so their detail must open too).
+    The version reaches SQL only as a bind parameter.
+    """
+    for q in catalog.QUEUES:
+        if q.key == key:
+            return DetailTarget(q.key, q.table, q.label, q.frozen, q.waiting_states,
+                                catalog.QUEUE_DETAILS[q.key], {})
+    prefix = f"{catalog.TRANSLATION_WORK_TABLE}:"
+    if not key.startswith(prefix):
+        return None
+    version = key[len(prefix):]
+    if not version.strip() or len(version) > catalog.MAX_TRANSLATOR_VERSION_LENGTH:
+        return None
+    known = {v.version: v for v in catalog.TRANSLATION_VERSIONS}
+    v = known.get(version) or catalog.TranslationVersion(version, f"Translation work ({version})", frozen=False)
+    return DetailTarget(key, catalog.TRANSLATION_WORK_TABLE, v.label, v.frozen,
+                        catalog.TRANSLATION_WAITING_STATES, catalog.TRANSLATION_WORK_DETAIL,
+                        {"version": version})
+
+
+@dataclass(frozen=True)
+class DetailRead:
+    observed_at: datetime
+    reasons: List[Tuple[Any, ...]]
+    flow: Tuple[Any, ...]
+    oldest: List[Tuple[Any, ...]]
+
+
+def read_queue_detail(db: Session, target: DetailTarget) -> DetailRead:
+    """SELECTs only; the caller owns the session (and its read-only transaction)."""
+    d = target.definition
+    observed_at = db.execute(text("SELECT now()")).scalar_one()
+    reasons = [tuple(r) for r in db.execute(text(d.reasons_sql), target.params).all()]
+    flow = tuple(db.execute(text(d.flow_sql), target.params).one())
+    oldest = [
+        tuple(r) for r in db.execute(
+            text(d.oldest_sql), {**target.params, "limit": catalog.OLDEST_WAITING_LIMIT}
+        ).all()
+    ]
+    return DetailRead(observed_at=observed_at, reasons=reasons, flow=flow, oldest=oldest)
+
+
+def _opt_int(v: Any) -> Optional[int]:
+    return None if v is None else int(v)
+
+
+def assemble_detail(target: DetailTarget, read: Optional[DetailRead]) -> AutomationQueueDetail:
+    d = target.definition
+    base = dict(
+        key=target.key, table=target.table, label=target.label, frozen=target.frozen,
+        waiting_states=list(target.waiting_states), reasons_note=d.reasons_note,
+        wait_basis=d.wait_basis, oldest_limit=catalog.OLDEST_WAITING_LIMIT,
+    )
+    if read is None:
+        return AutomationQueueDetail(status="unknown", **base)
+    reasons = sorted(
+        (
+            AutomationReasonCount(state=str(state), reason=reason, count=int(n), deferred=_opt_int(deferred))
+            for state, reason, n, deferred in read.reasons
+        ),
+        key=lambda r: (-r.count, r.state, r.reason or ""),
+    )
+    entered, left = read.flow
+    return AutomationQueueDetail(
+        status="ok", observed_at=read.observed_at, reasons=reasons,
+        flow=AutomationQueueFlow(
+            window_hours=catalog.FLOW_WINDOW_HOURS, entered=_opt_int(entered), left=_opt_int(left),
+            entered_basis=d.entered_basis, left_basis=d.left_basis,
+        ),
+        oldest_waiting=[
+            AutomationWaitingItem(
+                id=str(item_id), title=title, state=str(state), reason=reason,
+                attempts=_opt_int(attempts), waiting_since=since, next_attempt_at=next_at,
+            )
+            for item_id, title, state, reason, attempts, since, next_at in read.oldest
+        ],
+        **base,
+    )
+
+
 class AutomationService:
     def __init__(self, session_factory: Callable[[], Session]):
         self._session_factory = session_factory
@@ -262,3 +365,17 @@ class AutomationService:
             logger.exception("automation snapshot: DB read failed")
         # 2d: AWS reads go here — after the session above is closed.
         return assemble(db_read, fallback_now=datetime.now(timezone.utc))
+
+    def queue_detail(self, key: str) -> Optional[AutomationQueueDetail]:
+        """None when `key` is not a queue the snapshot can show (the route's 404)."""
+        target = resolve_queue(key)
+        if target is None:
+            return None
+        read: Optional[DetailRead] = None
+        try:
+            with self._session_factory() as db:
+                db.execute(text("SET TRANSACTION READ ONLY"))
+                read = read_queue_detail(db, target)
+        except SQLAlchemyError:
+            logger.exception("automation queue detail: DB read failed")
+        return assemble_detail(target, read)

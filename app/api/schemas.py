@@ -1678,6 +1678,54 @@ class AutomationQueue(BaseModel):
     stale_running: Optional[int] = None
 
 
+class AutomationReasonCount(BaseModel):
+    state: str
+    # A reason CODE: cut from the row's reason column in SQL, `unrecognized`
+    # when the stored value is not code-shaped (its text is never returned), or
+    # null when the row has none or the table records no reason codes.
+    reason: Optional[str] = None
+    count: int
+    # Rows still backing off (`next_attempt_at` ahead). Null when the table has
+    # no retry schedule.
+    deferred: Optional[int] = None
+
+
+class AutomationQueueFlow(BaseModel):
+    window_hours: int
+    # Null = this table cannot measure it; the basis says why.
+    entered: Optional[int] = None
+    left: Optional[int] = None
+    entered_basis: str
+    left_basis: str
+
+
+class AutomationWaitingItem(BaseModel):
+    id: str
+    title: Optional[str] = None
+    state: str
+    reason: Optional[str] = None
+    attempts: Optional[int] = None
+    waiting_since: Optional[datetime] = None
+    next_attempt_at: Optional[datetime] = None
+
+
+class AutomationQueueDetail(BaseModel):
+    key: str
+    table: str
+    label: str
+    frozen: bool
+    waiting_states: List[str]
+    # unknown = the DB read failed; reasons/flow/oldest_waiting are then null.
+    status: Literal["ok", "unknown"]
+    observed_at: Optional[datetime] = None
+    reasons_note: Optional[str] = None  # set when the table records no reason codes
+    reasons: Optional[List[AutomationReasonCount]] = None
+    flow: Optional[AutomationQueueFlow] = None
+    wait_basis: str
+    oldest_limit: int
+    oldest_waiting: Optional[List[AutomationWaitingItem]] = None
+
+
 class AutomationHeartbeatView(BaseModel):
     agent_key: str
     observed_at: datetime
