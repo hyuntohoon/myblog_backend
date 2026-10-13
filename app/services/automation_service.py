@@ -181,7 +181,15 @@ def _rule_liveness(job: catalog.JobDef, aws: Optional[AwsRead]) -> AutomationLiv
     if not (state.state or "").startswith("ENABLED"):
         return AutomationLiveness(status="stale", observed_at=seen, age_seconds=age,
                                   reason=f"Rule is {state.state or 'in an unknown state'}; {counts}.")
-    if metrics.last_attempt_failed or metrics.failed_24h > 0 or alarm_state == "ALARM":
+    # Failing = failing NOW: the newest attempt failed, the alarm is firing, or a
+    # failure falls inside the rule's own staleness bound (about its last two
+    # ticks). One transient failure must not keep a 5-minute rule red for a day
+    # after hundreds of good ticks; older failures stay in the reason text.
+    recent_failure = (
+        metrics.last_failure_at is not None and now is not None
+        and _age(now, metrics.last_failure_at) <= rule.stale_after_seconds
+    )
+    if metrics.last_attempt_failed or recent_failure or alarm_state == "ALARM":
         return AutomationLiveness(status="failing", observed_at=seen, age_seconds=age,
                                   reason=f"AWS reports failed deliveries: {counts}{alarm_note}.")
     if seen is None or age is None:

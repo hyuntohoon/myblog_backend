@@ -82,6 +82,7 @@ class RuleMetrics:
     # FailedInvocations alarm returns to OK 5 minutes after it fires.
     last_attempt_failed: bool = False
     failed_in_lookback: int = 0
+    last_failure_at: Optional[datetime] = None  # start of the newest period with a failure
 
 
 @dataclass(frozen=True)
@@ -272,6 +273,7 @@ def fold_metrics(plan: MetricPlan, series: Dict[str, List[Tuple[datetime, float]
             lookback_seconds=(LONG_WINDOW_DAYS * DAY_SECONDS) if rule_is_long(rule) else DAY_SECONDS,
             last_attempt_failed=newest is not None and failures.get(newest, 0.0) > 0,
             failed_in_lookback=int(sum(failures.values())),
+            last_failure_at=max((ts for ts, v in failures.items() if v > 0), default=None),
         )
     functions: Dict[str, FunctionMetrics] = {}
     for fn in catalog.AWS_FUNCTIONS:

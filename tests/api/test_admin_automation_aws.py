@@ -207,6 +207,7 @@ class TestFold:
         rules, _ = fold_metrics(plan, series, NOW)
         m = rules[WEEKLY]
         assert (m.failed_24h, m.failed_in_lookback, m.last_attempt_failed, m.last_delivery_at) == (0, 1, True, None)
+        assert m.last_failure_at == sunday
 
     def test_a_later_success_clears_last_attempt_failed(self):
         plan, series = self._series(WEEKLY, inv=[
@@ -259,10 +260,20 @@ class TestRuleLiveness:
         assert live.status == "stale"
         assert "DISABLED" in live.reason
 
-    def test_failed_deliveries_are_failing(self):
-        live = _job_for(_snap(_read(metrics={FAST: RuleMetrics(NOW - timedelta(seconds=60), 96, 3, 86400)})), FAST).liveness
+    def test_a_failure_inside_the_bound_is_failing(self):
+        bound = _rule(FAST).stale_after_seconds
+        m = RuleMetrics(NOW - timedelta(seconds=60), 96, 3, 86400, last_failure_at=NOW - timedelta(seconds=bound))
+        live = _job_for(_snap(_read(metrics={FAST: m})), FAST).liveness
         assert live.status == "failing"
         assert "3 failed" in live.reason
+
+    def test_a_failure_older_than_the_bound_is_reported_not_failing(self):
+        # Reviewer: one transient failure must not pin a 15-min rule red for 24 h.
+        bound = _rule(FAST).stale_after_seconds
+        m = RuleMetrics(NOW - timedelta(seconds=60), 96, 1, 86400, last_failure_at=NOW - timedelta(seconds=bound + 1))
+        live = _job_for(_snap(_read(metrics={FAST: m})), FAST).liveness
+        assert live.status == "fresh"
+        assert "1 failed in 24 h" in live.reason
 
     def test_old_weekly_failure_is_failing_not_fresh(self):
         m = RuleMetrics(None, 0, 0, 15 * 86400, last_attempt_failed=True, failed_in_lookback=1)

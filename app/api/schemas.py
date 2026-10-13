@@ -1637,9 +1637,9 @@ class ReleaseFeedResponse(BaseModel):
 # it is "fresh" only with an observed_at inside the job's staleness bound.
 
 class AutomationLiveness(BaseModel):
-    # failing (2d, EventBridge rows only): deliveries arrive but AWS reports
-    # them failing — FailedInvocations in the last 24 h, or the rule's alarm is
-    # in ALARM. EventBridge counts a failed delivery as an invocation, so without
+    # failing (2d, EventBridge rows only): AWS reports the rule failing now —
+    # its newest delivery attempt failed, a failure falls inside its staleness
+    # bound, or its alarm is in ALARM. EventBridge counts a failed delivery as an invocation, so without
     # this state a failing rule would read as fresh.
     status: Literal["fresh", "stale", "failing", "unknown"]
     observed_at: Optional[datetime] = None
