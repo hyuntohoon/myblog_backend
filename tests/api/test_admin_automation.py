@@ -335,7 +335,7 @@ class TestRoute:
         resp = client.get(PATH)
         assert resp.status_code == 200
         body = resp.json()
-        assert set(body) == {"generated_at", "catalog_as_of", "sources", "jobs", "queues", "heartbeats"}
+        assert set(body) == {"generated_at", "catalog_as_of", "sources", "jobs", "queues", "heartbeats", "aws"}
         assert len(body["jobs"]) == len(catalog.JOBS)
         svc.snapshot.assert_called_once()
 
