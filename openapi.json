@@ -1015,6 +1015,134 @@
         "title": "AutomationAwsRule",
         "type": "object"
       },
+      "AutomationControlRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "pause",
+              "resume"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "job_key": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Job Key",
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_key",
+          "action",
+          "request_id"
+        ],
+        "title": "AutomationControlRequest",
+        "type": "object"
+      },
+      "AutomationControlResult": {
+        "properties": {
+          "action": {
+            "enum": [
+              "pause",
+              "resume"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "control": {
+            "$ref": "#/components/schemas/AutomationControlState"
+          },
+          "job_key": {
+            "title": "Job Key",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "applied",
+              "no_change"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "replayed": {
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "job_key",
+          "action",
+          "outcome",
+          "replayed",
+          "control"
+        ],
+        "title": "AutomationControlResult",
+        "type": "object"
+      },
+      "AutomationControlState": {
+        "properties": {
+          "changed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed At"
+          },
+          "confirmation_overdue": {
+            "default": false,
+            "title": "Confirmation Overdue",
+            "type": "boolean"
+          },
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "honored_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Honored At"
+          },
+          "paused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paused"
+          }
+        },
+        "title": "AutomationControlState",
+        "type": "object"
+      },
       "AutomationHeartbeatView": {
         "properties": {
           "age_seconds": {
@@ -1083,6 +1211,16 @@
               }
             ],
             "title": "Ai Provider"
+          },
+          "control": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutomationControlState"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "controls": {
             "items": {
@@ -6825,6 +6963,53 @@
           }
         ],
         "summary": "Get Automation Snapshot",
+        "tags": [
+          "admin-automation"
+        ]
+      }
+    },
+    "/api/admin/automation/controls": {
+      "post": {
+        "description": "Pause or resume one job (FEAT-automation-admin 3b).\n\nIdempotent twice over: a resent `request_id` replays the stored result, and\npausing a paused job is `no_change`. Audited in `automation_control_events`.\nExecutors honour it at their next boundary; nothing in flight is cancelled.",
+        "operationId": "post_automation_control_api_admin_automation_controls_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomationControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationControlResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Post Automation Control",
         "tags": [
           "admin-automation"
         ]

@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Dict, Literal, Optional, Tuple
 
+from myblog_shared_db.automation import PAUSABLE_JOB_KEYS
+
 CATALOG_AS_OF = date(2026, 10, 12)
 
 # RFC "Design notes fixed for 2a–2e": a heartbeat is stale after 2 × the agent's
@@ -215,6 +217,12 @@ TRANSLATION_WORK_SQL = """
     FROM lyrics_translation_work GROUP BY 1, 2
 """
 
+# Step 3b owner pause flags (V60). One row per job that has ever been controlled.
+CONTROLS_SQL = """
+    SELECT job_key, paused, changed_at, honored_at
+    FROM automation_controls ORDER BY job_key
+"""
+
 HEARTBEATS_SQL = """
     SELECT agent_key, observed_at, enabled, last_outcome, details
     FROM automation_heartbeats ORDER BY agent_key
@@ -248,7 +256,9 @@ class JobDef:
     aws_rule: Optional[str] = None
     interval_seconds: Optional[int] = None  # EventBridge rows: the nominal schedule gap
     stale_after_seconds: Optional[int] = None
-    controls: Tuple[str, ...] = field(default=())  # none until Step 3
+    # Step 3b: "pause" exactly on myblog_shared_db.automation.PAUSABLE_JOB_KEYS — the
+    # keys the worker and the GPT worker honour. Derived, never listed by hand.
+    controls: Tuple[str, ...] = field(default=())
 
 
 def _cron(key: str, name: str, purpose: str, rule: str, schedule: str, interval_seconds: int, *, state: DeclaredState = "active", drains=(), queue_keys=(), note=None, executor="blogWorkerLambda"):
@@ -271,6 +281,7 @@ def _cron(key: str, name: str, purpose: str, rule: str, schedule: str, interval_
         drains=tuple(drains),
         queue_keys=tuple(queue_keys),
         note=note,
+        controls=("pause",) if key in PAUSABLE_JOB_KEYS else (),
     )
 
 
@@ -307,6 +318,7 @@ def _agent(key: str, name: str, purpose: str, schedule: str, interval_seconds: i
         note=note,
         heartbeat_key=key,
         stale_after_seconds=stale_after(interval_seconds),
+        controls=("pause",) if key in PAUSABLE_JOB_KEYS else (),
     )
 
 
