@@ -136,6 +136,11 @@ def _age(now: datetime, observed_at: datetime) -> int:
 
 _RULES_BY_NAME = {r.name: r for r in catalog.AWS_RULES}
 
+# EventBridge invokes the worker asynchronously: a delivered tick whose handler
+# then throws still counts as delivered. Handler failures are worker-wide (the
+# blogWorkerLambda-errors alarm, worker-cron-dlq), not per rule — so say so.
+DELIVERY_ONLY = "Delivery only: whether the handler succeeded is not per-rule evidence."
+
 
 def _hours(seconds: int) -> str:
     h = seconds / 3600
@@ -164,6 +169,8 @@ def _rule_liveness(job: catalog.JobDef, aws: Optional[AwsRead]) -> AutomationLiv
         alarm = aws.alarms.get(rule.alarm)
         alarm_state = alarm.state if alarm is not None else None
     counts = f"{metrics.delivered_24h} delivered, {metrics.failed_24h} failed in 24 h"
+    if metrics.failed_in_lookback > metrics.failed_24h:
+        counts += f" ({metrics.failed_in_lookback} failed in {_hours(metrics.lookback_seconds)})"
     if rule.alarm is None:
         alarm_note = ""
     elif alarm_state is None:
@@ -174,7 +181,7 @@ def _rule_liveness(job: catalog.JobDef, aws: Optional[AwsRead]) -> AutomationLiv
     if not (state.state or "").startswith("ENABLED"):
         return AutomationLiveness(status="stale", observed_at=seen, age_seconds=age,
                                   reason=f"Rule is {state.state or 'in an unknown state'}; {counts}.")
-    if metrics.failed_24h > 0 or alarm_state == "ALARM":
+    if metrics.last_attempt_failed or metrics.failed_24h > 0 or alarm_state == "ALARM":
         return AutomationLiveness(status="failing", observed_at=seen, age_seconds=age,
                                   reason=f"AWS reports failed deliveries: {counts}{alarm_note}.")
     if seen is None or age is None:
@@ -184,7 +191,7 @@ def _rule_liveness(job: catalog.JobDef, aws: Optional[AwsRead]) -> AutomationLiv
         return AutomationLiveness(status="stale", observed_at=seen, age_seconds=age,
                                   reason=f"Last delivery is older than the {rule.stale_after_seconds}s bound; {counts}{alarm_note}.")
     return AutomationLiveness(status="fresh", observed_at=seen, age_seconds=max(age, 0),
-                              reason=f"Delivered within the {rule.stale_after_seconds}s bound; {counts}{alarm_note}.")
+                              reason=f"Delivered within the {rule.stale_after_seconds}s bound; {counts}{alarm_note}. {DELIVERY_ONLY}")
 
 
 def _liveness(
@@ -285,6 +292,7 @@ def _aws_view(aws: AwsRead) -> AutomationAws:
             last_delivery_at=m.last_delivery_at if m else None,
             delivered_24h=m.delivered_24h if m else None, failed_24h=m.failed_24h if m else None,
             lookback_hours=(m.lookback_seconds // 3600) if m else None, alarm=r.alarm,
+            last_attempt_failed=m.last_attempt_failed if m else None,
         ))
     queues = []
     for q in catalog.AWS_QUEUES:

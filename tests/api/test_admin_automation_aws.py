@@ -158,7 +158,8 @@ class TestMetricPlan:
 
     def test_fine_period_for_sub_hourly_rules(self):
         assert aws_mod.rule_period(_rule(WARM)) == 300
-        assert aws_mod.rule_period(_rule("worker-genius-fetch")) == 3600
+        assert aws_mod.rule_period(_rule("worker-genius-fetch")) == 300
+        assert aws_mod.rule_period(_rule("worker-album-catalog-ingest")) == 3600
 
 
 class TestFold:
@@ -188,6 +189,39 @@ class TestFold:
         assert rules[FAST] == RuleMetrics(None, 0, 0, 86400)
         assert rules[WEEKLY].lookback_seconds == 15 * 86400
         assert functions["blogWorkerLambda"] == FunctionMetrics(0, 0, 0)
+
+    def test_a_failed_delivery_is_not_the_last_delivery(self):
+        # EventBridge counts a failed delivery as an invocation too.
+        plan, series = self._series(FAST, inv=[
+            (NOW - timedelta(minutes=40), 1.0), (NOW - timedelta(minutes=10), 1.0),
+        ], failed=[(NOW - timedelta(minutes=10), 1.0)])
+        rules, _ = fold_metrics(plan, series, NOW)
+        assert rules[FAST].last_delivery_at == NOW - timedelta(minutes=40)
+        assert rules[FAST].last_attempt_failed is True
+
+    def test_a_weekly_failure_older_than_a_day_is_still_the_last_attempt(self):
+        # Reviewer's case: isrc_backfill fails Sunday 21:00; read Monday 22:00.
+        # failed_24h is 0 and the alarm is back to OK, but the rule is failing.
+        sunday = NOW - timedelta(hours=25)
+        plan, series = self._series(WEEKLY, inv=[(sunday, 1.0)], failed=[(sunday, 1.0)])
+        rules, _ = fold_metrics(plan, series, NOW)
+        m = rules[WEEKLY]
+        assert (m.failed_24h, m.failed_in_lookback, m.last_attempt_failed, m.last_delivery_at) == (0, 1, True, None)
+
+    def test_a_later_success_clears_last_attempt_failed(self):
+        plan, series = self._series(WEEKLY, inv=[
+            (NOW - timedelta(days=8), 1.0), (NOW - timedelta(days=1, hours=1), 1.0),
+        ], failed=[(NOW - timedelta(days=8), 1.0)])
+        rules, _ = fold_metrics(plan, series, NOW)
+        m = rules[WEEKLY]
+        assert m.last_attempt_failed is False and m.failed_in_lookback == 1
+        assert m.last_delivery_at == NOW - timedelta(days=1, hours=1)
+
+    def test_hourly_rules_use_fine_periods(self):
+        # An hourly period would date a :55 delivery to :00 (reviewer nit).
+        hourly = _rule("worker-spotify-listening-sync")
+        assert aws_mod.rule_period(hourly) == 300
+        assert not aws_mod.rule_is_long(hourly)
 
     def test_function_metrics(self):
         plan = plan_metrics(NOW)
@@ -229,6 +263,26 @@ class TestRuleLiveness:
         live = _job_for(_snap(_read(metrics={FAST: RuleMetrics(NOW - timedelta(seconds=60), 96, 3, 86400)})), FAST).liveness
         assert live.status == "failing"
         assert "3 failed" in live.reason
+
+    def test_old_weekly_failure_is_failing_not_fresh(self):
+        m = RuleMetrics(None, 0, 0, 15 * 86400, last_attempt_failed=True, failed_in_lookback=1)
+        live = _job_for(_snap(_read(metrics={WEEKLY: m})), WEEKLY).liveness
+        assert live.status == "failing"
+        assert "(1 failed in 15 days)" in live.reason
+
+    def test_recovered_rule_is_fresh_but_says_it_failed(self):
+        m = RuleMetrics(NOW - timedelta(days=1), 0, 0, 15 * 86400, last_attempt_failed=False, failed_in_lookback=1)
+        live = _job_for(_snap(_read(metrics={WEEKLY: m})), WEEKLY).liveness
+        assert live.status == "fresh" and "(1 failed in 15 days)" in live.reason
+
+    def test_fresh_says_it_is_delivery_only(self):
+        live = _job_for(_snap(_read()), FAST).liveness
+        assert live.reason.endswith("Delivery only: whether the handler succeeded is not per-rule evidence.")
+
+    def test_a_slightly_future_delivery_has_age_zero(self):
+        m = RuleMetrics(NOW + timedelta(seconds=30), 1, 0, 86400)
+        live = _job_for(_snap(_read(metrics={FAST: m})), FAST).liveness
+        assert (live.status, live.age_seconds) == ("fresh", 0)
 
     def test_alarm_in_alarm_is_failing(self):
         alarm = _rule(FAST).alarm
@@ -294,6 +348,12 @@ class TestAwsView:
             assert r.status == "unknown"
             assert r.state == "ENABLED"  # the half that was read is still shown
             assert r.delivered_24h is None and r.last_delivery_at is None
+
+    def test_rule_item_carries_last_attempt_failed(self):
+        m = RuleMetrics(None, 0, 0, 15 * 86400, last_attempt_failed=True, failed_in_lookback=1)
+        by = {r.rule: r for r in _snap(_read(metrics={WEEKLY: m})).aws.rules}
+        assert by[WEEKLY].last_attempt_failed is True and by[WEEKLY].last_delivery_at is None
+        assert by[FAST].last_attempt_failed is False
 
     def test_partially_read_queue_list(self):
         view = _snap(_read(queues={"blogSQS": QueueDepth(3, 1, 0)})).aws

@@ -1767,6 +1767,10 @@ class AutomationAwsRule(BaseModel):
     failed_24h: Optional[int] = None
     lookback_hours: Optional[int] = None  # how far back last_delivery_at was searched
     alarm: Optional[str] = None  # the rule's FailedInvocations alarm name, if any
+    # The newest delivery attempt in the lookback had failures (last_delivery_at
+    # is the last SUCCESSFUL one). A delivered tick says nothing about whether
+    # the async handler then succeeded.
+    last_attempt_failed: Optional[bool] = None
 
 
 class AutomationAwsQueue(BaseModel):

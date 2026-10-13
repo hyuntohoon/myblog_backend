@@ -69,13 +69,19 @@ class RuleState:
 
 @dataclass(frozen=True)
 class RuleMetrics:
-    # Start of the newest period that had a delivery: the delivery itself was
-    # inside [last_delivery_at, last_delivery_at + period). Conservative: an
-    # age measured from here is never younger than the real one.
+    # Start of the newest period with a SUCCESSFUL delivery (Invocations minus
+    # FailedInvocations > 0 — EventBridge counts a failed delivery as an
+    # invocation too). The delivery was inside [last_delivery_at, + period), so
+    # an age measured from here is never younger than the real one.
     last_delivery_at: Optional[datetime]
     delivered_24h: int
     failed_24h: int
     lookback_seconds: int
+    # The newest period with any delivery attempt had failures. Kept apart from
+    # failed_24h: a weekly rule's last attempt can be days old, and the
+    # FailedInvocations alarm returns to OK 5 minutes after it fires.
+    last_attempt_failed: bool = False
+    failed_in_lookback: int = 0
 
 
 @dataclass(frozen=True)
@@ -156,7 +162,9 @@ def read_rules(events: Any, now: Callable[[], datetime]) -> Tuple[Section, Dict[
 
 
 def rule_period(rule: catalog.AwsRule) -> int:
-    return FINE_PERIOD if rule.interval_seconds < HOURLY_PERIOD else HOURLY_PERIOD
+    # Up to hourly rules use 5-minute periods: an hourly period would date a
+    # :55 delivery to :00 and make the rule flicker stale late in each hour.
+    return FINE_PERIOD if rule.interval_seconds <= HOURLY_PERIOD else HOURLY_PERIOD
 
 
 def rule_is_long(rule: catalog.AwsRule) -> bool:
@@ -247,12 +255,23 @@ def fold_metrics(plan: MetricPlan, series: Dict[str, List[Tuple[datetime, float]
     for rule in catalog.AWS_RULES:
         inv_id, fail_id = plan.rule_ids[rule.name]
         inv = series.get(inv_id, [])
-        delivered = [ts for ts, v in inv if v > 0]
+        failed = series.get(fail_id, [])
+        attempts: Dict[datetime, float] = {}
+        failures: Dict[datetime, float] = {}
+        for ts, v in inv:
+            attempts[ts] = attempts.get(ts, 0.0) + v
+        for ts, v in failed:
+            failures[ts] = failures.get(ts, 0.0) + v
+        succeeded = [ts for ts in attempts if attempts[ts] - failures.get(ts, 0.0) > 0]
+        tried = [ts for ts in set(attempts) | set(failures) if attempts.get(ts, 0.0) > 0 or failures.get(ts, 0.0) > 0]
+        newest = max(tried) if tried else None
         rules[rule.name] = RuleMetrics(
-            last_delivery_at=max(delivered) if delivered else None,
+            last_delivery_at=max(succeeded) if succeeded else None,
             delivered_24h=_sum_since(inv, day_ago),
-            failed_24h=_sum_since(series.get(fail_id, []), day_ago),
+            failed_24h=_sum_since(failed, day_ago),
             lookback_seconds=(LONG_WINDOW_DAYS * DAY_SECONDS) if rule_is_long(rule) else DAY_SECONDS,
+            last_attempt_failed=newest is not None and failures.get(newest, 0.0) > 0,
+            failed_in_lookback=int(sum(failures.values())),
         )
     functions: Dict[str, FunctionMetrics] = {}
     for fn in catalog.AWS_FUNCTIONS:

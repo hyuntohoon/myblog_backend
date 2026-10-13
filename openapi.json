@@ -926,6 +926,17 @@
             "title": "Job Key",
             "type": "string"
           },
+          "last_attempt_failed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempt Failed"
+          },
           "last_delivery_at": {
             "anyOf": [
               {
