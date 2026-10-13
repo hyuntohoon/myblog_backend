@@ -174,3 +174,59 @@ def test_executor_stamp_confirms_only_the_current_pause(engine, svc, actor):
     again = svc.control(KEY, "pause", uuid.uuid4(), actor)
     # The stamp from the previous pause predates this change.
     assert again.control.confirmed is False
+
+
+def _hold_row_then_race(engine, fn, n=2):
+    """Force real overlap: a third connection holds the control row's lock while both
+    requests start, so both must block on it; then release and let them race."""
+    with engine.begin() as c:
+        c.execute(text("INSERT INTO automation_controls (job_key) VALUES (:k) ON CONFLICT DO NOTHING"), {"k": KEY})
+    holder = engine.connect()
+    tx = holder.begin()
+    holder.execute(text("SELECT 1 FROM automation_controls WHERE job_key = :k FOR UPDATE"), {"k": KEY})
+    out, errors = [None] * n, [None] * n
+
+    def run(i):
+        try:
+            out[i] = fn(i)
+        except Exception as e:  # noqa: BLE001
+            errors[i] = e
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    try:
+        # Both requests must be waiting on a lock before the holder lets go.
+        with engine.connect() as probe:
+            for _ in range(100):
+                waiting = probe.execute(text(
+                    "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
+                    "AND query LIKE 'INSERT INTO automation_controls%'")).scalar()
+                # pg_stat_activity is snapshotted once per transaction: end it to re-read.
+                probe.rollback()
+                if waiting >= n:
+                    break
+                threading.Event().wait(0.1)
+            assert waiting >= n, f"only {waiting} request(s) blocked: the race was not forced"
+    finally:
+        tx.rollback()
+        holder.close()
+    for t in threads:
+        t.join(timeout=30)
+    return out, errors
+
+
+def test_forced_overlap_two_pauses_apply_once(engine, svc, actor):
+    out, errors = _hold_row_then_race(engine, lambda i: svc.control(KEY, "pause", uuid.uuid4(), actor))
+    assert errors == [None, None]
+    assert sorted(r.outcome for r in out) == ["applied", "no_change"]
+    assert len({r.control.changed_at for r in out}) == 1
+    assert sorted(e.outcome for e in _events(engine, actor)) == ["applied", "no_change"]
+
+
+def test_forced_overlap_resend_of_one_request_acts_once(engine, svc, actor):
+    rid = uuid.uuid4()
+    out, errors = _hold_row_then_race(engine, lambda i: svc.control(KEY, "pause", rid, actor))
+    assert errors == [None, None]
+    assert sorted(r.replayed for r in out) == [False, True]
+    assert len(_events(engine, actor)) == 1

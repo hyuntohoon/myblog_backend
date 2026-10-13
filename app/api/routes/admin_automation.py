@@ -69,7 +69,16 @@ def get_automation_queue_detail(
     return detail
 
 
-@router.post("/controls", response_model=AutomationControlResult)
+@router.post(
+    "/controls",
+    response_model=AutomationControlResult,
+    responses={
+        403: {"description": "Not the owner (answered before any body handling)"},
+        404: {"description": "Unknown control: the job has no pause control"},
+        409: {"description": "request_id already used for another job or action"},
+        503: {"description": "Database unavailable; resend with the SAME request_id"},
+    },
+)
 def post_automation_control(
     body: AutomationControlRequest,
     claims: Dict = Depends(require_owner),
@@ -87,9 +96,13 @@ def post_automation_control(
         result = svc.control(body.job_key, body.action, body.request_id, resolve_owner(claims))
     except ControlConflict:
         raise HTTPException(status_code=409, detail="request_id already used for another action")
-    except SQLAlchemyError:
-        logger.exception("automation control: DB write failed")
-        raise HTTPException(status_code=503, detail="Control unavailable; nothing was changed")
+    except SQLAlchemyError as error:
+        # Type only, like the executors: the statement and its parameters stay out of logs.
+        logger.error("automation control: DB write failed (%s)", type(error).__name__)
+        # The commit's outcome can be unknown (an acknowledgement lost after COMMIT), so
+        # this never claims "nothing changed". Resending the same request_id is safe:
+        # it applies once or replays the stored result.
+        raise HTTPException(status_code=503, detail="Control unavailable; resend with the same request_id")
     if result is None:
         raise HTTPException(status_code=404, detail="Unknown control")
     return result

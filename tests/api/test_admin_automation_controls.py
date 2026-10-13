@@ -183,11 +183,11 @@ class TestRoute:
         svc.control.side_effect = ControlConflict()
         assert client.post(PATH, json=_body()).status_code == 409
 
-    def test_db_failure_is_503_never_a_claimed_change(self, client, svc):
+    def test_db_failure_is_503_and_asks_for_a_resend(self, client, svc):
         svc.control.side_effect = OperationalError("stmt", {}, Exception("down"))
         resp = client.post(PATH, json=_body())
         assert resp.status_code == 503
-        assert "nothing was changed" in resp.json()["detail"]
+        assert "same request_id" in resp.json()["detail"]
 
     @pytest.mark.parametrize("over", [
         {"action": "run"},

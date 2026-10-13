@@ -6993,6 +6993,15 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "description": "Not the owner (answered before any body handling)"
+          },
+          "404": {
+            "description": "Unknown control: the job has no pause control"
+          },
+          "409": {
+            "description": "request_id already used for another job or action"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -7002,6 +7011,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Database unavailable; resend with the SAME request_id"
           }
         },
         "security": [
