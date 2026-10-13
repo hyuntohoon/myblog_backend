@@ -241,15 +241,24 @@ class JobDef:
     queue_keys: Tuple[str, ...] = ()
     ai_provider: Optional[str] = None
     note: Optional[str] = None
-    # Local agents only: the short launchd label (`com.myblog.` removed) the
-    # agent writes as `automation_heartbeats.agent_key`, and its staleness bound.
+    # Local agents: the short launchd label (`com.myblog.` removed) the agent
+    # writes as `automation_heartbeats.agent_key`. EventBridge rows: the rule
+    # name the AWS adapter reads (2d). Both carry the staleness bound.
     heartbeat_key: Optional[str] = None
+    aws_rule: Optional[str] = None
+    interval_seconds: Optional[int] = None  # EventBridge rows: the nominal schedule gap
     stale_after_seconds: Optional[int] = None
     controls: Tuple[str, ...] = field(default=())  # none until Step 3
 
 
-def _cron(key: str, name: str, purpose: str, rule: str, schedule: str, *, state: DeclaredState = "active", drains=(), queue_keys=(), note=None, executor="blogWorkerLambda"):
+def _cron(key: str, name: str, purpose: str, rule: str, schedule: str, interval_seconds: int, *, state: DeclaredState = "active", drains=(), queue_keys=(), note=None, executor="blogWorkerLambda"):
+    # `interval_seconds` is the schedule's nominal gap (a weekly cron is 7 days);
+    # the AWS adapter (2d) judges delivery staleness by the same 2 × interval,
+    # min 15 min rule as the heartbeats.
     return JobDef(
+        aws_rule=rule,
+        interval_seconds=interval_seconds,
+        stale_after_seconds=stale_after(interval_seconds),
         key=key,
         group="aws_schedule",
         name=name,
@@ -312,24 +321,24 @@ _GPT_QUEUES = (
 
 JOBS: Tuple[JobDef, ...] = (
     # ── A. AWS schedules (EventBridge default bus) ─────────────────────────────
-    _cron("musicbrainz_alias_fill", "MusicBrainz alias fill", "Fill artist aliases from MusicBrainz", "worker-musicbrainz-alias-generation", "rate(15 min)"),
-    _cron("spotify_listening", "Spotify listening sync", "Record the owner's Spotify listening", "worker-spotify-listening-sync", "rate(1 h)"),
-    _cron("spotify_member_poll", "Spotify member poll", "Poll connected members' Spotify activity", "worker-spotify-member-poll", "rate(15 min)"),
-    _cron("lastfm_recent_tracks", "Last.fm recent tracks", "Record recent tracks from Last.fm", "worker-lastfm-recent-tracks", "rate(15 min)"),
-    _cron("release_upcoming_poll_musicbrainz", "Upcoming releases (MusicBrainz)", "Poll MusicBrainz for upcoming releases", "worker-release-upcoming-mb", "rate(1 h)"),
-    _cron("release_upcoming_poll_itunes", "Upcoming releases (iTunes)", "Poll iTunes for upcoming releases", "worker-release-upcoming-itunes", "rate(30 min)"),
-    _cron("album_ingest", "Album catalog ingest", "Ingest new albums into the catalog", "worker-album-catalog-ingest", "rate(1 day)"),
-    _cron("spotify_saved_tracks_incremental", "Spotify saved tracks (incremental)", "Sync newly saved Spotify tracks", "worker-spotify-saved-tracks-incremental", "cron(0 18 * * ? *)"),
-    _cron("spotify_saved_tracks_full", "Spotify saved tracks (full)", "Full resync of saved Spotify tracks", "worker-spotify-saved-tracks-full", "cron(0 19 ? * SUN *)"),
-    _cron("lyrics_incremental", "Lyrics incremental collection", "Collect lyrics for newly synced tracks", "worker-lyrics-incremental", "rate(15 min)"),
-    _cron("lyrics_demand_source", "Lyrics demand collection", "Turn member demand into album lyrics jobs", "worker-lyrics-demand-source", "rate(15 min)", drains=("lyrics_album_jobs", "lyrics_album_tracks"), queue_keys=("lyrics_album_jobs", "lyrics_album_tracks")),
-    _cron("lyrics_reassessment", "Lyrics reassessment", "Re-check lyrics that need another look", "worker-lyrics-reassessment", "rate(1 day)"),
-    _cron("genius_fetch", "Genius fetch", "Fetch Genius songs and annotations", "worker-genius-fetch", "cron(30 * * * ? *)"),
-    _cron("artist_photo_backfill", "Artist photo backfill", "Fill missing artist photos", "worker-artist-photo-backfill", "cron(0 20 ? * SUN *)"),
-    _cron("isrc_backfill", "ISRC backfill", "Fill missing track ISRCs", "worker-isrc-backfill", "cron(0 21 ? * SUN *)"),
-    _cron("youtube_ref_refresh", "YouTube reference refresh", "Refresh YouTube playback references", "worker-youtube-ref-refresh", "cron(10 4 * * ? *)"),
-    _cron("backend_warm_ping", "Backend warm ping", "GET /health to keep the backend Lambda warm", "backend-api-warm-ping", "rate(5 min)", executor="ratemymusic-api", note="Keep-warm, not a job."),
-    _cron("music_warm_ping", "Music warm ping", "GET /api/music/feed/new-releases to keep the music Lambda warm", "music-api-warm-ping", "rate(5 min)", executor="musicApi", note="Keep-warm, not a job."),
+    _cron("musicbrainz_alias_fill", "MusicBrainz alias fill", "Fill artist aliases from MusicBrainz", "worker-musicbrainz-alias-generation", "rate(15 min)", 900),
+    _cron("spotify_listening", "Spotify listening sync", "Record the owner's Spotify listening", "worker-spotify-listening-sync", "rate(1 h)", 3600),
+    _cron("spotify_member_poll", "Spotify member poll", "Poll connected members' Spotify activity", "worker-spotify-member-poll", "rate(15 min)", 900),
+    _cron("lastfm_recent_tracks", "Last.fm recent tracks", "Record recent tracks from Last.fm", "worker-lastfm-recent-tracks", "rate(15 min)", 900),
+    _cron("release_upcoming_poll_musicbrainz", "Upcoming releases (MusicBrainz)", "Poll MusicBrainz for upcoming releases", "worker-release-upcoming-mb", "rate(1 h)", 3600),
+    _cron("release_upcoming_poll_itunes", "Upcoming releases (iTunes)", "Poll iTunes for upcoming releases", "worker-release-upcoming-itunes", "rate(30 min)", 1800),
+    _cron("album_ingest", "Album catalog ingest", "Ingest new albums into the catalog", "worker-album-catalog-ingest", "rate(1 day)", 86400),
+    _cron("spotify_saved_tracks_incremental", "Spotify saved tracks (incremental)", "Sync newly saved Spotify tracks", "worker-spotify-saved-tracks-incremental", "cron(0 18 * * ? *)", 86400),
+    _cron("spotify_saved_tracks_full", "Spotify saved tracks (full)", "Full resync of saved Spotify tracks", "worker-spotify-saved-tracks-full", "cron(0 19 ? * SUN *)", 604800),
+    _cron("lyrics_incremental", "Lyrics incremental collection", "Collect lyrics for newly synced tracks", "worker-lyrics-incremental", "rate(15 min)", 900),
+    _cron("lyrics_demand_source", "Lyrics demand collection", "Turn member demand into album lyrics jobs", "worker-lyrics-demand-source", "rate(15 min)", 900, drains=("lyrics_album_jobs", "lyrics_album_tracks"), queue_keys=("lyrics_album_jobs", "lyrics_album_tracks")),
+    _cron("lyrics_reassessment", "Lyrics reassessment", "Re-check lyrics that need another look", "worker-lyrics-reassessment", "rate(1 day)", 86400),
+    _cron("genius_fetch", "Genius fetch", "Fetch Genius songs and annotations", "worker-genius-fetch", "cron(30 * * * ? *)", 3600),
+    _cron("artist_photo_backfill", "Artist photo backfill", "Fill missing artist photos", "worker-artist-photo-backfill", "cron(0 20 ? * SUN *)", 604800),
+    _cron("isrc_backfill", "ISRC backfill", "Fill missing track ISRCs", "worker-isrc-backfill", "cron(0 21 ? * SUN *)", 604800),
+    _cron("youtube_ref_refresh", "YouTube reference refresh", "Refresh YouTube playback references", "worker-youtube-ref-refresh", "cron(10 4 * * ? *)", 86400),
+    _cron("backend_warm_ping", "Backend warm ping", "GET /health to keep the backend Lambda warm", "backend-api-warm-ping", "rate(5 min)", 300, executor="ratemymusic-api", note="Keep-warm, not a job."),
+    _cron("music_warm_ping", "Music warm ping", "GET /api/music/feed/new-releases to keep the music Lambda warm", "music-api-warm-ping", "rate(5 min)", 300, executor="musicApi", note="Keep-warm, not a job."),
     # ── F. EventBridge Scheduler (console-made, not in infra/) ─────────────────
     JobDef(
         key="scheduler_start_blog_db",
@@ -389,6 +398,71 @@ JOBS: Tuple[JobDef, ...] = (
         declared_state="active",
         note="A repository guard, not a site job.",
     ),
+)
+
+
+# ── AWS resources the adapter reads (FEAT-automation-admin 2d) ──────────────────
+#
+# These names must match what `infra/` declares: the backend role's read grant
+# (`infra/iam_roles.tf` backend_automation_read) is scoped to exactly these
+# rules, alarms and queues, so a name added here without the infra change is
+# AccessDenied (and renders unknown), never a wider grant.
+
+
+@dataclass(frozen=True)
+class AwsRule:
+    name: str
+    job_key: str
+    interval_seconds: int
+    stale_after_seconds: int
+    # Only worker crons have a FailedInvocations alarm (infra/monitoring.tf
+    # for_each over worker_cron); the warm pings deliberately do not.
+    alarm: Optional[str]
+
+
+@dataclass(frozen=True)
+class AwsFunction:
+    name: str
+    label: str
+
+
+@dataclass(frozen=True)
+class AwsQueue:
+    name: str
+    role: Literal["work", "dead_letter"]
+    label: str
+
+
+AWS_RULES: Tuple[AwsRule, ...] = tuple(
+    AwsRule(
+        name=j.aws_rule,
+        job_key=j.key,
+        interval_seconds=j.interval_seconds,
+        stale_after_seconds=j.stale_after_seconds,
+        alarm=f"{j.aws_rule}-failed-invocations" if j.executor == "blogWorkerLambda" else None,
+    )
+    for j in JOBS
+    if j.aws_rule is not None and j.interval_seconds is not None and j.stale_after_seconds is not None
+)
+
+AWS_FUNCTIONS: Tuple[AwsFunction, ...] = (
+    AwsFunction("ratemymusic-api", "Backend API"),
+    AwsFunction("musicApi", "Music API"),
+    AwsFunction("blogWorkerLambda", "Worker (crons + blogSQS)"),
+)
+
+AWS_QUEUES: Tuple[AwsQueue, ...] = (
+    AwsQueue("blogSQS", "work", "Worker job queue"),
+    AwsQueue("album-sync-dlq", "dead_letter", "blogSQS dead letters (after 3 receives)"),
+    AwsQueue("worker-cron-dlq", "dead_letter", "Failed async cron invocations"),
+)
+
+AWS_ALARMS: Tuple[str, ...] = (
+    *(r.alarm for r in AWS_RULES if r.alarm),
+    *(f"{f.name}-errors" for f in AWS_FUNCTIONS),
+    *(f"{f.name}-throttles" for f in AWS_FUNCTIONS),
+    "album-sync-dlq-messages",
+    "worker-cron-dlq-messages",
 )
 
 

@@ -61,7 +61,13 @@ def get_automation_service() -> AutomationService:
     # Lazy: app.db.session builds the engine from settings at import time.
     from app.db.session import SessionLocal
 
-    return AutomationService(SessionLocal)
+    from app.core.config import settings
+    from app.services.automation_aws import build_reader
+
+    return AutomationService(
+        SessionLocal,
+        aws_reader=build_reader(settings.AWS_DEFAULT_REGION, settings.SQS_QUEUE_URL),
+    )
 
 
 def get_sqs_client():

@@ -637,6 +637,373 @@
         "title": "ArtistExpansionResponse",
         "type": "object"
       },
+      "AutomationAws": {
+        "properties": {
+          "alarms": {
+            "items": {
+              "$ref": "#/components/schemas/AutomationAwsAlarm"
+            },
+            "title": "Alarms",
+            "type": "array"
+          },
+          "functions": {
+            "items": {
+              "$ref": "#/components/schemas/AutomationAwsFunction"
+            },
+            "title": "Functions",
+            "type": "array"
+          },
+          "queues": {
+            "items": {
+              "$ref": "#/components/schemas/AutomationAwsQueue"
+            },
+            "title": "Queues",
+            "type": "array"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/AutomationAwsRule"
+            },
+            "title": "Rules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rules",
+          "queues",
+          "functions",
+          "alarms"
+        ],
+        "title": "AutomationAws",
+        "type": "object"
+      },
+      "AutomationAwsAlarm": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "state_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Updated At"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ],
+        "title": "AutomationAwsAlarm",
+        "type": "object"
+      },
+      "AutomationAwsFunction": {
+        "properties": {
+          "errors_24h": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errors 24H"
+          },
+          "invocations_24h": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invocations 24H"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "throttles_24h": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Throttles 24H"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "status"
+        ],
+        "title": "AutomationAwsFunction",
+        "type": "object"
+      },
+      "AutomationAwsQueue": {
+        "properties": {
+          "delayed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delayed"
+          },
+          "in_flight": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Flight"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "role": {
+            "enum": [
+              "work",
+              "dead_letter"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "visible": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visible"
+          }
+        },
+        "required": [
+          "name",
+          "role",
+          "label",
+          "status"
+        ],
+        "title": "AutomationAwsQueue",
+        "type": "object"
+      },
+      "AutomationAwsRule": {
+        "properties": {
+          "alarm": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alarm"
+          },
+          "delivered_24h": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered 24H"
+          },
+          "failed_24h": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed 24H"
+          },
+          "job_key": {
+            "title": "Job Key",
+            "type": "string"
+          },
+          "last_delivery_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Delivery At"
+          },
+          "lookback_hours": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lookback Hours"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "rule": {
+            "title": "Rule",
+            "type": "string"
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_key",
+          "rule",
+          "status"
+        ],
+        "title": "AutomationAwsRule",
+        "type": "object"
+      },
       "AutomationHeartbeatView": {
         "properties": {
           "age_seconds": {
@@ -874,6 +1241,7 @@
             "enum": [
               "fresh",
               "stale",
+              "failing",
               "unknown"
             ],
             "title": "Status",
@@ -1196,6 +1564,16 @@
       },
       "AutomationSnapshot": {
         "properties": {
+          "aws": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutomationAws"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "catalog_as_of": {
             "format": "date",
             "title": "Catalog As Of",

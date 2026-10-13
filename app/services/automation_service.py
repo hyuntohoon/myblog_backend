@@ -4,15 +4,16 @@ Three sources, each with its own `observed_at`:
 
 * the static catalog (`automation_catalog`) — what each job is;
 * the DB adapter — per-queue counts by state, oldest waiting, last update;
-* local-agent heartbeats (`automation_heartbeats`, V59) — liveness by age.
+* local-agent heartbeats (`automation_heartbeats`, V59) — liveness by age;
+* the AWS adapter (`automation_aws`, 2d) — EventBridge rule state and delivery
+  metrics, queue depth, Lambda errors, alarm state.
 
-The AWS adapter is 2d. Until then every AWS row renders unknown, and so does
-anything else without fresh evidence: a missing source must never read as
-healthy or as an empty queue.
+Anything without fresh evidence renders unknown: a missing source must never
+read as healthy or as an empty queue.
 
 Shape (CLAUDE.md, recurring bug class): fetch everything the DB has to say in
-one short read-only transaction → close the session → (2d: AWS reads) →
-assemble. Nothing external ever runs while a session is open.
+one short read-only transaction → close the session → AWS reads → assemble.
+Nothing external ever runs while a session is open.
 """
 
 from __future__ import annotations
@@ -27,6 +28,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
+    AutomationAws,
+    AutomationAwsAlarm,
+    AutomationAwsFunction,
+    AutomationAwsQueue,
+    AutomationAwsRule,
     AutomationHeartbeatView,
     AutomationJob,
     AutomationLiveness,
@@ -39,6 +45,7 @@ from app.api.schemas import (
     AutomationWaitingItem,
 )
 from app.services import automation_catalog as catalog
+from app.services.automation_aws import AwsRead
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +123,8 @@ def read_db_state(db: Session) -> DbRead:
 FUTURE_TOLERANCE_SECONDS = 5
 
 _UNKNOWN_BY_GROUP = {
-    "aws_schedule": "AWS adapter not wired yet (FEAT-automation-admin 2d).",
-    "aws_scheduler": "AWS adapter not wired yet (FEAT-automation-admin 2d).",
+    "aws_schedule": "No AWS reader is configured.",
+    "aws_scheduler": "EventBridge Scheduler is outside the backend's read grant (FEAT-automation-admin 2d).",
     "aws_queue_message": "SQS keeps no per-message history (FEAT-durable-job-status).",
     "other_scheduler": "No adapter reads GitHub Actions.",
 }
@@ -127,11 +134,67 @@ def _age(now: datetime, observed_at: datetime) -> int:
     return int((now - observed_at).total_seconds())
 
 
+_RULES_BY_NAME = {r.name: r for r in catalog.AWS_RULES}
+
+
+def _hours(seconds: int) -> str:
+    h = seconds / 3600
+    return f"{h:g} h" if h < 48 else f"{h / 24:g} days"
+
+
+def _rule_liveness(job: catalog.JobDef, aws: Optional[AwsRead]) -> AutomationLiveness:
+    """EventBridge rows. Evidence: the rule's state, CloudWatch's delivery
+    counts, and the rule's FailedInvocations alarm. CloudWatch records every
+    delivery, so a successful metric read with no datapoints IS evidence (no
+    delivery), unlike a heartbeat that was never written."""
+    rule = _RULES_BY_NAME.get(job.aws_rule or "")
+    if aws is None or rule is None:
+        return AutomationLiveness(status="unknown", reason=_UNKNOWN_BY_GROUP["aws_schedule"])
+    state = aws.rules.get(rule.name) if aws.rules_section.ok else None
+    metrics = aws.rule_metrics.get(rule.name) if aws.metrics_section.ok else None
+    if state is None or metrics is None:
+        missing = [n for n, v in (("rule state", state), ("delivery metrics", metrics)) if v is None]
+        return AutomationLiveness(status="unknown", reason=f"AWS {' and '.join(missing)} not read.")
+    now = aws.metrics_section.observed_at
+    seen = metrics.last_delivery_at
+    age = _age(now, seen) if (now is not None and seen is not None) else None
+
+    alarm_state = None
+    if rule.alarm is not None and aws.alarms_section.ok:
+        alarm = aws.alarms.get(rule.alarm)
+        alarm_state = alarm.state if alarm is not None else None
+    counts = f"{metrics.delivered_24h} delivered, {metrics.failed_24h} failed in 24 h"
+    if rule.alarm is None:
+        alarm_note = ""
+    elif alarm_state is None:
+        alarm_note = "; alarm not read"
+    else:
+        alarm_note = f"; alarm {alarm_state}"
+
+    if not (state.state or "").startswith("ENABLED"):
+        return AutomationLiveness(status="stale", observed_at=seen, age_seconds=age,
+                                  reason=f"Rule is {state.state or 'in an unknown state'}; {counts}.")
+    if metrics.failed_24h > 0 or alarm_state == "ALARM":
+        return AutomationLiveness(status="failing", observed_at=seen, age_seconds=age,
+                                  reason=f"AWS reports failed deliveries: {counts}{alarm_note}.")
+    if seen is None or age is None:
+        return AutomationLiveness(status="stale",
+                                  reason=f"No delivery in the last {_hours(metrics.lookback_seconds)}{alarm_note}.")
+    if age > rule.stale_after_seconds:
+        return AutomationLiveness(status="stale", observed_at=seen, age_seconds=age,
+                                  reason=f"Last delivery is older than the {rule.stale_after_seconds}s bound; {counts}{alarm_note}.")
+    return AutomationLiveness(status="fresh", observed_at=seen, age_seconds=max(age, 0),
+                              reason=f"Delivered within the {rule.stale_after_seconds}s bound; {counts}{alarm_note}.")
+
+
 def _liveness(
     job: catalog.JobDef,
     db_read: Optional[DbRead],
     heartbeats: Dict[str, HeartbeatRow],
+    aws: Optional[AwsRead] = None,
 ) -> AutomationLiveness:
+    if job.aws_rule is not None:
+        return _rule_liveness(job, aws)
     if job.heartbeat_key is None or job.stale_after_seconds is None:
         return AutomationLiveness(status="unknown", reason=_UNKNOWN_BY_GROUP.get(job.group, "No adapter."))
     if db_read is None:
@@ -202,7 +265,66 @@ def _queues(db_read: Optional[DbRead]) -> List[AutomationQueue]:
     return out
 
 
-def assemble(db_read: Optional[DbRead], *, fallback_now: datetime) -> AutomationSnapshot:
+def _aws_view(aws: AwsRead) -> AutomationAws:
+    def stamp(section, present: bool) -> Dict[str, Any]:
+        if section.ok and present:
+            return {"status": "ok", "observed_at": section.observed_at}
+        return {"status": "unknown"}
+
+    rules = []
+    for r in catalog.AWS_RULES:
+        st = aws.rules.get(r.name) if aws.rules_section.ok else None
+        m = aws.rule_metrics.get(r.name) if aws.metrics_section.ok else None
+        # One item from two reads: ok only when both arrived; the observed_at is
+        # the later read, and each half's numbers stay null if it is missing.
+        both = st is not None and m is not None
+        observed = max(t for t in (aws.rules_section.observed_at, aws.metrics_section.observed_at) if t) if both else None
+        rules.append(AutomationAwsRule(
+            job_key=r.job_key, rule=r.name, status="ok" if both else "unknown", observed_at=observed,
+            state=st.state if st else None, schedule=st.schedule if st else None,
+            last_delivery_at=m.last_delivery_at if m else None,
+            delivered_24h=m.delivered_24h if m else None, failed_24h=m.failed_24h if m else None,
+            lookback_hours=(m.lookback_seconds // 3600) if m else None, alarm=r.alarm,
+        ))
+    queues = []
+    for q in catalog.AWS_QUEUES:
+        d = aws.queues.get(q.name) if aws.queues_section.ok else None
+        queues.append(AutomationAwsQueue(
+            name=q.name, role=q.role, label=q.label, **stamp(aws.queues_section, d is not None),
+            visible=d.visible if d else None, in_flight=d.in_flight if d else None, delayed=d.delayed if d else None,
+        ))
+    functions = []
+    for f in catalog.AWS_FUNCTIONS:
+        m = aws.function_metrics.get(f.name) if aws.metrics_section.ok else None
+        functions.append(AutomationAwsFunction(
+            name=f.name, label=f.label, **stamp(aws.metrics_section, m is not None),
+            invocations_24h=m.invocations_24h if m else None, errors_24h=m.errors_24h if m else None,
+            throttles_24h=m.throttles_24h if m else None,
+        ))
+    alarms = []
+    for name in catalog.AWS_ALARMS:
+        a = aws.alarms.get(name) if aws.alarms_section.ok else None
+        alarms.append(AutomationAwsAlarm(
+            name=name, **stamp(aws.alarms_section, a is not None),
+            state=a.state if a else None, state_updated_at=a.updated_at if a else None,
+        ))
+    return AutomationAws(rules=rules, queues=queues, functions=functions, alarms=alarms)
+
+
+def _aws_source(aws: Optional[AwsRead]) -> AutomationSource:
+    if aws is None:
+        return AutomationSource(key="aws", status="not_wired", detail="No AWS reader is configured.")
+    sections = (("rules", aws.rules_section), ("metrics", aws.metrics_section),
+                ("queues", aws.queues_section), ("alarms", aws.alarms_section))
+    ok = [s for _, s in sections if s.ok]
+    notes = [f"{name}: {s.detail}" for name, s in sections if s.detail]
+    detail = " ".join(notes) or f"{len(ok)} of {len(sections)} reads succeeded."
+    if not ok:
+        return AutomationSource(key="aws", status="unavailable", detail=detail)
+    return AutomationSource(key="aws", status="ok", observed_at=max(s.observed_at for s in ok if s.observed_at), detail=detail)
+
+
+def assemble(db_read: Optional[DbRead], *, fallback_now: datetime, aws: Optional[AwsRead] = None) -> AutomationSnapshot:
     now = db_read.observed_at if db_read is not None else fallback_now
     heartbeats = {h.agent_key: h for h in (db_read.heartbeats if db_read else [])}
     catalogued_keys = {j.heartbeat_key for j in catalog.JOBS if j.heartbeat_key}
@@ -215,7 +337,7 @@ def assemble(db_read: Optional[DbRead], *, fallback_now: datetime) -> Automation
             drains=list(j.drains), queue_keys=list(j.queue_keys), ai_provider=j.ai_provider,
             note=j.note, controls=list(j.controls), heartbeat_key=j.heartbeat_key,
             stale_after_seconds=j.stale_after_seconds,
-            liveness=_liveness(j, db_read, heartbeats),
+            liveness=_liveness(j, db_read, heartbeats, aws),
         )
         for j in catalog.JOBS
     ]
@@ -229,7 +351,7 @@ def assemble(db_read: Optional[DbRead], *, fallback_now: datetime) -> Automation
             key="heartbeat", status=db_status, observed_at=db_read.observed_at if db_read else None,
             detail=db_detail if db_read is None else f"{len(db_read.heartbeats)} agent(s) reporting.",
         ),
-        AutomationSource(key="aws", status="not_wired", detail="FEAT-automation-admin 2d."),
+        _aws_source(aws),
     ]
 
     return AutomationSnapshot(
@@ -246,6 +368,7 @@ def assemble(db_read: Optional[DbRead], *, fallback_now: datetime) -> Automation
             )
             for h in heartbeats.values()
         ],
+        aws=_aws_view(aws) if aws is not None else None,
     )
 
 
@@ -349,8 +472,15 @@ def assemble_detail(target: DetailTarget, read: Optional[DetailRead]) -> Automat
 
 
 class AutomationService:
-    def __init__(self, session_factory: Callable[[], Session]):
+    def __init__(
+        self,
+        session_factory: Callable[[], Session],
+        aws_reader: Optional[Callable[[], AwsRead]] = None,
+    ):
         self._session_factory = session_factory
+        # None = AWS not wired (tests, or a deployment without a reader): every
+        # AWS row stays unknown. The reader itself never raises.
+        self._aws_reader = aws_reader
 
     def snapshot(self) -> AutomationSnapshot:
         db_read: Optional[DbRead] = None
@@ -363,8 +493,9 @@ class AutomationService:
             # Session closed (and its transaction rolled back) here.
         except SQLAlchemyError:
             logger.exception("automation snapshot: DB read failed")
-        # 2d: AWS reads go here — after the session above is closed.
-        return assemble(db_read, fallback_now=datetime.now(timezone.utc))
+        # AWS reads only now, after the session above is closed.
+        aws = self._aws_reader() if self._aws_reader is not None else None
+        return assemble(db_read, fallback_now=datetime.now(timezone.utc), aws=aws)
 
     def queue_detail(self, key: str) -> Optional[AutomationQueueDetail]:
         """None when `key` is not a queue the snapshot can show (the route's 404)."""

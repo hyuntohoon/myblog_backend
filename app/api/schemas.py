@@ -1637,7 +1637,11 @@ class ReleaseFeedResponse(BaseModel):
 # it is "fresh" only with an observed_at inside the job's staleness bound.
 
 class AutomationLiveness(BaseModel):
-    status: Literal["fresh", "stale", "unknown"]
+    # failing (2d, EventBridge rows only): deliveries arrive but AWS reports
+    # them failing — FailedInvocations in the last 24 h, or the rule's alarm is
+    # in ALARM. EventBridge counts a failed delivery as an invocation, so without
+    # this state a failing rule would read as fresh.
+    status: Literal["fresh", "stale", "failing", "unknown"]
     observed_at: Optional[datetime] = None
     age_seconds: Optional[int] = None
     reason: str
@@ -1743,6 +1747,64 @@ class AutomationSource(BaseModel):
     detail: Optional[str] = None
 
 
+# ── 2d: AWS evidence ──────────────────────────────────────────────────────────
+# Names only — never an ARN or the account id. Every item carries its own
+# status and observed_at; `unknown` means that read failed or was not made, and
+# its numbers are then null, never 0.
+
+
+class AutomationAwsRule(BaseModel):
+    job_key: str
+    rule: str
+    status: Literal["ok", "unknown"]
+    observed_at: Optional[datetime] = None
+    state: Optional[str] = None  # ENABLED / DISABLED as EventBridge reports it
+    schedule: Optional[str] = None
+    # Start of the newest metric period with a delivery (the delivery is within
+    # that period), so an age measured from it is never younger than the real one.
+    last_delivery_at: Optional[datetime] = None
+    delivered_24h: Optional[int] = None
+    failed_24h: Optional[int] = None
+    lookback_hours: Optional[int] = None  # how far back last_delivery_at was searched
+    alarm: Optional[str] = None  # the rule's FailedInvocations alarm name, if any
+
+
+class AutomationAwsQueue(BaseModel):
+    name: str
+    role: Literal["work", "dead_letter"]
+    label: str
+    status: Literal["ok", "unknown"]
+    observed_at: Optional[datetime] = None
+    visible: Optional[int] = None
+    in_flight: Optional[int] = None
+    delayed: Optional[int] = None
+
+
+class AutomationAwsFunction(BaseModel):
+    name: str
+    label: str
+    status: Literal["ok", "unknown"]
+    observed_at: Optional[datetime] = None
+    invocations_24h: Optional[int] = None
+    errors_24h: Optional[int] = None
+    throttles_24h: Optional[int] = None
+
+
+class AutomationAwsAlarm(BaseModel):
+    name: str
+    status: Literal["ok", "unknown"]
+    observed_at: Optional[datetime] = None
+    state: Optional[str] = None  # OK / ALARM / INSUFFICIENT_DATA
+    state_updated_at: Optional[datetime] = None
+
+
+class AutomationAws(BaseModel):
+    rules: List[AutomationAwsRule]
+    queues: List[AutomationAwsQueue]
+    functions: List[AutomationAwsFunction]
+    alarms: List[AutomationAwsAlarm]
+
+
 class AutomationSnapshot(BaseModel):
     generated_at: datetime
     catalog_as_of: date
@@ -1750,3 +1812,6 @@ class AutomationSnapshot(BaseModel):
     jobs: List[AutomationJob]
     queues: List[AutomationQueue]
     heartbeats: List[AutomationHeartbeatView]
+    # Null only when no AWS reader is configured; a reader whose calls all
+    # failed still returns every item, each `unknown`.
+    aws: Optional[AutomationAws] = None

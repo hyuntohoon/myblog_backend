@@ -10,8 +10,10 @@
 # from the Cognito guard and a non-owner token is 403; on the raw API Gateway
 # host edge_guard answers 403. Fail-closed either way.
 #
-# Opening this starts nothing: one read-only DB transaction, no enqueue, no
-# AWS call (the AWS adapter is 2d).
+# Opening this starts nothing: one read-only DB transaction, then (snapshot
+# only, after the session closes) read-only AWS describes/metrics (2d) — no
+# enqueue, no invoke. The response carries AWS resource names and counts, never
+# an ARN or the account id.
 from __future__ import annotations
 
 import logging
