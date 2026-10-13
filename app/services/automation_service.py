@@ -6,7 +6,11 @@ Three sources, each with its own `observed_at`:
 * the DB adapter — per-queue counts by state, oldest waiting, last update;
 * local-agent heartbeats (`automation_heartbeats`, V59) — liveness by age;
 * the AWS adapter (`automation_aws`, 2d) — EventBridge rule state and delivery
-  metrics, queue depth, Lambda errors, alarm state.
+  metrics, queue depth, Lambda errors, alarm state;
+* owner pause flags (`automation_controls`, V60, Step 3b) — read with the rest.
+
+The one write path is `AutomationService.control` (3b): pause/resume, audited and
+idempotent by a client-minted `request_id`.
 
 Anything without fresh evidence renders unknown: a missing source must never
 read as healthy or as an empty queue.
@@ -19,7 +23,7 @@ Nothing external ever runs while a session is open.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Tuple
 
@@ -33,6 +37,8 @@ from app.api.schemas import (
     AutomationAwsFunction,
     AutomationAwsQueue,
     AutomationAwsRule,
+    AutomationControlResult,
+    AutomationControlState,
     AutomationHeartbeatView,
     AutomationJob,
     AutomationLiveness,
@@ -68,10 +74,18 @@ class HeartbeatRow:
 
 
 @dataclass(frozen=True)
+class ControlRow:
+    paused: bool
+    changed_at: datetime
+    honored_at: Optional[datetime]
+
+
+@dataclass(frozen=True)
 class DbRead:
     observed_at: datetime  # the DB's now(), so heartbeat age needs no Lambda clock
     queues: Dict[str, QueueRead]  # QueueDef.key / translation_queue_key(version)
     heartbeats: List[HeartbeatRow]
+    controls: Dict[str, ControlRow] = field(default_factory=dict)
 
 
 def _fold(rows: Iterable[Tuple[Any, ...]]) -> QueueRead:
@@ -115,7 +129,28 @@ def read_db_state(db: Session) -> DbRead:
         )
         for r in db.execute(text(catalog.HEARTBEATS_SQL)).all()
     ]
-    return DbRead(observed_at=observed_at, queues=queues, heartbeats=heartbeats)
+    controls = {
+        r[0]: ControlRow(paused=bool(r[1]), changed_at=r[2], honored_at=r[3])
+        for r in db.execute(text(catalog.CONTROLS_SQL)).all()
+    }
+    return DbRead(observed_at=observed_at, queues=queues, heartbeats=heartbeats, controls=controls)
+
+
+def control_state(job: catalog.JobDef, row: Optional[ControlRow], now: datetime, *, read_ok: bool = True) -> AutomationControlState:
+    """A job's pause state. No row = never controlled = not paused. A failed read is
+    unknown (`paused` None), never "running"."""
+    if not read_ok:
+        return AutomationControlState()
+    if row is None:
+        return AutomationControlState(paused=False)
+    confirmed = row.paused and row.honored_at is not None and row.honored_at >= row.changed_at
+    # Before one schedule interval has passed, "not confirmed yet" is expected.
+    grace = job.interval_seconds or job.stale_after_seconds or 0
+    overdue = row.paused and not confirmed and (now - row.changed_at).total_seconds() > grace
+    return AutomationControlState(
+        paused=row.paused, changed_at=row.changed_at, honored_at=row.honored_at,
+        confirmed=confirmed, confirmation_overdue=overdue,
+    )
 
 
 # ── assembly (pure) ─────────────────────────────────────────────────────────────
@@ -354,6 +389,10 @@ def assemble(db_read: Optional[DbRead], *, fallback_now: datetime, aws: Optional
             note=j.note, controls=list(j.controls), heartbeat_key=j.heartbeat_key,
             stale_after_seconds=j.stale_after_seconds,
             liveness=_liveness(j, db_read, heartbeats, aws),
+            control=(
+                control_state(j, db_read.controls.get(j.key) if db_read else None, now, read_ok=db_read is not None)
+                if "pause" in j.controls else None
+            ),
         )
         for j in catalog.JOBS
     ]
@@ -513,6 +552,22 @@ class AutomationService:
         aws = self._aws_reader() if self._aws_reader is not None else None
         return assemble(db_read, fallback_now=datetime.now(timezone.utc), aws=aws)
 
+    def control(self, job_key: str, action: str, request_id: Any, actor: str) -> Optional[AutomationControlResult]:
+        """Pause or resume one job (3b). None when the key has no pause control (the
+        route's 404). Raises ControlConflict for a reused request_id, and lets a DB
+        error propagate (the route answers 503) — a control must never report a
+        change it did not make."""
+        job = _job(job_key)
+        if job is None:
+            return None
+        with self._session_factory() as db:
+            result = _apply_control(db, job, action, request_id, actor)
+        logger.info(
+            "automation control: %s %s → %s%s", action, job.key, result.outcome,
+            " (replay)" if result.replayed else "",
+        )
+        return result
+
     def queue_detail(self, key: str) -> Optional[AutomationQueueDetail]:
         """None when `key` is not a queue the snapshot can show (the route's 404)."""
         target = resolve_queue(key)
@@ -526,3 +581,72 @@ class AutomationService:
         except SQLAlchemyError:
             logger.exception("automation queue detail: DB read failed")
         return assemble_detail(target, read)
+
+
+# ── owner controls (3b) ─────────────────────────────────────────────────────────
+
+
+class ControlConflict(Exception):
+    """The request_id was already used for a different job or action."""
+
+
+_LOCK_CONTROL = text(
+    # Creates the row on first use and takes its row lock in the same statement.
+    "INSERT INTO automation_controls (job_key) VALUES (:key) "
+    "ON CONFLICT (job_key) DO UPDATE SET job_key = EXCLUDED.job_key "
+    "RETURNING paused, changed_at, honored_at, now()"
+)
+# clock_timestamp(), not now(): now() is the transaction's START, and a request that
+# waited on the row lock would then sort before the one it waited for — the audit
+# trail must read in the order the actions took effect.
+_RECORD_EVENT = text(
+    "INSERT INTO automation_control_events (request_id, job_key, action, outcome, actor_sub, created_at) "
+    "VALUES (:rid, :key, :action, :outcome, :actor, clock_timestamp()) "
+    "ON CONFLICT (request_id) DO NOTHING RETURNING request_id"
+)
+_APPLY = text(
+    "UPDATE automation_controls SET paused = :paused, changed_at = clock_timestamp() "
+    "WHERE job_key = :key RETURNING paused, changed_at, honored_at, now()"
+)
+
+
+def _job(key: str) -> Optional[catalog.JobDef]:
+    return next((j for j in catalog.JOBS if j.key == key and "pause" in j.controls), None)
+
+
+def _apply_control(db: Session, job: catalog.JobDef, action: str, request_id: Any, actor: str) -> AutomationControlResult:
+    """One short write transaction; every caller takes the control row lock, then the
+    event key, so two requests can never wait on each other in a cycle."""
+    db.execute(text("SET TRANSACTION READ WRITE"))  # a pooler session can leak read-only
+    db.execute(text("SET LOCAL lock_timeout = '5s'"))
+    db.execute(text("SET LOCAL statement_timeout = '5s'"))
+    want = action == "pause"
+    paused, changed_at, honored_at, now = db.execute(_LOCK_CONTROL, {"key": job.key}).one()
+    outcome = "no_change" if paused == want else "applied"
+    recorded = db.execute(_RECORD_EVENT, {
+        "rid": request_id, "key": job.key, "action": action, "outcome": outcome, "actor": actor,
+    }).first()
+    if recorded is None:
+        # Already processed (an earlier send, or a concurrent one that committed while
+        # this waited). Act on nothing: report the stored outcome with the CURRENT
+        # state — the row this transaction just locked, which nothing changed since.
+        stored = db.execute(
+            text("SELECT job_key, action, outcome FROM automation_control_events WHERE request_id = :rid"),
+            {"rid": request_id},
+        ).one()
+        db.rollback()  # drops the row this request may have created on first use
+        if stored[0] != job.key or stored[1] != action:
+            raise ControlConflict()
+        row = ControlRow(paused=bool(paused), changed_at=changed_at, honored_at=honored_at)
+        return AutomationControlResult(
+            request_id=request_id, job_key=job.key, action=action, outcome=stored[2], replayed=True,
+            control=control_state(job, row, now),
+        )
+    if outcome == "applied":
+        paused, changed_at, honored_at, now = db.execute(_APPLY, {"key": job.key, "paused": want}).one()
+    db.commit()
+    row = ControlRow(paused=bool(paused), changed_at=changed_at, honored_at=honored_at)
+    return AutomationControlResult(
+        request_id=request_id, job_key=job.key, action=action, outcome=outcome, replayed=False,
+        control=control_state(job, row, now),
+    )

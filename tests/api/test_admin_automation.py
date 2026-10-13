@@ -124,8 +124,10 @@ class TestCatalog:
         for state in catalog.TRANSLATION_WAITING_STATES:
             assert f"'{state}'" in catalog.TRANSLATION_WORK_SQL
 
-    def test_no_controls_in_step_2(self):
-        assert all(j.controls == () for j in catalog.JOBS)
+    def test_only_the_3b_pause_control_exists(self):
+        # Step 3b adds "pause" only (pinned per key in test_admin_automation_controls.py);
+        # retry and run-now are 3a/3c and must not appear before their sub-steps.
+        assert {c for j in catalog.JOBS for c in j.controls} == {"pause"}
 
 
 # ── fold ────────────────────────────────────────────────────────────────────────

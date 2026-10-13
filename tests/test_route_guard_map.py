@@ -48,6 +48,7 @@ _GUARD_NAMES = {"require_owner", "require_owner_or_draft_agent", "require_cognit
 OWNER_ONLY = [
     'app.api.routes.admin_automation:get_automation_queue_detail',   # GET /api/admin/automation/queue-detail
     'app.api.routes.admin_automation:get_automation_snapshot',       # GET /api/admin/automation
+    'app.api.routes.admin_automation:post_automation_control',       # POST /api/admin/automation/controls
     'app.api.routes.buckets:spotify_library_state',                  # GET /api/buckets/spotify-library/state
     'app.api.routes.buckets:spotify_library_sync',                   # POST /api/buckets/spotify-library/sync
     'app.api.routes.genres:create_genre',                            # POST /api/genres

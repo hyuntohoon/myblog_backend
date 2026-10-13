@@ -1647,6 +1647,19 @@ class AutomationLiveness(BaseModel):
     reason: str
 
 
+class AutomationControlState(BaseModel):
+    # FEAT-automation-admin 3b: the owner's pause flag for a job whose `controls`
+    # include "pause". `paused` None = the DB read failed (unknown, never "running").
+    # `confirmed`: paused AND the executor has skipped since (honored_at >= changed_at).
+    # `confirmation_overdue`: paused, unconfirmed, and one schedule interval has passed
+    # since the change — before that, "not yet" is expected (a weekly cron waits a week).
+    paused: Optional[bool] = None
+    changed_at: Optional[datetime] = None
+    honored_at: Optional[datetime] = None
+    confirmed: bool = False
+    confirmation_overdue: bool = False
+
+
 class AutomationJob(BaseModel):
     key: str
     group: Literal["aws_schedule", "aws_scheduler", "aws_queue_message", "local_agent", "other_scheduler"]
@@ -1665,6 +1678,28 @@ class AutomationJob(BaseModel):
     heartbeat_key: Optional[str] = None
     stale_after_seconds: Optional[int] = None
     liveness: AutomationLiveness
+    control: Optional[AutomationControlState] = None
+
+
+class AutomationControlRequest(BaseModel):
+    # FEAT-automation-admin 3b. `request_id` is minted once per confirmation by the
+    # client: a resend (double click, network retry) replays the stored result.
+    model_config = {"extra": "forbid"}
+    job_key: str = Field(min_length=1, max_length=64)
+    action: Literal["pause", "resume"]
+    request_id: UUID
+
+
+class AutomationControlResult(BaseModel):
+    request_id: UUID
+    job_key: str
+    action: Literal["pause", "resume"]
+    # applied = the flag changed; no_change = it already had that value.
+    outcome: Literal["applied", "no_change"]
+    # True when this request_id had already been processed: nothing was done again,
+    # `outcome` is the stored one and `control` is the CURRENT state.
+    replayed: bool
+    control: AutomationControlState
 
 
 class AutomationQueue(BaseModel):
