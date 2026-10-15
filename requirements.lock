@@ -7,7 +7,7 @@
 # The target and the freeze are both pinned, so this file does not depend on
 # the machine or the day that produced it: a macOS arm64 laptop and the
 # x86_64 CI runner produce byte-identical output.
-# requirements.txt sha256: fd3cb98f433197843be24e66a518cb7c86228d83dc5dca1ec55e16a3b1aaeb6a
+# requirements.txt sha256: 10ad6cc0a95a0275f1208765ee8db70b5216199217779e411c82830275899ea3
 # To regenerate (or to take newer releases, after moving EXCLUDE_NEWER):
 #
 #    ./scripts/compile_requirements.sh
@@ -50,7 +50,7 @@ idna==3.19
     #   requests
 mangum==0.22.0
     # via -r requirements.txt
-myblog-shared-db @ git+https://github.com/hyuntohoon/myblog_shared_db.git@08b2ee72630ef6d6db714b3fef0ddd8c0c907733
+myblog-shared-db @ git+https://github.com/hyuntohoon/myblog_shared_db.git@4544da2383bd5e5006670aef7883753e395aafb6
     # via -r requirements.txt
 psycopg==3.2.13
     # via -r requirements.txt

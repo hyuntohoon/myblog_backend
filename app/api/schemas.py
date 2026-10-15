@@ -588,8 +588,9 @@ class MoveBucketRequest(BaseModel):
 # spotify_library_albums table for the /profile board badges + banners.
 
 class SpotifyLibrarySyncResponse(BaseModel):
-    # "queued" = a sync job was enqueued; "debounced" = a sync ran within the
-    # server-side debounce window (~30s) so this call was a no-op.
+    # "queued" = a sync job was enqueued; "in_flight" = a requested sync has not
+    # finished yet, so this call joined it (no new job); "debounced" = a sync
+    # finished within the server-side window (~30s) so this call was a no-op.
     status: str
 
 
@@ -604,6 +605,9 @@ class SpotifyLibraryAlbumState(BaseModel):
     in_bucket: bool
     in_spotify: bool
     last_error: Optional[str] = None
+    # When the album was saved to the Spotify Library (Spotify `added_at`); null
+    # until a sync observes it saved. Drives the newest-saved order.
+    spotify_added_at: Optional[datetime] = None
 
 
 class SpotifyLibraryStateResponse(BaseModel):
@@ -617,6 +621,12 @@ class SpotifyLibraryStateResponse(BaseModel):
     # Read-only mirror of the worker write gate (SPOTIFY_LIBRARY_WRITES_ENABLED), for
     # the "검토 모드" banner. False = plan-only; the worker issues no real Spotify writes.
     writes_enabled: bool = False
+    # FEAT-spotify-library-autosync — the sync run row (V61). The board polls until
+    # sync_finished_at passes the request it made; sync_in_flight is the server's
+    # own verdict (requested, not finished, not stale).
+    sync_requested_at: Optional[datetime] = None
+    sync_finished_at: Optional[datetime] = None
+    sync_in_flight: bool = False
     albums: List[SpotifyLibraryAlbumState] = Field(default_factory=list)
 
 

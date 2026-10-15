@@ -5495,6 +5495,18 @@
             "title": "Source",
             "type": "string"
           },
+          "spotify_added_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spotify Added At"
+          },
           "spotify_id": {
             "title": "Spotify Id",
             "type": "string"
@@ -5551,6 +5563,35 @@
             "default": false,
             "title": "Needs Reauth",
             "type": "boolean"
+          },
+          "sync_finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Finished At"
+          },
+          "sync_in_flight": {
+            "default": false,
+            "title": "Sync In Flight",
+            "type": "boolean"
+          },
+          "sync_requested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Requested At"
           },
           "writes_enabled": {
             "default": false,

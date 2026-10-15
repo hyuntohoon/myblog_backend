@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -114,9 +114,34 @@ RECENCY_WINDOW_DAYS = 365 * 2
 # saved-albums Library. Get-or-create lives in the BACKEND (the worker creates none).
 SPOTIFY_LIBRARY_BUCKET_KIND = "spotify_library"
 SPOTIFY_LIBRARY_BUCKET_NAME = "Spotify 라이브러리"
-# Server-side debounce: ignore a sync POST if one ran within this window (derived
-# from max(spotify_library_albums.last_synced_at)). ~30s per the interface spec.
+# Server-side gate on the sync POST (FEAT-spotify-library-autosync, V61
+# spotify_library_sync_runs): a POST within this window after a pass FINISHED is a
+# no-op ("debounced"). Mirrored by the worker's SYNC_DEBOUNCE_SECONDS.
 LIBRARY_SYNC_DEBOUNCE_SECONDS = 30
+# A request that has not finished after this long is treated as lost (SQS message
+# dropped / worker crashed) and a new POST may enqueue again. Mirrored by the
+# worker's STALE_RUN_SECONDS.
+LIBRARY_SYNC_STALE_SECONDS = 300
+
+
+def library_sync_gate(
+    requested_at: Optional[datetime],
+    finished_at: Optional[datetime],
+    now: datetime,
+    *,
+    window_seconds: int = LIBRARY_SYNC_DEBOUNCE_SECONDS,
+    stale_seconds: int = LIBRARY_SYNC_STALE_SECONDS,
+) -> str:
+    """Decide a sync POST from the run row: 'in_flight' while a request is
+    outstanding (not finished and not stale), 'debounced' within the window after a
+    finish, otherwise 'queued'. Pure, so the route, the reratings trigger and the
+    state GET agree on one definition."""
+    pending = requested_at is not None and (finished_at is None or finished_at < requested_at)
+    if pending and requested_at is not None and now - requested_at < timedelta(seconds=stale_seconds):
+        return "in_flight"
+    if not pending and finished_at is not None and now - finished_at < timedelta(seconds=window_seconds):
+        return "debounced"
+    return "queued"
 
 # FEAT-playback-bucket-player (V51): the per-user Playback Bucket — the system-owned bucket
 # whose ordered item list IS the playback queue. `kind` marks it system-owned (the free-TEXT
@@ -1680,30 +1705,87 @@ class BucketService:
 
     def library_last_synced_at(self, db: Session) -> Optional[datetime]:
         """max(spotify_library_albums.last_synced_at), or None when nothing synced.
-        Drives both the debounce window and the GET-state poll timestamp."""
+        Only advances on rows a pass CHANGED, so it is the "library last changed"
+        stamp; whether a pass ran is spotify_library_sync_runs.finished_at."""
         return db.execute(
             select(func.max(SpotifyLibraryAlbum.last_synced_at))
         ).scalar_one()
 
-    def library_sync_debounced(
-        self,
-        db: Session,
-        *,
-        window_seconds: int = LIBRARY_SYNC_DEBOUNCE_SECONDS,
-        now: Optional[datetime] = None,
-    ) -> bool:
-        """True when a sync ran within ``window_seconds`` (so a fresh POST is a
-        no-op). Derived from max(last_synced_at); None (never synced) => not
-        debounced. Both sides are coerced to tz-aware UTC for a safe comparison."""
-        last = self.library_last_synced_at(db)
-        if last is None:
-            return False
-        now = now or datetime.now(timezone.utc)
-        if last.tzinfo is None:
-            last = last.replace(tzinfo=timezone.utc)
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=timezone.utc)
-        return (now - last) < timedelta(seconds=window_seconds)
+    def request_library_sync(
+        self, db: Session, bucket_id: uuid.UUID, send: Callable[[], bool]
+    ) -> str:
+        """Gate + enqueue one library sync (FEAT-spotify-library-autosync).
+
+        The run row is locked (SELECT … FOR UPDATE) for the decision, so two tabs
+        posting at once serialise: the first stamps requested_at and commits, the
+        second then sees the outstanding request and answers 'in_flight'. The commit
+        happens BEFORE the SQS send — no transaction is held across the external
+        call. If the send raises or is a no-op (no queue configured), requested_at
+        is restored, so a lost send never fakes an in-flight run for the stale
+        window. Returns 'queued' | 'in_flight' | 'debounced'."""
+        db.execute(
+            text(
+                "INSERT INTO spotify_library_sync_runs (bucket_id) VALUES (:b) "
+                "ON CONFLICT (bucket_id) DO NOTHING"
+            ),
+            {"b": bucket_id},
+        )
+        # clock_timestamp(), not now(): the stamp must be the moment the lock was
+        # held, not the transaction start — the worker treats a request older than a
+        # pass's claim time as serviced by that pass.
+        row = db.execute(
+            text(
+                "SELECT requested_at, finished_at, clock_timestamp() AS now "
+                "FROM spotify_library_sync_runs WHERE bucket_id = :b FOR UPDATE"
+            ),
+            {"b": bucket_id},
+        ).one()
+        status = library_sync_gate(row.requested_at, row.finished_at, row.now)
+        if status != "queued":
+            db.commit()
+            return status
+        db.execute(
+            text("UPDATE spotify_library_sync_runs SET requested_at = :t WHERE bucket_id = :b"),
+            {"t": row.now, "b": bucket_id},
+        )
+        db.commit()
+        try:
+            sent = send()
+        except Exception:
+            self._restore_library_request(db, bucket_id, row.requested_at, row.now)
+            raise
+        if not sent:
+            self._restore_library_request(db, bucket_id, row.requested_at, row.now)
+        return "queued"
+
+    def _restore_library_request(
+        self, db: Session, bucket_id: uuid.UUID, previous: Optional[datetime], mine: datetime
+    ) -> None:
+        """Undo this call's requested_at stamp — only if nobody has moved it since."""
+        db.rollback()
+        db.execute(
+            text(
+                "UPDATE spotify_library_sync_runs SET requested_at = :prev "
+                "WHERE bucket_id = :b AND requested_at = :mine"
+            ),
+            {"prev": previous, "b": bucket_id, "mine": mine},
+        )
+        db.commit()
+
+    def get_library_sync_run(
+        self, db: Session, bucket_id: Optional[uuid.UUID]
+    ) -> Optional[Tuple[Optional[datetime], Optional[datetime], datetime]]:
+        """(requested_at, finished_at, db now) of the bucket's run row, or None."""
+        if bucket_id is None:
+            return None
+        row = db.execute(
+            text(
+                "SELECT requested_at, finished_at, now() AS now "
+                "FROM spotify_library_sync_runs WHERE bucket_id = :b"
+            ),
+            {"b": bucket_id},
+        ).first()
+        return (row.requested_at, row.finished_at, row.now) if row else None
 
     def list_spotify_library_albums(
         self, db: Session
