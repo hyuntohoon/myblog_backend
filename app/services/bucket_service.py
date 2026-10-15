@@ -137,7 +137,7 @@ def library_sync_gate(
     finish, otherwise 'queued'. Pure, so the route, the reratings trigger and the
     state GET agree on one definition."""
     pending = requested_at is not None and (finished_at is None or finished_at < requested_at)
-    if pending and now - requested_at < timedelta(seconds=stale_seconds):
+    if pending and requested_at is not None and now - requested_at < timedelta(seconds=stale_seconds):
         return "in_flight"
     if not pending and finished_at is not None and now - finished_at < timedelta(seconds=window_seconds):
         return "debounced"
