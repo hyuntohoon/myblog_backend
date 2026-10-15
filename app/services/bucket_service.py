@@ -1730,9 +1730,12 @@ class BucketService:
             ),
             {"b": bucket_id},
         )
+        # clock_timestamp(), not now(): the stamp must be the moment the lock was
+        # held, not the transaction start — the worker treats a request older than a
+        # pass's claim time as serviced by that pass.
         row = db.execute(
             text(
-                "SELECT requested_at, finished_at, now() AS now "
+                "SELECT requested_at, finished_at, clock_timestamp() AS now "
                 "FROM spotify_library_sync_runs WHERE bucket_id = :b FOR UPDATE"
             ),
             {"b": bucket_id},
