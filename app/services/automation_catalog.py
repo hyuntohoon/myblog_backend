@@ -17,7 +17,7 @@ from typing import Dict, Literal, Optional, Tuple
 
 from myblog_shared_db.automation import PAUSABLE_JOB_KEYS
 
-CATALOG_AS_OF = date(2026, 10, 12)
+CATALOG_AS_OF = date(2026, 10, 15)
 
 # RFC "Design notes fixed for 2a–2e": a heartbeat is stale after 2 × the agent's
 # schedule interval, minimum 15 minutes.
@@ -386,15 +386,15 @@ JOBS: Tuple[JobDef, ...] = (
     _message("sqs_lyrics_member_bootstrap", "Lyrics member bootstrap", "backend integrations (member connects Spotify)"),
     _message("sqs_lyrics_discography_enumerate", "Discography enumeration", "worker self-chain (delayed)", drains=("lyrics_artist_discographies",), queue_keys=("lyrics_artist_discographies",)),
     _message("sqs_lyrics_incremental", "Lyrics incremental (after album sync)", "worker after album sync"),
-    _message("sqs_genius_fetch_album", "Genius fetch for one album", "local research-poller nudge", state="disabled", note="Disabled with its producer (research-poller)."),
+    _message("sqs_genius_fetch_album", "Genius fetch for one album", "local research-poller nudge"),
     _message("sqs_manual_overrides", "Lyrics reassessment / demand source / artist photo with overrides", "no producer on main", state="manual_only"),
     _message("sqs_dropped_jobs", "isrc_backfill / youtube_ref_refresh / disc_no_backfill", "no producer", state="dropped", note="The consumer has no branch for these: logged as \"Unknown message format\" and deleted unrun. Only a direct Lambda invoke runs them."),
     # ── C/D. Local launch agents (owner's Mac) ─────────────────────────────────
     _agent("gpt-translate-poller", "GPT translation worker", "Translate lyrics and Genius annotations with the local GPT worker", "every 60 s", 60, state="active", drains=(TRANSLATION_WORK_TABLE, "track_lyrics_translations", "track_genius_annotations", "lyrics_album_tracks"), queue_keys=_GPT_QUEUES, ai_provider="OpenAI ChatGPT plan (local worker)", note="Plan usage on chatgpt.com is external; the page can only show the worker's own totals."),
-    _agent("buckit-nightly", "Buckit nightly drafts", "Draft reports from checked review-bucket memos", "daily 03:00", DAY, state="disabled", ai_provider="Claude CLI (subscription)", note="Not reloaded since the 2026-09-27 reboot; OPS-project-stabilization Step 2D gates the reload."),
-    _agent("research-poller", "Album research poller", "Drain album research requests", "every 60 s", 60, state="disabled", drains=("album_research",), queue_keys=("album_research",), ai_provider="Claude CLI (subscription)", note="Not reloaded since the 2026-09-27 reboot; the bucket research_mode producer is still live."),
-    _agent("genre-heal-poller", "Genre heal poller", "Drain 장르 채우기 requests through the genre backfill pipeline", "every 30 min", 1800, state="disabled", drains=("genre_backfill_requests",), queue_keys=("genre_backfill_requests",), ai_provider="Claude CLI (subscription)", note="Not reloaded since the 2026-09-27 reboot; the 장르 채우기 button is still live."),
-    _agent("genre-backfill", "Genre backfill", "Daily genre pipeline over the catalog (shared_db backfill_genres.py)", "daily 04:00", DAY, state="disabled", ai_provider="Claude CLI (subscription)", note="Not reloaded since the 2026-09-27 reboot."),
+    _agent("buckit-nightly", "Buckit nightly drafts", "Draft reports from checked review-bucket memos", "daily 03:00", DAY, state="active", ai_provider="Claude CLI (subscription)", note="Reloaded 2026-10-15 with the OPS-project-stabilization Step 2D subscription-guard fix (shared_db #87)."),
+    _agent("research-poller", "Album research poller", "Drain album research requests", "every 60 s", 60, state="active", drains=("album_research",), queue_keys=("album_research",), ai_provider="Claude CLI (subscription)", note="Reloaded 2026-10-15 with the OPS-project-stabilization Step 2D subscription-guard fix (shared_db #87)."),
+    _agent("genre-heal-poller", "Genre heal poller", "Drain 장르 채우기 requests through the genre backfill pipeline", "every 30 min", 1800, state="active", drains=("genre_backfill_requests",), queue_keys=("genre_backfill_requests",), ai_provider="Claude CLI (subscription)", note="Reloaded 2026-10-15 with the OPS-project-stabilization Step 2D subscription-guard fix (shared_db #87)."),
+    _agent("genre-backfill", "Genre backfill", "Daily genre pipeline over the catalog (shared_db backfill_genres.py)", "daily 04:00", DAY, state="active", ai_provider="Claude CLI (subscription)", note="Reloaded 2026-10-15 (OPS-project-stabilization Step 2D). Not yet wrapped by automation_heartbeat.py, so it reports no liveness."),
     _agent("lyrics-translate-poller", "Legacy lyrics translation poller", "Legacy Claude lyrics translation", "every 60 s", 60, state="obsolete", drains=("track_lyrics_translations", TRANSLATION_WORK_TABLE), queue_keys=(translation_queue_key(CLAUDE_DEMAND_VERSION),), ai_provider="Claude CLI (subscription)", note="Retired by Chat translation: uninstalled, and the script returns before DB work. The GPT worker now drains track_lyrics_translations; the claude.sonnet/v2 work rows stay frozen."),
     _agent("genius-translate-poller", "Legacy Genius translation poller", "Legacy Claude Genius annotation translation", "every 60 s", 60, state="obsolete", drains=("track_genius_annotations",), ai_provider="Claude CLI (subscription)", note="Retired: uninstalled, and the script returns before DB work. The GPT worker now drains its table."),
     # ── E. Other schedulers ────────────────────────────────────────────────────

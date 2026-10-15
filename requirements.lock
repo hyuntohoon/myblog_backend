@@ -50,7 +50,7 @@ idna==3.19
     #   requests
 mangum==0.22.0
     # via -r requirements.txt
-myblog-shared-db @ git+https://github.com/hyuntohoon/myblog_shared_db.git@e4e98b99f346a9131b128a029879739cc2b1b772
+myblog-shared-db @ git+https://github.com/hyuntohoon/myblog_shared_db.git@08b2ee72630ef6d6db714b3fef0ddd8c0c907733
     # via -r requirements.txt
 psycopg==3.2.13
     # via -r requirements.txt
