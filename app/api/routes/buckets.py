@@ -64,6 +64,7 @@ from app.services.bucket_service import (
     ReviewTargetNotFoundError,
     SystemBucketError,
     TrackNotFoundError,
+    library_sync_gate,
 )
 from app.services.enqueue import (
     safe_enqueue_album as _safe_enqueue_album,
@@ -335,10 +336,17 @@ def spotify_library_state(
     # Pure read of the worker-written spotify_library_albums table (rule #9 — no
     # Spotify call). The bucket is NOT created here (only the sync POST get-or-creates).
     bucket, last_synced_at, albums = svc.get_spotify_library_state(db, owner_id)
+    run = svc.get_library_sync_run(db, bucket.id if bucket is not None else None)
+    requested_at, finished_at, now = run if run is not None else (None, None, None)
     conn = get_spotify_connection_status()
     return SpotifyLibraryStateResponse(
         bucket_id=str(bucket.id) if bucket is not None else None,
         last_synced_at=last_synced_at,
+        sync_requested_at=requested_at,
+        sync_finished_at=finished_at,
+        sync_in_flight=(
+            run is not None and library_sync_gate(requested_at, finished_at, now) == "in_flight"
+        ),
         needs_reauth=conn.needs_reauth,
         # Read-only mirror of the worker write gate, for the "검토 모드" banner.
         writes_enabled=get_settings().SPOTIFY_LIBRARY_WRITES_ENABLED,
@@ -351,6 +359,7 @@ def spotify_library_state(
                 in_bucket=row.in_bucket,
                 in_spotify=row.in_spotify,
                 last_error=row.last_error,
+                spotify_added_at=row.spotify_added_at,
             )
             for row in albums
         ],
@@ -370,15 +379,15 @@ def spotify_library_sync(
 ):
     # Get-or-create the special bucket so the worker always has a destination, then
     # enqueue the async job. Rule #9: this only ENQUEUES — never calls Spotify; the
-    # worker does the reads/diffs/writes. Server-side debounce makes a rapid re-tap
-    # a no-op (status="debounced") without hitting the queue again. The bucket carries
-    # user_id = owner (Spotify lane owner-only until Phase 3b).
-    svc.get_or_create_spotify_library_bucket(db, owner_id)
-    if svc.library_sync_debounced(db):
-        logger.info("spotify library sync debounced (recent sync within window)")
-        return SpotifyLibrarySyncResponse(status="debounced")
-    sqs.send_library_sync()
-    return SpotifyLibrarySyncResponse(status="queued")
+    # worker does the reads/diffs/writes. The board calls this on EVERY entry
+    # (FEAT-spotify-library-autosync), so the run-row gate decides: one outstanding
+    # request at a time ("in_flight" joins it), and a POST right after a finish is
+    # "debounced". The bucket carries user_id = owner (Spotify lane owner-only).
+    bucket = svc.get_or_create_spotify_library_bucket(db, owner_id)
+    status = svc.request_library_sync(db, bucket.id, sqs.send_library_sync)
+    if status != "queued":
+        logger.info("spotify library sync not enqueued: %s", status)
+    return SpotifyLibrarySyncResponse(status=status)
 
 
 # ── bucket CRUD (Cognito JWT) ───────────────────────────────────────────────────

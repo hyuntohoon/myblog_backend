@@ -82,7 +82,7 @@ class TestMyReratings:
         Spotify lane is owner-only until Phase 3b anyway."""
         svc = MagicMock()
         bucket_svc = MagicMock()
-        bucket_svc.library_sync_debounced.return_value = False
+        bucket_svc.request_library_sync.return_value = "queued"
         sqs = MagicMock()
         _override(app, svc, bucket_svc=bucket_svc, sqs=sqs)
 
@@ -93,21 +93,9 @@ class TestMyReratings:
         args = bucket_svc.add_album_to_spotify_library.call_args[0]
         assert args[1] == uuid.UUID(_SUB)
         assert args[2] == _ALBUM
-        sqs.send_library_sync.assert_called_once()
-        app.dependency_overrides.clear()
-
-    def test_start_skips_the_sync_enqueue_when_debounced(self, client, app):
-        svc = MagicMock()
-        bucket_svc = MagicMock()
-        bucket_svc.library_sync_debounced.return_value = True
-        sqs = MagicMock()
-        _override(app, svc, bucket_svc=bucket_svc, sqs=sqs)
-
-        resp = client.put(f"/api/me/reratings/{_ALBUM}")
-
-        assert resp.status_code == 204
-        bucket_svc.add_album_to_spotify_library.assert_called_once()
-        sqs.send_library_sync.assert_not_called()
+        # Same run-row gate as the sync POST, handed the real SQS send.
+        bucket_svc.request_library_sync.assert_called_once()
+        assert bucket_svc.request_library_sync.call_args[0][2] == sqs.send_library_sync
         app.dependency_overrides.clear()
 
     def test_start_without_a_rating_never_touches_spotify_library(self, client, app):
@@ -148,6 +136,7 @@ class TestMyReratings:
 
         assert resp.status_code == 204
         bucket_svc.add_album_to_spotify_library.assert_not_called()
+        bucket_svc.request_library_sync.assert_not_called()
         sqs.send_library_sync.assert_not_called()
         app.dependency_overrides.clear()
 

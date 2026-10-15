@@ -6,47 +6,44 @@ from unittest.mock import MagicMock
 
 from app.services.bucket_service import (
     LIBRARY_SYNC_DEBOUNCE_SECONDS,
+    LIBRARY_SYNC_STALE_SECONDS,
     SPOTIFY_LIBRARY_BUCKET_KIND,
     SPOTIFY_LIBRARY_BUCKET_NAME,
     BucketService,
+    library_sync_gate,
 )
 
 # FEAT-multi-user Phase 2: the spotify_library bucket is owner-scoped; mock ignores value.
 OWNER_ID = uuid.UUID(int=1)
 
 
-class TestLibrarySyncDebounce:
-    """The server-side debounce is derived from max(last_synced_at). A sync within
-    the window makes a fresh POST a no-op; never-synced (None) is never debounced.
-    library_last_synced_at is mocked so no DB engine is needed."""
+class TestLibrarySyncGate:
+    """The pure decision behind POST /spotify-library/sync and the state GET's
+    sync_in_flight. The locked read/write around it runs on a real engine in
+    tests/integration/test_library_sync_gate_db.py."""
 
-    def _svc_with_last(self, last):
-        svc = BucketService()
-        svc.library_last_synced_at = MagicMock(return_value=last)
-        return svc
+    NOW = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
 
-    def test_never_synced_not_debounced(self):
-        svc = self._svc_with_last(None)
-        assert svc.library_sync_debounced(MagicMock()) is False
+    def _ago(self, seconds):
+        return self.NOW - timedelta(seconds=seconds)
 
-    def test_recent_sync_is_debounced(self):
-        now = datetime(2026, 6, 8, 12, 0, tzinfo=timezone.utc)
-        last = now - timedelta(seconds=LIBRARY_SYNC_DEBOUNCE_SECONDS - 5)
-        svc = self._svc_with_last(last)
-        assert svc.library_sync_debounced(MagicMock(), now=now) is True
+    def test_never_requested_is_queued(self):
+        assert library_sync_gate(None, None, self.NOW) == "queued"
 
-    def test_old_sync_not_debounced(self):
-        now = datetime(2026, 6, 8, 12, 0, tzinfo=timezone.utc)
-        last = now - timedelta(seconds=LIBRARY_SYNC_DEBOUNCE_SECONDS + 5)
-        svc = self._svc_with_last(last)
-        assert svc.library_sync_debounced(MagicMock(), now=now) is False
+    def test_outstanding_request_is_in_flight(self):
+        assert library_sync_gate(self._ago(10), None, self.NOW) == "in_flight"
+        assert library_sync_gate(self._ago(10), self._ago(3600), self.NOW) == "in_flight"
 
-    def test_naive_last_synced_is_coerced_to_utc(self):
-        # A tz-naive DB value must not raise on comparison (coerced to UTC).
-        now = datetime(2026, 6, 8, 12, 0, tzinfo=timezone.utc)
-        last_naive = (now - timedelta(seconds=5)).replace(tzinfo=None)
-        svc = self._svc_with_last(last_naive)
-        assert svc.library_sync_debounced(MagicMock(), now=now) is True
+    def test_stale_request_is_queued_again(self):
+        assert library_sync_gate(self._ago(LIBRARY_SYNC_STALE_SECONDS + 1), None, self.NOW) == "queued"
+
+    def test_just_finished_is_debounced(self):
+        assert library_sync_gate(self._ago(40), self._ago(LIBRARY_SYNC_DEBOUNCE_SECONDS - 5), self.NOW) == "debounced"
+        # a finish with no request on record (e.g. a worker-only run) debounces too
+        assert library_sync_gate(None, self._ago(5), self.NOW) == "debounced"
+
+    def test_finish_outside_window_is_queued(self):
+        assert library_sync_gate(self._ago(90), self._ago(LIBRARY_SYNC_DEBOUNCE_SECONDS + 5), self.NOW) == "queued"
 
 
 class TestGetOrCreateLibraryBucket:

@@ -334,8 +334,11 @@ def start_rerating(
     if is_owner(claims):
         owner_id = _member_id(claims)
         bucket_svc.add_album_to_spotify_library(db, owner_id, str(aid))
-        if not bucket_svc.library_sync_debounced(db):
-            sqs.send_library_sync()
+        # Same run-row gate as POST /spotify-library/sync. 'in_flight' / 'debounced'
+        # skip the enqueue; the album is in the bucket either way and the board's
+        # next entry sync pushes it.
+        bucket = bucket_svc.get_or_create_spotify_library_bucket(db, owner_id)
+        bucket_svc.request_library_sync(db, bucket.id, sqs.send_library_sync)
 
     return Response(status_code=204)
 

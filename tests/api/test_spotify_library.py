@@ -47,6 +47,7 @@ def _lib_row(
     in_bucket=True,
     in_spotify=True,
     last_error=None,
+    spotify_added_at=None,
 ):
     r = MagicMock()
     r.album_id = album_id
@@ -56,45 +57,35 @@ def _lib_row(
     r.in_bucket = in_bucket
     r.in_spotify = in_spotify
     r.last_error = last_error
+    r.spotify_added_at = spotify_added_at
     return r
 
 
 class TestSpotifyLibrarySync:
-    def test_enqueues_and_returns_202_queued(self, client, app):
+    def test_gate_decides_and_its_status_is_returned(self, client, app):
+        """The route get-or-creates the bucket and hands the gate the bucket id plus
+        the real SQS send; whatever the gate answers is the response. The gate itself
+        runs on a real engine in tests/integration/test_library_sync_gate_db.py."""
         from app.di import get_sqs_client
 
-        svc = MagicMock()
-        svc.library_sync_debounced.return_value = False
-        _override(app, svc)
-        sqs = MagicMock()
-        app.dependency_overrides[get_sqs_client] = lambda: sqs
+        for status in ("queued", "in_flight", "debounced"):
+            svc = MagicMock()
+            svc.get_or_create_spotify_library_bucket.return_value.id = "bk-lib"
+            svc.request_library_sync.return_value = status
+            _override(app, svc)
+            sqs = MagicMock()
+            app.dependency_overrides[get_sqs_client] = lambda: sqs
 
-        resp = client.post("/api/buckets/spotify-library/sync")
+            resp = client.post("/api/buckets/spotify-library/sync")
 
-        assert resp.status_code == 202
-        assert resp.json()["status"] == "queued"
-        # get-or-create the special bucket, then enqueue exactly once.
-        svc.get_or_create_spotify_library_bucket.assert_called_once()
-        sqs.send_library_sync.assert_called_once()
-        app.dependency_overrides.clear()
-
-    def test_debounced_does_not_enqueue(self, client, app):
-        from app.di import get_sqs_client
-
-        svc = MagicMock()
-        svc.library_sync_debounced.return_value = True
-        _override(app, svc)
-        sqs = MagicMock()
-        app.dependency_overrides[get_sqs_client] = lambda: sqs
-
-        resp = client.post("/api/buckets/spotify-library/sync")
-
-        assert resp.status_code == 202
-        assert resp.json()["status"] == "debounced"
-        # Bucket still get-or-created, but NO message enqueued (rule #9 holds either way).
-        svc.get_or_create_spotify_library_bucket.assert_called_once()
-        sqs.send_library_sync.assert_not_called()
-        app.dependency_overrides.clear()
+            assert resp.status_code == 202
+            assert resp.json()["status"] == status
+            svc.get_or_create_spotify_library_bucket.assert_called_once()
+            args = svc.request_library_sync.call_args[0]
+            assert args[1] == "bk-lib" and args[2] == sqs.send_library_sync
+            # the route never sends on its own — only through the gate
+            sqs.send_library_sync.assert_not_called()
+            app.dependency_overrides.clear()
 
     def test_requires_jwt_in_prod(self, client):
         import app.core.auth as auth_module
@@ -121,7 +112,10 @@ class TestSpotifyLibraryState:
             bucket,
             last,
             [
-                _lib_row(album_id="alb-1", source="myblog_added", state="synced"),
+                _lib_row(
+                    album_id="alb-1", source="myblog_added", state="synced",
+                    spotify_added_at=datetime(2026, 10, 1, 9, 30, tzinfo=timezone.utc),
+                ),
                 _lib_row(
                     album_id="alb-2",
                     spotify_id="spot-2",
@@ -132,6 +126,13 @@ class TestSpotifyLibraryState:
                     last_error="missing scope",
                 ),
             ],
+        )
+        # a request made after the last finish, 10 s ago → in flight
+        now = datetime(2026, 10, 15, 12, 0, 30, tzinfo=timezone.utc)
+        svc.get_library_sync_run.return_value = (
+            datetime(2026, 10, 15, 12, 0, 20, tzinfo=timezone.utc),
+            datetime(2026, 10, 15, 11, 0, tzinfo=timezone.utc),
+            now,
         )
         _override(app, svc)
 
@@ -148,7 +149,14 @@ class TestSpotifyLibraryState:
         assert body["last_synced_at"].startswith("2026-06-08T10:00")
         assert body["needs_reauth"] is True
         assert body["writes_enabled"] is False
+        assert body["sync_requested_at"].startswith("2026-10-15T12:00:20")
+        assert body["sync_finished_at"].startswith("2026-10-15T11:00")
+        assert body["sync_in_flight"] is True
+        svc.get_library_sync_run.assert_called_once()
+        assert svc.get_library_sync_run.call_args[0][1] == "bk-lib"
         albums = body["albums"]
+        assert albums[0]["spotify_added_at"].startswith("2026-10-01T09:30")
+        assert albums[1]["spotify_added_at"] is None
         assert [a["album_id"] for a in albums] == ["alb-1", "alb-2"]
         assert albums[0]["source"] == "myblog_added"
         assert albums[0]["state"] == "synced"
@@ -160,6 +168,7 @@ class TestSpotifyLibraryState:
     def test_empty_no_bucket_yet(self, client, app):
         svc = MagicMock()
         svc.get_spotify_library_state.return_value = (None, None, [])
+        svc.get_library_sync_run.return_value = None
         _override(app, svc)
 
         with self._patch_conn(_conn_status(connected=False)):
@@ -177,6 +186,7 @@ class TestSpotifyLibraryState:
         # writes_enabled is the read-only mirror of the backend setting.
         assert body["writes_enabled"] is True
         assert body["albums"] == []
+        assert body["sync_in_flight"] is False and body["sync_finished_at"] is None
         app.dependency_overrides.clear()
 
     def test_state_requires_jwt_in_prod(self, client):
