@@ -109,6 +109,12 @@ pip install uv==0.12.7          # 정확히 이 버전 (스크립트가 검사�
 
 - `requirements.txt`를 고쳤으면 위를 실행하고 lock을 **같은 커밋에** 담아라. 안 하면
   CI의 `Check dependency lock`이 red가 된다.
+- 클론마다 한 번 `git config core.hooksPath scripts/githooks`를 실행해 두면, 커밋 시점에
+  `scripts/githooks/pre-commit`이 **스테이징된** lock 헤더의 `# requirements.txt sha256:`과
+  스테이징된 `requirements.txt`의 해시를 비교해 다르면 커밋을 거부한다(오프라인, uv·venv
+  불필요). 재컴파일만 하고 `git add requirements.lock`을 빠뜨린 경우도 잡는다. 손으로 고친
+  pin이나 `EXCLUDE_NEWER` 이동은 해시로 못 잡으므로 전체 검사는 여전히 CI 몫이다. 이 설정은
+  그 클론의 모든 worktree에 적용되지만, 훅 파일이 없는 옛 브랜치에서는 아무 일도 하지 않는다.
 - **lock을 손으로 고치지 마라.** 검증은 처음부터 다시 풀어서 대조하므로, 새로 푼 결과가
   내놓지 않는 pin은 그대로 거부된다.
 - 패키지를 올리는 유일한 방법은 `scripts/compile_requirements.sh`의 `EXCLUDE_NEWER`

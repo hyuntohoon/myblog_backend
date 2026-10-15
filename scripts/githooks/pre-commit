@@ -1,0 +1,52 @@
+#!/bin/sh
+# Offline lock-drift check (OPS-ci-cd-optimization Step 1).
+#
+# requirements.lock records the sha256 of the requirements.txt it was compiled
+# from (the "# requirements.txt sha256:" line written by
+# scripts/compile_requirements.sh). When either file is staged, compare that
+# line in the STAGED lock with the hash of the STAGED requirements.txt and
+# refuse the commit on mismatch. Reading the index (not the working tree) also
+# refuses a lock that was recompiled but never `git add`-ed.
+#
+# Deliberately offline: no uv, no venv, no network. The full recompile
+# (scripts/check_requirements_lock.sh) stays in CI, where it also catches what
+# a hash cannot -- a hand-edited pin or a moved index freeze.
+#
+# Enable once per clone (applies to every worktree of it):
+#   git config core.hooksPath scripts/githooks
+#
+# This file is byte-identical in myblog_backend, myblog_music and myblog_worker.
+
+set -eu
+
+staged="$(git diff --cached --name-only --diff-filter=ACMRD -- requirements.txt requirements.lock)"
+[ -n "$staged" ] || exit 0
+
+fix='./scripts/compile_requirements.sh && git add requirements.lock'
+
+refuse() {
+  echo "pre-commit: $1" >&2
+  echo "pre-commit: fix with:  $fix" >&2
+  exit 1
+}
+
+git cat-file -e :requirements.txt 2>/dev/null || exit 0  # no requirements.txt staged at all: nothing to pin
+git cat-file -e :requirements.lock 2>/dev/null || refuse "requirements.lock is not in the index (requirements.txt is)."
+
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(git cat-file blob :requirements.txt | sha256sum | cut -d' ' -f1)"
+elif command -v shasum >/dev/null 2>&1; then
+  actual="$(git cat-file blob :requirements.txt | shasum -a 256 | cut -d' ' -f1)"
+else
+  # Not a gate: CI's check_requirements_lock.sh is. Say so instead of blocking.
+  echo "pre-commit: no sha256sum/shasum on PATH -- lock-drift check skipped; CI will run the full check." >&2
+  exit 0
+fi
+
+recorded="$(git cat-file blob :requirements.lock | sed -n 's/^# requirements\.txt sha256: *\([0-9a-f]\{64\}\) *$/\1/p' | head -n 1)"
+[ -n "$recorded" ] || refuse "staged requirements.lock has no '# requirements.txt sha256:' line."
+
+if [ "$recorded" != "$actual" ]; then
+  refuse "staged requirements.lock was compiled from a different requirements.txt (lock records ${recorded}, staged requirements.txt is ${actual})."
+fi
+exit 0
