@@ -131,7 +131,7 @@ from app.api.routes import integrations
 from app.api.routes import todays_pick
 from app.api.routes import tracked_artists
 from app.api.routes import release_feed
-from app.api.routes import admin_automation
+from app.api.routes import admin_automation, admin_lyrics
 from app.db.session import get_db
 
 app.include_router(sections.router,   prefix="/api/sections",      tags=["sections"])
@@ -160,6 +160,11 @@ app.include_router(
     admin_automation.router,
     prefix="/api/admin/automation",
     tags=["admin-automation"],
+)
+app.include_router(
+    admin_lyrics.router,
+    prefix="/api/admin/lyrics",
+    tags=["admin-lyrics"],
 )
 
 

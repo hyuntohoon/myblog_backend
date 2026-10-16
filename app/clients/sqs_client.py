@@ -11,6 +11,13 @@
 #                                     — member album-demand bootstrap right after a
 #                                       Spotify connect (FEAT-lyrics-listening-
 #                                       experience Step 4)
+#   {"job": "lyrics_reassessment", "track_id": ..., "cooldown_sec": 0}
+#                                     — one track's lyrics re-check; stores the owner
+#                                       panel's candidate set (FEAT-lyrics-match-
+#                                       correction Step 3a)
+#   {"job": "lyrics_pick", "track_id": ..., "lrclib_id": ..., "actor": ...}
+#                                     — the owner's panel pick; the worker re-fetches
+#                                       the LRCLIB body by id and writes it locked
 #   {"album_ids": [...]}              — catalog album-sync for the 분석 버킷 분류하기
 #                                       (worker _process_batch → AlbumSyncService +
 #                                       S1 genre mapping)
@@ -32,6 +39,29 @@ logger = logging.getLogger(__name__)
 _ALBUM_SYNC_CHUNK = 20
 
 
+# Every outbound request has an explicit timeout (CLAUDE.md). boto3's defaults are 60 s
+# connect + 60 s read with retries, which a user-facing request must not sit through.
+_SQS_CONNECT_TIMEOUT_SEC = 3
+_SQS_READ_TIMEOUT_SEC = 5
+_SQS_MAX_ATTEMPTS = 2
+
+
+def _sqs():
+    import boto3
+    from botocore.config import Config
+
+    return boto3.client(
+        "sqs",
+        region_name=settings.AWS_DEFAULT_REGION,
+        endpoint_url=(settings.LOCALSTACK_ENDPOINT or None),
+        config=Config(
+            connect_timeout=_SQS_CONNECT_TIMEOUT_SEC,
+            read_timeout=_SQS_READ_TIMEOUT_SEC,
+            retries={"max_attempts": _SQS_MAX_ATTEMPTS, "mode": "standard"},
+        ),
+    )
+
+
 class SqsClient:
     def __init__(self, queue_url: str | None = None) -> None:
         self.queue_url = queue_url if queue_url is not None else settings.SQS_QUEUE_URL
@@ -43,13 +73,7 @@ class SqsClient:
         if not self.queue_url:
             logger.info("SQS_QUEUE_URL unset; listening refresh not enqueued (local/dev)")
             return False
-        import boto3
-
-        sqs = boto3.client(
-            "sqs",
-            region_name=settings.AWS_DEFAULT_REGION,
-            endpoint_url=(settings.LOCALSTACK_ENDPOINT or None),
-        )
+        sqs = _sqs()
         sqs.send_message(
             QueueUrl=self.queue_url,
             MessageBody=json.dumps({"job": "spotify_refresh"}),
@@ -66,13 +90,7 @@ class SqsClient:
         if not self.queue_url:
             logger.info("SQS_QUEUE_URL unset; library sync not enqueued (local/dev)")
             return False
-        import boto3
-
-        sqs = boto3.client(
-            "sqs",
-            region_name=settings.AWS_DEFAULT_REGION,
-            endpoint_url=(settings.LOCALSTACK_ENDPOINT or None),
-        )
+        sqs = _sqs()
         sqs.send_message(
             QueueUrl=self.queue_url,
             MessageBody=json.dumps({"job": "spotify_library_sync"}),
@@ -91,13 +109,7 @@ class SqsClient:
         if not self.queue_url:
             logger.info("SQS_QUEUE_URL unset; follow import not enqueued (local/dev)")
             return False
-        import boto3
-
-        sqs = boto3.client(
-            "sqs",
-            region_name=settings.AWS_DEFAULT_REGION,
-            endpoint_url=(settings.LOCALSTACK_ENDPOINT or None),
-        )
+        sqs = _sqs()
         sqs.send_message(
             QueueUrl=self.queue_url,
             MessageBody=json.dumps({"job": "spotify_follow_import", "user_id": user_id}),
@@ -121,13 +133,7 @@ class SqsClient:
                 "SQS_QUEUE_URL unset; member demand bootstrap not enqueued (local/dev)"
             )
             return False
-        import boto3
-
-        sqs = boto3.client(
-            "sqs",
-            region_name=settings.AWS_DEFAULT_REGION,
-            endpoint_url=(settings.LOCALSTACK_ENDPOINT or None),
-        )
+        sqs = _sqs()
         sqs.send_message(
             QueueUrl=self.queue_url,
             MessageBody=json.dumps(
@@ -136,6 +142,35 @@ class SqsClient:
         )
         logger.info("enqueued member demand bootstrap job")
         return True
+
+    def _send_job(self, body: dict, what: str) -> bool:
+        if not self.queue_url:
+            logger.info("SQS_QUEUE_URL unset; %s not enqueued (local/dev)", what)
+            return False
+        sqs = _sqs()
+        sqs.send_message(QueueUrl=self.queue_url, MessageBody=json.dumps(body))
+        logger.info("enqueued %s", what)
+        return True
+
+    def send_lyrics_recheck(self, track_id: str) -> bool:
+        """Enqueue one track's lyrics re-check (the worker's ``lyrics_reassessment`` with
+        ``track_id``). ``cooldown_sec: 0`` because the owner asked for it now; the worker
+        stores the candidate set it judged for the panel. LRCLIB is called by the worker
+        only (rule #9 spirit). Returns False (and logs) when no queue is configured."""
+        return self._send_job(
+            {"job": "lyrics_reassessment", "track_id": track_id, "cooldown_sec": 0},
+            "lyrics re-check",
+        )
+
+    def send_lyrics_pick(self, track_id: str, lrclib_id: int, actor: str) -> bool:
+        """Enqueue the owner's candidate-panel pick ({"job": "lyrics_pick", ...}). The
+        worker re-fetches the body from LRCLIB by id and writes it locked. ``actor`` is the
+        owner's verified ``sub``, recorded in the row's evidence. Returns False (and logs)
+        when no queue is configured."""
+        return self._send_job(
+            {"job": "lyrics_pick", "track_id": track_id, "lrclib_id": int(lrclib_id), "actor": actor},
+            "lyrics pick",
+        )
 
     def send_album_sync(self, album_sids) -> int:
         """Enqueue catalog album-sync jobs ({"album_ids": [...]}); the worker consumes
@@ -151,13 +186,7 @@ class SqsClient:
         if not self.queue_url:
             logger.info("SQS_QUEUE_URL unset; album sync not enqueued (local/dev)")
             return 0
-        import boto3
-
-        sqs = boto3.client(
-            "sqs",
-            region_name=settings.AWS_DEFAULT_REGION,
-            endpoint_url=(settings.LOCALSTACK_ENDPOINT or None),
-        )
+        sqs = _sqs()
         for i in range(0, len(sids), _ALBUM_SYNC_CHUNK):
             sqs.send_message(
                 QueueUrl=self.queue_url,
@@ -215,7 +244,17 @@ def get_spotify_connection_status() -> SpotifyConnectionStatus:
         import boto3
 
         # SSM Parameter Store only (CHORE-secrets-ssm-migration).
-        ssm = boto3.client("ssm", region_name=settings.AWS_DEFAULT_REGION)
+        from botocore.config import Config
+
+        ssm = boto3.client(
+            "ssm",
+            region_name=settings.AWS_DEFAULT_REGION,
+            config=Config(
+                connect_timeout=_SQS_CONNECT_TIMEOUT_SEC,
+                read_timeout=_SQS_READ_TIMEOUT_SEC,
+                retries={"max_attempts": _SQS_MAX_ATTEMPTS, "mode": "standard"},
+            ),
+        )
         payload = json.loads(ssm.get_parameter(Name=param, WithDecryption=True)["Parameter"]["Value"])
         status = SpotifyConnectionStatus(
             connected=bool(payload.get("refresh_token") or payload.get("SPOTIFY_REFRESH_TOKEN")),
