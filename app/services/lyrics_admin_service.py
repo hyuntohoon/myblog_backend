@@ -224,7 +224,11 @@ class LyricsAdminService:
         track = self._track(db, spotify_track_id)
         track_id = str(track.id)
         db.rollback()  # end the read before the send
-        return self.sqs.send_lyrics_recheck(track_id)
+        try:
+            return self.sqs.send_lyrics_recheck(track_id)
+        except Exception as error:  # noqa: BLE001 - any send failure is "queue unavailable"
+            logger.error("Lyrics panel: refresh not enqueued for %s (%s)", track_id, type(error).__name__)
+            raise LyricsAdminQueueUnavailable() from error
 
     # ── decisions ───────────────────────────────────────────────────────────────────
 
@@ -262,7 +266,12 @@ class LyricsAdminService:
             raise LyricsAdminConflict("rejected")
         if in_set is None:
             raise LyricsAdminConflict("not_a_candidate")
-        if not self.sqs.send_lyrics_pick(str(track_id), lrclib_id, actor):
+        try:
+            sent = self.sqs.send_lyrics_pick(str(track_id), lrclib_id, actor)
+        except Exception as error:  # noqa: BLE001 - any send failure is "queue unavailable"
+            logger.error("Lyrics panel: pick not enqueued for %s (%s)", track_id, type(error).__name__)
+            raise LyricsAdminQueueUnavailable() from error
+        if not sent:
             raise LyricsAdminQueueUnavailable()
         return AdminLyricsDecisionResult(action="pick", outcome="enqueued", current=current)
 

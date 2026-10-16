@@ -147,6 +147,32 @@ class TestRoutes:
         assert kw["actor"] == "owner"  # ENV=local single-owner sentinel
 
 
+class TestQueueErrors:
+    def test_refresh_send_failure_is_503(self, client, svc):
+        svc.refresh.side_effect = LyricsAdminQueueUnavailable()
+        assert client.post(f"{BASE}/candidates/refresh").status_code == 503
+
+    @pytest.mark.parametrize("method", ["refresh", "pick"])
+    def test_a_boto_error_becomes_queue_unavailable(self, method):
+        from unittest.mock import MagicMock as MM
+        from botocore.exceptions import EndpointConnectionError
+
+        sqs = MM()
+        sqs.send_lyrics_recheck.side_effect = sqs.send_lyrics_pick.side_effect = \
+            EndpointConnectionError(endpoint_url="https://sqs")
+        svc = LyricsAdminService(sqs)
+        db = MM()
+        track = MM(id="tid")
+        db.query.return_value.filter.return_value.one_or_none.return_value = track
+        db.query.return_value.filter.return_value.with_for_update.return_value.one_or_none.return_value = None
+        db.query.return_value.filter.return_value.first.side_effect = [(5,), None]  # in set, not rejected
+        with pytest.raises(LyricsAdminQueueUnavailable):
+            if method == "refresh":
+                svc.refresh(db, spotify_track_id=SID)
+            else:
+                svc.decide(db, spotify_track_id=SID, action="pick", lrclib_id=5, actor="o")
+
+
 class TestSqsMessages:
     def _client(self):
         from app.clients.sqs_client import SqsClient
@@ -168,6 +194,17 @@ class TestSqsMessages:
             {"job": "lyrics_reassessment", "track_id": "tid", "cooldown_sec": 0},
             {"job": "lyrics_pick", "track_id": "tid", "lrclib_id": 42, "actor": "owner-sub"},
         ]
+
+    def test_every_sqs_client_has_explicit_timeouts(self):
+        from app.clients import sqs_client
+
+        with patch("boto3.client") as boto:
+            sqs_client._sqs()
+        cfg = boto.call_args.kwargs["config"]
+        assert (cfg.connect_timeout, cfg.read_timeout) == (3, 5)
+        import inspect
+        src = inspect.getsource(sqs_client)
+        assert src.count('boto3.client(') == 2  # _sqs and the SSM read, both with config=
 
     def test_no_queue_sends_nothing(self):
         from app.clients.sqs_client import SqsClient

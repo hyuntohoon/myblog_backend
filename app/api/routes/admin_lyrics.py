@@ -66,7 +66,10 @@ def get_lyrics_candidates(
     "/{spotify_track_id}/candidates/refresh",
     response_model=AdminLyricsRefreshResult,
     status_code=202,
-    responses={404: {"description": "Unknown spotify track id"}},
+    responses={
+        404: {"description": "Unknown spotify track id"},
+        503: {"description": "Queue unavailable; nothing was enqueued"},
+    },
 )
 def refresh_lyrics_candidates(
     spotify_track_id: str,
@@ -80,6 +83,8 @@ def refresh_lyrics_candidates(
         return AdminLyricsRefreshResult(enqueued=svc.refresh(db, spotify_track_id=spotify_track_id))
     except LyricsAdminTrackNotFound:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    except LyricsAdminQueueUnavailable:
+        raise HTTPException(status_code=503, detail="Queue unavailable; refresh again")
 
 
 @router.post(

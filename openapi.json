@@ -7881,6 +7881,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Queue unavailable; nothing was enqueued"
           }
         },
         "security": [
