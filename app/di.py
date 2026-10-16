@@ -41,6 +41,12 @@ def get_lyrics_service() -> LyricsService:
     return LyricsService()
 
 
+def get_lyrics_admin_service():
+    from app.services.lyrics_admin_service import LyricsAdminService
+
+    return LyricsAdminService()
+
+
 def get_research_service() -> ResearchService:
     return ResearchService()
 

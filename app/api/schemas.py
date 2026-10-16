@@ -1248,6 +1248,90 @@ class LyricsResponse(BaseModel):
     annotations: List[LyricsAnnotation] = Field(default_factory=list)
 
 
+# ====== Lyrics candidate panel (FEAT-lyrics-match-correction Step 3a, owner-only) ======
+
+class AdminLyricsCurrent(BaseModel):
+    """What the track serves now, and whether the owner's lock is on it."""
+    # None when the track has never been evaluated (no track_lyrics row).
+    match_status: Optional[Literal["matched", "no_lyrics", "not_found", "ambiguous", "review_required"]] = None
+    match_basis: Optional[str] = None
+    lrclib_id: Optional[int] = None
+    matcher_version: Optional[str] = None
+    # "manual" = a panel decision (basis 'manual'); "manual_fix" = a pre-panel hand fix.
+    lock: Optional[Literal["manual", "manual_fix"]] = None
+    # Why an unresolved row is parked (evidence.reason), e.g. "owner_rejected".
+    reason: Optional[str] = None
+    updated_at: Optional[datetime] = None
+
+
+class AdminLyricsCandidate(BaseModel):
+    """One LRCLIB candidate as the last explicit re-check judged it. Metadata and a short
+    preview only — never the lyric body."""
+    lrclib_id: int
+    title: str
+    artist: str
+    album: Optional[str] = None
+    duration_sec: Optional[float] = None
+    has_synced: bool
+    has_plain: bool
+    instrumental: bool
+    preview: Optional[str] = None
+    # Same-stance plausible candidates sharing this body, itself included; None when it
+    # took no part in the vote (failed a metadata gate, or rejected).
+    cluster_size: Optional[int] = None
+    # Why it won or lost under the matcher that judged it: picked | same_body | outvoted |
+    # version_mismatch | fuzzy_title | no_body | undecided | artist_mismatch |
+    # title_mismatch | duration_mismatch | rejected. Open set: new verdicts may appear.
+    verdict: str
+    # Read-time facts, not part of the stored judgement.
+    rejected: bool
+    current: bool
+
+
+class AdminLyricsCandidates(BaseModel):
+    spotify_track_id: str
+    track_title: str
+    track_artists: List[str] = Field(default_factory=list)
+    duration_sec: Optional[float] = None
+    current: AdminLyricsCurrent
+    candidates: List[AdminLyricsCandidate] = Field(default_factory=list)
+    # When the stored set was fetched; None = nothing stored yet (refresh fills it).
+    fetched_at: Optional[datetime] = None
+    matcher_version: Optional[str] = None
+    # True when nothing is stored, the set is over a week old, or the lyric the track
+    # serves now is not in it — the panel then offers a refresh before a decision.
+    stale: bool
+    # Every id rejected for this track, including ones the stored set no longer holds.
+    rejected_lrclib_ids: List[int] = Field(default_factory=list)
+
+
+class AdminLyricsRefreshResult(BaseModel):
+    # False only when no queue is configured (local/dev): nothing was sent.
+    enqueued: bool
+
+
+class AdminLyricsDecisionRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    action: Literal["pick", "no_lyrics", "reject", "unlock"]
+    # Required for pick and reject, ignored otherwise.
+    lrclib_id: Optional[int] = Field(default=None, ge=1, le=2**63 - 1)
+
+    @model_validator(mode="after")
+    def _id_for_candidate_actions(self):
+        if self.action in ("pick", "reject") and self.lrclib_id is None:
+            raise ValueError("lrclib_id is required for pick and reject")
+        return self
+
+
+class AdminLyricsDecisionResult(BaseModel):
+    action: Literal["pick", "no_lyrics", "reject", "unlock"]
+    # applied = written now; enqueued = the worker writes it (pick); no_change = nothing to do.
+    outcome: Literal["applied", "enqueued", "no_change"]
+    # Whether a worker re-check was sent (reject of the served lyric, unlock).
+    recheck_enqueued: bool = False
+    current: AdminLyricsCurrent
+
+
 # ====== Me (FEAT-multi-user-accounts Phase 0 / 0d) ======
 
 class MeResponse(BaseModel):

@@ -275,15 +275,28 @@ class TestLyricsPrivacyGate:
         # lyric positions — same authenticated-only bar (member-legitimate since
         # 2026-08-09, never public), so it joins the inventory and therefore the leak
         # check below.
+        # FEAT-lyrics-match-correction Step 3a: the owner's candidate panel. Its schemas
+        # carry lyric previews, so they may appear ONLY under the owner-only
+        # /api/admin/lyrics/ paths (require_owner + their own JWT routes).
+        admin_schemas = {
+            "AdminLyricsCandidate", "AdminLyricsCandidates", "AdminLyricsCurrent",
+            "AdminLyricsDecisionRequest", "AdminLyricsDecisionResult", "AdminLyricsRefreshResult",
+        }
         assert lyric_schemas == {
             "LyricsAnnotation", "LyricsResponse", "LyricsSegment", "LyricsTranslationInfo",
-        }
+        } | admin_schemas
 
         import json
         for path, ops in spec["paths"].items():
-            if path.startswith("/api/lyrics/"):
-                continue
             blob = json.dumps(ops)
+            if path.startswith("/api/admin/lyrics/"):
+                for name in lyric_schemas - admin_schemas:
+                    assert f"schemas/{name}" not in blob, f"{path} references {name}"
+                continue
+            if path.startswith("/api/lyrics/"):
+                for name in admin_schemas:
+                    assert f"schemas/{name}" not in blob, f"{path} references {name}"
+                continue
             for name in lyric_schemas:
                 assert f"schemas/{name}" not in blob, f"{path} references {name}"
 

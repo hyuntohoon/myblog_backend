@@ -213,6 +213,366 @@
         "title": "AddTrackedArtistsResponse",
         "type": "object"
       },
+      "AdminLyricsCandidate": {
+        "description": "One LRCLIB candidate as the last explicit re-check judged it. Metadata and a short\npreview only \u2014 never the lyric body.",
+        "properties": {
+          "album": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Album"
+          },
+          "artist": {
+            "title": "Artist",
+            "type": "string"
+          },
+          "cluster_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cluster Size"
+          },
+          "current": {
+            "title": "Current",
+            "type": "boolean"
+          },
+          "duration_sec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Sec"
+          },
+          "has_plain": {
+            "title": "Has Plain",
+            "type": "boolean"
+          },
+          "has_synced": {
+            "title": "Has Synced",
+            "type": "boolean"
+          },
+          "instrumental": {
+            "title": "Instrumental",
+            "type": "boolean"
+          },
+          "lrclib_id": {
+            "title": "Lrclib Id",
+            "type": "integer"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview"
+          },
+          "rejected": {
+            "title": "Rejected",
+            "type": "boolean"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "verdict": {
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lrclib_id",
+          "title",
+          "artist",
+          "has_synced",
+          "has_plain",
+          "instrumental",
+          "verdict",
+          "rejected",
+          "current"
+        ],
+        "title": "AdminLyricsCandidate",
+        "type": "object"
+      },
+      "AdminLyricsCandidates": {
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/AdminLyricsCandidate"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "current": {
+            "$ref": "#/components/schemas/AdminLyricsCurrent"
+          },
+          "duration_sec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Sec"
+          },
+          "fetched_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fetched At"
+          },
+          "matcher_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matcher Version"
+          },
+          "rejected_lrclib_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Rejected Lrclib Ids",
+            "type": "array"
+          },
+          "spotify_track_id": {
+            "title": "Spotify Track Id",
+            "type": "string"
+          },
+          "stale": {
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "track_artists": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Track Artists",
+            "type": "array"
+          },
+          "track_title": {
+            "title": "Track Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "spotify_track_id",
+          "track_title",
+          "current",
+          "stale"
+        ],
+        "title": "AdminLyricsCandidates",
+        "type": "object"
+      },
+      "AdminLyricsCurrent": {
+        "description": "What the track serves now, and whether the owner's lock is on it.",
+        "properties": {
+          "lock": {
+            "anyOf": [
+              {
+                "enum": [
+                  "manual",
+                  "manual_fix"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lock"
+          },
+          "lrclib_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lrclib Id"
+          },
+          "match_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Match Basis"
+          },
+          "match_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "matched",
+                  "no_lyrics",
+                  "not_found",
+                  "ambiguous",
+                  "review_required"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Match Status"
+          },
+          "matcher_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matcher Version"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "title": "AdminLyricsCurrent",
+        "type": "object"
+      },
+      "AdminLyricsDecisionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "pick",
+              "no_lyrics",
+              "reject",
+              "unlock"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "lrclib_id": {
+            "anyOf": [
+              {
+                "maximum": 9.223372036854776e+18,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lrclib Id"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "AdminLyricsDecisionRequest",
+        "type": "object"
+      },
+      "AdminLyricsDecisionResult": {
+        "properties": {
+          "action": {
+            "enum": [
+              "pick",
+              "no_lyrics",
+              "reject",
+              "unlock"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "current": {
+            "$ref": "#/components/schemas/AdminLyricsCurrent"
+          },
+          "outcome": {
+            "enum": [
+              "applied",
+              "enqueued",
+              "no_change"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "recheck_enqueued": {
+            "default": false,
+            "title": "Recheck Enqueued",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action",
+          "outcome",
+          "current"
+        ],
+        "title": "AdminLyricsDecisionResult",
+        "type": "object"
+      },
+      "AdminLyricsRefreshResult": {
+        "properties": {
+          "enqueued": {
+            "title": "Enqueued",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enqueued"
+        ],
+        "title": "AdminLyricsRefreshResult",
+        "type": "object"
+      },
       "AlbumBestNewResponse": {
         "properties": {
           "album_id": {
@@ -7432,6 +7792,172 @@
         "summary": "Post Automation Run",
         "tags": [
           "admin-automation"
+        ]
+      }
+    },
+    "/api/admin/lyrics/{spotify_track_id}/candidates": {
+      "get": {
+        "description": "The stored candidate set with each candidate's verdict, what the track serves now and\nits lock. Opening it starts nothing; `stale` says when a refresh is due.",
+        "operationId": "get_lyrics_candidates_api_admin_lyrics__spotify_track_id__candidates_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "spotify_track_id",
+            "required": true,
+            "schema": {
+              "title": "Spotify Track Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLyricsCandidates"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Lyrics Candidates",
+        "tags": [
+          "admin-lyrics"
+        ]
+      }
+    },
+    "/api/admin/lyrics/{spotify_track_id}/candidates/refresh": {
+      "post": {
+        "description": "Enqueue one re-check of this track now. The worker searches LRCLIB, re-judges the\ntrack under the running matcher (a locked row is never rewritten) and stores the set.",
+        "operationId": "refresh_lyrics_candidates_api_admin_lyrics__spotify_track_id__candidates_refresh_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "spotify_track_id",
+            "required": true,
+            "schema": {
+              "title": "Spotify Track Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLyricsRefreshResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Unknown spotify track id"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Refresh Lyrics Candidates",
+        "tags": [
+          "admin-lyrics"
+        ]
+      }
+    },
+    "/api/admin/lyrics/{spotify_track_id}/decision": {
+      "post": {
+        "description": "Apply the owner's decision. `pick` is enqueued (the worker re-fetches the body and\nwrites it locked); `no_lyrics` locks the track as having none; `reject` records a\ncandidate as never-again for this track and takes it down if it is the one served;\n`unlock` hands the track back to the automatic jobs. Every decision is idempotent to\nresend.",
+        "operationId": "post_lyrics_decision_api_admin_lyrics__spotify_track_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "spotify_track_id",
+            "required": true,
+            "schema": {
+              "title": "Spotify Track Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminLyricsDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLyricsDecisionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Unknown spotify track id"
+          },
+          "409": {
+            "description": "pick: not in the stored candidate set, or rejected for this track"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "Database or queue unavailable; the decision may be resent"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Post Lyrics Decision",
+        "tags": [
+          "admin-lyrics"
         ]
       }
     },

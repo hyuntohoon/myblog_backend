@@ -50,6 +50,9 @@ OWNER_ONLY = [
     'app.api.routes.admin_automation:get_automation_snapshot',       # GET /api/admin/automation
     'app.api.routes.admin_automation:post_automation_control',       # POST /api/admin/automation/controls
     'app.api.routes.admin_automation:post_automation_run',           # POST /api/admin/automation/runs
+    'app.api.routes.admin_lyrics:get_lyrics_candidates',             # GET /api/admin/lyrics/{spotify_track_id}/candidates
+    'app.api.routes.admin_lyrics:post_lyrics_decision',              # POST /api/admin/lyrics/{spotify_track_id}/decision
+    'app.api.routes.admin_lyrics:refresh_lyrics_candidates',         # POST /api/admin/lyrics/{spotify_track_id}/candidates/refresh
     'app.api.routes.buckets:spotify_library_state',                  # GET /api/buckets/spotify-library/state
     'app.api.routes.buckets:spotify_library_sync',                   # POST /api/buckets/spotify-library/sync
     'app.api.routes.genres:create_genre',                            # POST /api/genres

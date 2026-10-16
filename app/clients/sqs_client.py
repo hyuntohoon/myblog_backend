@@ -11,6 +11,13 @@
 #                                     — member album-demand bootstrap right after a
 #                                       Spotify connect (FEAT-lyrics-listening-
 #                                       experience Step 4)
+#   {"job": "lyrics_reassessment", "track_id": ..., "cooldown_sec": 0}
+#                                     — one track's lyrics re-check; stores the owner
+#                                       panel's candidate set (FEAT-lyrics-match-
+#                                       correction Step 3a)
+#   {"job": "lyrics_pick", "track_id": ..., "lrclib_id": ..., "actor": ...}
+#                                     — the owner's panel pick; the worker re-fetches
+#                                       the LRCLIB body by id and writes it locked
 #   {"album_ids": [...]}              — catalog album-sync for the 분석 버킷 분류하기
 #                                       (worker _process_batch → AlbumSyncService +
 #                                       S1 genre mapping)
@@ -136,6 +143,41 @@ class SqsClient:
         )
         logger.info("enqueued member demand bootstrap job")
         return True
+
+    def _send_job(self, body: dict, what: str) -> bool:
+        if not self.queue_url:
+            logger.info("SQS_QUEUE_URL unset; %s not enqueued (local/dev)", what)
+            return False
+        import boto3
+
+        sqs = boto3.client(
+            "sqs",
+            region_name=settings.AWS_DEFAULT_REGION,
+            endpoint_url=(settings.LOCALSTACK_ENDPOINT or None),
+        )
+        sqs.send_message(QueueUrl=self.queue_url, MessageBody=json.dumps(body))
+        logger.info("enqueued %s", what)
+        return True
+
+    def send_lyrics_recheck(self, track_id: str) -> bool:
+        """Enqueue one track's lyrics re-check (the worker's ``lyrics_reassessment`` with
+        ``track_id``). ``cooldown_sec: 0`` because the owner asked for it now; the worker
+        stores the candidate set it judged for the panel. LRCLIB is called by the worker
+        only (rule #9 spirit). Returns False (and logs) when no queue is configured."""
+        return self._send_job(
+            {"job": "lyrics_reassessment", "track_id": track_id, "cooldown_sec": 0},
+            "lyrics re-check",
+        )
+
+    def send_lyrics_pick(self, track_id: str, lrclib_id: int, actor: str) -> bool:
+        """Enqueue the owner's candidate-panel pick ({"job": "lyrics_pick", ...}). The
+        worker re-fetches the body from LRCLIB by id and writes it locked. ``actor`` is the
+        owner's verified ``sub``, recorded in the row's evidence. Returns False (and logs)
+        when no queue is configured."""
+        return self._send_job(
+            {"job": "lyrics_pick", "track_id": track_id, "lrclib_id": int(lrclib_id), "actor": actor},
+            "lyrics pick",
+        )
 
     def send_album_sync(self, album_sids) -> int:
         """Enqueue catalog album-sync jobs ({"album_ids": [...]}); the worker consumes
