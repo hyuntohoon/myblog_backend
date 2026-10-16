@@ -1670,6 +1670,36 @@ class AutomationControlState(BaseModel):
     confirmation_overdue: bool = False
 
 
+class AutomationRunView(BaseModel):
+    # FEAT-automation-admin 3c: one owner run-now, as the audit row records it.
+    # outcome (the backend's): requested = recorded, invoke not yet answered (or the
+    # backend died before it was); invoked = Lambda accepted the async invoke;
+    # invoke_failed = it did not — final for this request_id, and no cooldown.
+    # The rest is the worker's: started_at / finished_at / run_outcome (ok = the
+    # handler returned, error = it raised and Lambda's async retries apply,
+    # skipped_paused = the job was paused when the run began).
+    request_id: UUID
+    outcome: Literal["requested", "invoked", "invoke_failed"]
+    requested_at: datetime
+    invoked_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    run_outcome: Optional[Literal["ok", "error", "skipped_paused"]] = None
+
+
+class AutomationRunState(BaseModel):
+    # unknown = the DB read failed: `last` and `cooldown_until` are then null and
+    # mean nothing — never "no run yet".
+    status: Literal["ok", "unknown"]
+    last: Optional[AutomationRunView] = None
+    # The job cannot be run again before this instant (null = it can run now).
+    cooldown_until: Optional[datetime] = None
+    # The last run started, never finished, and one cooldown has passed since: a
+    # Lambda timeout kills the process before it can stamp an end. Read it as
+    # "result unknown", never as "running".
+    stalled: bool = False
+
+
 class AutomationJob(BaseModel):
     key: str
     group: Literal["aws_schedule", "aws_scheduler", "aws_queue_message", "local_agent", "other_scheduler"]
@@ -1689,6 +1719,40 @@ class AutomationJob(BaseModel):
     stale_after_seconds: Optional[int] = None
     liveness: AutomationLiveness
     control: Optional[AutomationControlState] = None
+    # Step 3c: present exactly when `controls` include "run".
+    run: Optional[AutomationRunState] = None
+
+
+class AutomationRunRequest(BaseModel):
+    # FEAT-automation-admin 3c. `request_id` is minted once per confirmation by the
+    # client: a resend replays the stored row and never invokes again.
+    model_config = {"extra": "forbid"}
+    job_key: str = Field(min_length=1, max_length=64)
+    request_id: UUID
+
+
+class AutomationRunResult(BaseModel):
+    request_id: UUID
+    job_key: str
+    outcome: Literal["requested", "invoked", "invoke_failed"]
+    # True when this request_id had already been processed: nothing was invoked
+    # again; `run` is the stored row as it reads now (the worker may have stamped it).
+    replayed: bool
+    run: AutomationRunState
+
+
+class AutomationRunRejection(BaseModel):
+    # The 409 body's `detail`. job_paused: resume first (the 3b interaction).
+    # cooldown: retry after `cooldown_until`. request_id_conflict: the id was used
+    # for another job or action — mint a new one.
+    code: Literal["job_paused", "cooldown", "request_id_conflict"]
+    cooldown_until: Optional[datetime] = None
+    retry_after_seconds: Optional[int] = None
+
+
+class AutomationRunRejectionBody(BaseModel):
+    # The 409 response body of POST /api/admin/automation/runs.
+    detail: AutomationRunRejection
 
 
 class AutomationControlRequest(BaseModel):

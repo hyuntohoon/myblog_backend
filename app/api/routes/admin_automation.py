@@ -6,15 +6,21 @@
 #   - GET /api/admin/automation/queue-detail?key=  owner (require_owner, in-Lambda) — 2f
 #   - POST /api/admin/automation/controls          owner (JWT route in infra/apigateway.tf
 #                                                   + require_owner in-Lambda) — 3b
+#   - POST /api/admin/automation/runs              owner (JWT route in infra/apigateway.tf
+#                                                   + require_owner in-Lambda) — 3c
 #
 # It rides the edge_guard GET catch-all with no infra/apigateway.tf route, as
 # GET /api/todays-pick/queue does: through CloudFront a missing token is 401
 # from the Cognito guard and a non-owner token is 403; on the raw API Gateway
 # host edge_guard answers 403. Fail-closed either way.
 #
-# The GETs ride the catch-all; the 3b mutation does not (there is no POST
-# catch-all), so it has its own Cognito-JWT route — the 2b route decision's
+# The GETs ride the catch-all; the 3b and 3c mutations do not (there is no POST
+# catch-all), so each has its own Cognito-JWT route — the 2b route decision's
 # "revisit when Step 3 adds controls" trigger.
+#
+# 3c's run-now is the one route here that starts work: an async invoke of
+# blogWorkerLambda with a cron's own constant input (never caller input), made
+# after its DB transaction has closed.
 #
 # Opening this starts nothing: one read-only DB transaction, then (snapshot
 # only, after the session closes) read-only AWS describes/metrics (2d) — no
@@ -26,17 +32,22 @@ import logging
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.schemas import (
     AutomationControlRequest,
     AutomationControlResult,
     AutomationQueueDetail,
+    AutomationRunRejection,
+    AutomationRunRejectionBody,
+    AutomationRunRequest,
+    AutomationRunResult,
     AutomationSnapshot,
 )
 from app.core.authz import require_owner, resolve_owner
 from app.di import get_automation_service
-from app.services.automation_service import AutomationService, ControlConflict
+from app.services.automation_service import AutomationService, ControlConflict, RunRejected
 
 logger = logging.getLogger(__name__)
 
@@ -105,4 +116,56 @@ def post_automation_control(
         raise HTTPException(status_code=503, detail="Control unavailable; resend with the same request_id")
     if result is None:
         raise HTTPException(status_code=404, detail="Unknown control")
+    return result
+
+
+def _rejection(rejection: AutomationRunRejection, headers: Dict[str, str] | None = None) -> JSONResponse:
+    return JSONResponse(
+        status_code=409, content={"detail": rejection.model_dump(mode="json")}, headers=headers,
+    )
+
+
+@router.post(
+    "/runs",
+    response_model=AutomationRunResult,
+    responses={
+        403: {"description": "Not the owner (answered before any body handling)"},
+        404: {"description": "Unknown job: it has no run control"},
+        409: {
+            "model": AutomationRunRejectionBody,
+            "description": "job_paused, cooldown (with Retry-After), or request_id_conflict",
+        },
+        503: {"description": "Database unavailable; resend with the SAME request_id"},
+    },
+)
+def post_automation_run(
+    body: AutomationRunRequest,
+    claims: Dict = Depends(require_owner),
+    svc: AutomationService = Depends(get_automation_service),
+):
+    """Start one run of a worker cron now (FEAT-automation-admin 3c).
+
+    An async invoke of blogWorkerLambda with the cron's own input; the request never
+    waits on the run. A resent `request_id` replays the stored row and never invokes
+    again. A failed invoke is a 200 with outcome `invoke_failed`: final for that id,
+    and it starts no cooldown. Audited in `automation_control_events`; the worker
+    stamps the row's start and end.
+    """
+    try:
+        result = svc.run(body.job_key, body.request_id, resolve_owner(claims))
+    except RunRejected as rejected:
+        headers = {"Retry-After": str(rejected.retry_after_seconds)} if rejected.retry_after_seconds else None
+        return _rejection(AutomationRunRejection(
+            code=rejected.code, cooldown_until=rejected.cooldown_until,
+            retry_after_seconds=rejected.retry_after_seconds,
+        ), headers)
+    except ControlConflict:
+        return _rejection(AutomationRunRejection(code="request_id_conflict"))
+    except SQLAlchemyError as error:
+        logger.error("automation run: DB write failed (%s)", type(error).__name__)
+        # The claim may have committed and the invoke may have happened; resending
+        # the same request_id replays whatever was stored and never invokes twice.
+        raise HTTPException(status_code=503, detail="Run unavailable; resend with the same request_id")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Unknown job")
     return result
