@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Dict, Literal, Optional, Tuple
 
-from myblog_shared_db.automation import PAUSABLE_JOB_KEYS
+from myblog_shared_db.automation import PAUSABLE_JOB_KEYS, RUNNABLE_JOB_KEYS
 
 CATALOG_AS_OF = date(2026, 10, 15)
 
@@ -223,6 +223,28 @@ CONTROLS_SQL = """
     FROM automation_controls ORDER BY job_key
 """
 
+# Step 3c: the owner's run-now. The function is the only one the backend role may
+# invoke (infra/iam_roles.tf), and the cooldown is per job, flat (owner, 2026-10-16):
+# one 120 s worker run plus Lambda's async retries fit inside it.
+RUN_FUNCTION_NAME = "blogWorkerLambda"
+RUN_COOLDOWN_SECONDS = 10 * 60
+
+# A run row starts its job's cooldown when the invoke was accepted (or may have
+# been: `requested` is a crash between commit and invoke) or the worker started it.
+# A failed invoke the worker never saw does not.
+def run_counts_for_cooldown(alias: str = "") -> str:
+    p = f"{alias}." if alias else ""
+    return f"({p}outcome <> 'invoke_failed' OR {p}started_at IS NOT NULL)"
+
+RUNS_SQL = f"""
+    SELECT DISTINCT ON (job_key)
+           job_key, request_id, outcome, created_at, invoked_at, started_at, finished_at, run_outcome,
+           max(created_at) FILTER (WHERE {run_counts_for_cooldown()}) OVER (PARTITION BY job_key)
+    FROM automation_control_events
+    WHERE action = 'run'
+    ORDER BY job_key, created_at DESC
+"""
+
 HEARTBEATS_SQL = """
     SELECT agent_key, observed_at, enabled, last_outcome, details
     FROM automation_heartbeats ORDER BY agent_key
@@ -257,8 +279,14 @@ class JobDef:
     interval_seconds: Optional[int] = None  # EventBridge rows: the nominal schedule gap
     stale_after_seconds: Optional[int] = None
     # Step 3b: "pause" exactly on myblog_shared_db.automation.PAUSABLE_JOB_KEYS — the
-    # keys the worker and the GPT worker honour. Derived, never listed by hand.
+    # keys the worker and the GPT worker honour. Step 3c: "run" exactly on
+    # RUNNABLE_JOB_KEYS — the worker crons whose invoke payload the shared map holds.
+    # Derived, never listed by hand.
     controls: Tuple[str, ...] = field(default=())
+
+
+def _controls(key: str) -> Tuple[str, ...]:
+    return tuple(c for c, keys in (("pause", PAUSABLE_JOB_KEYS), ("run", RUNNABLE_JOB_KEYS)) if key in keys)
 
 
 def _cron(key: str, name: str, purpose: str, rule: str, schedule: str, interval_seconds: int, *, state: DeclaredState = "active", drains=(), queue_keys=(), note=None, executor="blogWorkerLambda"):
@@ -281,7 +309,7 @@ def _cron(key: str, name: str, purpose: str, rule: str, schedule: str, interval_
         drains=tuple(drains),
         queue_keys=tuple(queue_keys),
         note=note,
-        controls=("pause",) if key in PAUSABLE_JOB_KEYS else (),
+        controls=_controls(key),
     )
 
 
@@ -318,7 +346,7 @@ def _agent(key: str, name: str, purpose: str, schedule: str, interval_seconds: i
         note=note,
         heartbeat_key=key,
         stale_after_seconds=stale_after(interval_seconds),
-        controls=("pause",) if key in PAUSABLE_JOB_KEYS else (),
+        controls=_controls(key),
     )
 
 

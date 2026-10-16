@@ -63,10 +63,12 @@ def get_automation_service() -> AutomationService:
 
     from app.core.config import settings
     from app.services.automation_aws import build_reader
+    from app.services.automation_invoke import build_invoker
 
     return AutomationService(
         SessionLocal,
         aws_reader=build_reader(settings.AWS_DEFAULT_REGION, settings.SQS_QUEUE_URL),
+        invoker=build_invoker(settings.ENV, settings.AWS_DEFAULT_REGION),
     )
 
 

@@ -1316,6 +1316,16 @@
             "title": "Queue Keys",
             "type": "array"
           },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutomationRunState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "stale_after_seconds": {
             "anyOf": [
               {
@@ -1709,6 +1719,245 @@
           "count"
         ],
         "title": "AutomationReasonCount",
+        "type": "object"
+      },
+      "AutomationRunRejection": {
+        "properties": {
+          "code": {
+            "enum": [
+              "job_paused",
+              "cooldown",
+              "request_id_conflict"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "cooldown_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cooldown Until"
+          },
+          "retry_after_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry After Seconds"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "AutomationRunRejection",
+        "type": "object"
+      },
+      "AutomationRunRejectionBody": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/AutomationRunRejection"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "AutomationRunRejectionBody",
+        "type": "object"
+      },
+      "AutomationRunRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "job_key": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Job Key",
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_key",
+          "request_id"
+        ],
+        "title": "AutomationRunRequest",
+        "type": "object"
+      },
+      "AutomationRunResult": {
+        "properties": {
+          "job_key": {
+            "title": "Job Key",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "requested",
+              "invoked",
+              "invoke_failed"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "replayed": {
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "run": {
+            "$ref": "#/components/schemas/AutomationRunState"
+          }
+        },
+        "required": [
+          "request_id",
+          "job_key",
+          "outcome",
+          "replayed",
+          "run"
+        ],
+        "title": "AutomationRunResult",
+        "type": "object"
+      },
+      "AutomationRunState": {
+        "properties": {
+          "cooldown_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cooldown Until"
+          },
+          "last": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutomationRunView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stalled": {
+            "default": false,
+            "title": "Stalled",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "AutomationRunState",
+        "type": "object"
+      },
+      "AutomationRunView": {
+        "properties": {
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "invoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invoked At"
+          },
+          "outcome": {
+            "enum": [
+              "requested",
+              "invoked",
+              "invoke_failed"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "run_outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ok",
+                  "error",
+                  "skipped_paused"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Outcome"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          }
+        },
+        "required": [
+          "request_id",
+          "outcome",
+          "requested_at"
+        ],
+        "title": "AutomationRunView",
         "type": "object"
       },
       "AutomationSnapshot": {
@@ -7115,6 +7364,72 @@
           }
         ],
         "summary": "Get Automation Queue Detail",
+        "tags": [
+          "admin-automation"
+        ]
+      }
+    },
+    "/api/admin/automation/runs": {
+      "post": {
+        "description": "Start one run of a worker cron now (FEAT-automation-admin 3c).\n\nAn async invoke of blogWorkerLambda with the cron's own input; the request never\nwaits on the run. A resent `request_id` replays the stored row and never invokes\nagain. A failed invoke is a 200 with outcome `invoke_failed`: final for that id,\nand it starts no cooldown. Audited in `automation_control_events`; the worker\nstamps the row's start and end.",
+        "operationId": "post_automation_run_api_admin_automation_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomationRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationRunResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "Not the owner (answered before any body handling)"
+          },
+          "404": {
+            "description": "Unknown job: it has no run control"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationRunRejectionBody"
+                }
+              }
+            },
+            "description": "job_paused, cooldown (with Retry-After), or request_id_conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "Database unavailable; resend with the SAME request_id"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Post Automation Run",
         "tags": [
           "admin-automation"
         ]

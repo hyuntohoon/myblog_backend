@@ -7,10 +7,13 @@ Three sources, each with its own `observed_at`:
 * local-agent heartbeats (`automation_heartbeats`, V59) — liveness by age;
 * the AWS adapter (`automation_aws`, 2d) — EventBridge rule state and delivery
   metrics, queue depth, Lambda errors, alarm state;
-* owner pause flags (`automation_controls`, V60, Step 3b) — read with the rest.
+* owner pause flags (`automation_controls`, V60, Step 3b) — read with the rest;
+* owner run-now rows (`automation_control_events`, V62, Step 3c) — likewise.
 
-The one write path is `AutomationService.control` (3b): pause/resume, audited and
-idempotent by a client-minted `request_id`.
+The write paths are `AutomationService.control` (3b: pause/resume) and
+`AutomationService.run` (3c: run now), both audited and idempotent by a
+client-minted `request_id`. `run` is also the one place an external call is made
+on a request: an async Lambda invoke, with no DB session open across it.
 
 Anything without fresh evidence renders unknown: a missing source must never
 read as healthy or as an empty queue.
@@ -23,8 +26,9 @@ Nothing external ever runs while a session is open.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Tuple
 
 from sqlalchemy import text
@@ -46,12 +50,16 @@ from app.api.schemas import (
     AutomationQueueDetail,
     AutomationQueueFlow,
     AutomationReasonCount,
+    AutomationRunResult,
+    AutomationRunState,
+    AutomationRunView,
     AutomationSnapshot,
     AutomationSource,
     AutomationWaitingItem,
 )
 from app.services import automation_catalog as catalog
 from app.services.automation_aws import AwsRead
+from app.services.automation_invoke import Invoker
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +89,25 @@ class ControlRow:
 
 
 @dataclass(frozen=True)
+class RunRow:
+    """The job's latest run-now row, and the start of its cooldown (3c)."""
+    request_id: Any
+    outcome: str
+    requested_at: datetime
+    invoked_at: Optional[datetime]
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+    run_outcome: Optional[str]
+    cooldown_from: Optional[datetime]
+
+
+@dataclass(frozen=True)
 class DbRead:
     observed_at: datetime  # the DB's now(), so heartbeat age needs no Lambda clock
     queues: Dict[str, QueueRead]  # QueueDef.key / translation_queue_key(version)
     heartbeats: List[HeartbeatRow]
     controls: Dict[str, ControlRow] = field(default_factory=dict)
+    runs: Dict[str, RunRow] = field(default_factory=dict)
 
 
 def _fold(rows: Iterable[Tuple[Any, ...]]) -> QueueRead:
@@ -133,7 +155,8 @@ def read_db_state(db: Session) -> DbRead:
         r[0]: ControlRow(paused=bool(r[1]), changed_at=r[2], honored_at=r[3])
         for r in db.execute(text(catalog.CONTROLS_SQL)).all()
     }
-    return DbRead(observed_at=observed_at, queues=queues, heartbeats=heartbeats, controls=controls)
+    runs = {r[0]: RunRow(*r[1:]) for r in db.execute(text(catalog.RUNS_SQL)).all()}
+    return DbRead(observed_at=observed_at, queues=queues, heartbeats=heartbeats, controls=controls, runs=runs)
 
 
 def control_state(job: catalog.JobDef, row: Optional[ControlRow], now: datetime, *, read_ok: bool = True) -> AutomationControlState:
@@ -150,6 +173,28 @@ def control_state(job: catalog.JobDef, row: Optional[ControlRow], now: datetime,
     return AutomationControlState(
         paused=row.paused, changed_at=row.changed_at, honored_at=row.honored_at,
         confirmed=confirmed, confirmation_overdue=overdue,
+    )
+
+
+def run_state(row: Optional[RunRow], now: datetime, *, read_ok: bool = True) -> AutomationRunState:
+    """A job's run-now state (3c). No row = never run from the page. A failed read is
+    unknown, never "can run now"."""
+    if not read_ok:
+        return AutomationRunState(status="unknown")
+    if row is None:
+        return AutomationRunState(status="ok")
+    cooldown = timedelta(seconds=catalog.RUN_COOLDOWN_SECONDS)
+    until = row.cooldown_from + cooldown if row.cooldown_from is not None else None
+    stalled = row.started_at is not None and row.finished_at is None and now - row.started_at > cooldown
+    return AutomationRunState(
+        status="ok",
+        last=AutomationRunView(
+            request_id=row.request_id, outcome=row.outcome, requested_at=row.requested_at,
+            invoked_at=row.invoked_at, started_at=row.started_at, finished_at=row.finished_at,
+            run_outcome=row.run_outcome,
+        ),
+        cooldown_until=until if until is not None and until > now else None,
+        stalled=stalled,
     )
 
 
@@ -393,6 +438,10 @@ def assemble(db_read: Optional[DbRead], *, fallback_now: datetime, aws: Optional
                 control_state(j, db_read.controls.get(j.key) if db_read else None, now, read_ok=db_read is not None)
                 if "pause" in j.controls else None
             ),
+            run=(
+                run_state(db_read.runs.get(j.key) if db_read else None, now, read_ok=db_read is not None)
+                if "run" in j.controls else None
+            ),
         )
         for j in catalog.JOBS
     ]
@@ -531,11 +580,15 @@ class AutomationService:
         self,
         session_factory: Callable[[], Session],
         aws_reader: Optional[Callable[[], AwsRead]] = None,
+        invoker: Optional[Invoker] = None,
     ):
         self._session_factory = session_factory
         # None = AWS not wired (tests, or a deployment without a reader): every
         # AWS row stays unknown. The reader itself never raises.
         self._aws_reader = aws_reader
+        # None = run-now not wired: every run records invoke_failed. The invoker
+        # itself never raises (automation_invoke).
+        self._invoker = invoker
 
     def snapshot(self) -> AutomationSnapshot:
         db_read: Optional[DbRead] = None
@@ -567,6 +620,31 @@ class AutomationService:
             " (replay)" if result.replayed else "",
         )
         return result
+
+    def run(self, job_key: str, request_id: Any, actor: str) -> Optional[AutomationRunResult]:
+        """Run one worker cron now (3c). None when the key has no run control (the
+        route's 404). Raises RunRejected (409: paused / cooldown), ControlConflict
+        (409: request_id reused), or lets a DB error propagate (503).
+
+        Shape: claim in one short write transaction → close it → invoke → record the
+        answer in a fresh short write. Never a session open across the invoke."""
+        job = _runnable(job_key)
+        if job is None:
+            return None
+        with self._session_factory() as db:
+            replay = _claim_run(db, job, request_id, actor)
+        if replay is not None:
+            logger.info("automation run: %s → %s (replay)", job.key, replay.outcome)
+            return replay
+        accepted = self._invoker(job.key, request_id) if self._invoker is not None else False
+        outcome = "invoked" if accepted else "invoke_failed"
+        with self._session_factory() as db:
+            row, now = _record_invoke(db, request_id, outcome)
+        logger.info("automation run: %s → %s", job.key, row.outcome)
+        return AutomationRunResult(
+            request_id=request_id, job_key=job.key, outcome=row.outcome, replayed=False,
+            run=run_state(row, now),
+        )
 
     def queue_detail(self, key: str) -> Optional[AutomationQueueDetail]:
         """None when `key` is not a queue the snapshot can show (the route's 404)."""
@@ -650,3 +728,116 @@ def _apply_control(db: Session, job: catalog.JobDef, action: str, request_id: An
         request_id=request_id, job_key=job.key, action=action, outcome=outcome, replayed=False,
         control=control_state(job, row, now),
     )
+
+
+# ── owner run now (3c) ──────────────────────────────────────────────────────────
+
+
+class RunRejected(Exception):
+    """The job may not run now: `code` is job_paused or cooldown."""
+
+    def __init__(self, code: str, cooldown_until: Optional[datetime] = None, retry_after_seconds: Optional[int] = None):
+        super().__init__(code)
+        self.code = code
+        self.cooldown_until = cooldown_until
+        self.retry_after_seconds = retry_after_seconds
+
+
+def _runnable(key: str) -> Optional[catalog.JobDef]:
+    return next((j for j in catalog.JOBS if j.key == key and "run" in j.controls), None)
+
+
+_RUN_COLUMNS = "request_id, outcome, created_at, invoked_at, started_at, finished_at, run_outcome"
+
+_STORED_EVENT = text(
+    f"SELECT job_key, action, {_RUN_COLUMNS} FROM automation_control_events WHERE request_id = :rid"
+)
+_COOLDOWN_FROM = text(
+    "SELECT max(created_at), clock_timestamp() FROM automation_control_events "
+    f"WHERE job_key = :key AND action = 'run' AND {catalog.run_counts_for_cooldown()}"
+)
+_RECORD_RUN = text(
+    "INSERT INTO automation_control_events (request_id, job_key, action, outcome, actor_sub, created_at) "
+    "VALUES (:rid, :key, 'run', 'requested', :actor, clock_timestamp()) "
+    "ON CONFLICT (request_id) DO NOTHING RETURNING request_id"
+)
+# Guarded by outcome = 'requested': the answer is written once, and never over a row
+# some other writer has already moved on.
+_RECORD_INVOKE = text(
+    "UPDATE automation_control_events SET outcome = CAST(:outcome AS text), "
+    "invoked_at = CASE WHEN CAST(:outcome AS text) = 'invoked' THEN clock_timestamp() END "
+    "WHERE request_id = :rid AND action = 'run' AND outcome = 'requested'"
+)
+_READ_RUN = text(
+    f"SELECT {_RUN_COLUMNS}, "
+    "(SELECT max(created_at) FROM automation_control_events c "
+    f" WHERE c.job_key = e.job_key AND c.action = 'run' AND {catalog.run_counts_for_cooldown('c')}), "
+    "clock_timestamp() "
+    "FROM automation_control_events e WHERE request_id = :rid"
+)
+
+
+def _read_run(db: Session, request_id: Any) -> Tuple[RunRow, datetime]:
+    r = db.execute(_READ_RUN, {"rid": request_id}).one()
+    return RunRow(*r[:8]), r[8]
+
+
+def _claim_run(db: Session, job: catalog.JobDef, request_id: Any, actor: str) -> Optional[AutomationRunResult]:
+    """One short write transaction, taking 3b's locks in 3b's order (control row, then
+    the event key). Returns the replayed result for a known request_id, None once a
+    new `requested` row is committed; raises RunRejected / ControlConflict."""
+    db.execute(text("SET TRANSACTION READ WRITE"))  # a pooler session can leak read-only
+    db.execute(text("SET LOCAL lock_timeout = '5s'"))
+    db.execute(text("SET LOCAL statement_timeout = '5s'"))
+    # Serialises every run-now (and pause/resume) of this job behind one row lock, so
+    # two confirmations with different ids cannot both pass the cooldown check.
+    paused, *_ = db.execute(_LOCK_CONTROL, {"key": job.key}).one()
+
+    def replay_or_conflict() -> Optional[AutomationRunResult]:
+        stored = db.execute(_STORED_EVENT, {"rid": request_id}).first()
+        if stored is None:
+            return None
+        if stored[0] != job.key or stored[1] != "run":
+            db.rollback()
+            raise ControlConflict()
+        row, now = _read_run(db, request_id)
+        db.rollback()  # drops the control row this request may have created on first use
+        return AutomationRunResult(
+            request_id=request_id, job_key=job.key, outcome=row.outcome, replayed=True,
+            run=run_state(row, now),
+        )
+
+    # A known id replays before any gate: its answer must not change because the job
+    # was paused, or its cooldown started, after it was first processed.
+    replay = replay_or_conflict()
+    if replay is not None:
+        return replay
+    if paused:
+        db.rollback()
+        raise RunRejected("job_paused")
+    cooldown_from, now = db.execute(_COOLDOWN_FROM, {"key": job.key}).one()
+    if cooldown_from is not None:
+        until = cooldown_from + timedelta(seconds=catalog.RUN_COOLDOWN_SECONDS)
+        if now < until:
+            db.rollback()
+            raise RunRejected("cooldown", until, max(1, math.ceil((until - now).total_seconds())))
+    recorded = db.execute(_RECORD_RUN, {"rid": request_id, "key": job.key, "actor": actor}).first()
+    if recorded is None:
+        # The id was taken by a concurrent request for ANOTHER job (same-job requests
+        # wait on the control row lock above, and would have replayed).
+        replay = replay_or_conflict()
+        if replay is not None:
+            return replay
+        raise RuntimeError("request_id vanished between INSERT and SELECT")  # pragma: no cover
+    db.commit()
+    return None
+
+
+def _record_invoke(db: Session, request_id: Any, outcome: str) -> Tuple[RunRow, datetime]:
+    db.execute(text("SET TRANSACTION READ WRITE"))
+    db.execute(text("SET LOCAL lock_timeout = '5s'"))
+    db.execute(text("SET LOCAL statement_timeout = '5s'"))
+    db.execute(_RECORD_INVOKE, {"rid": request_id, "outcome": outcome})
+    row, now = _read_run(db, request_id)
+    db.commit()
+    return row, now
