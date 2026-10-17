@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     # member in a rolling 24-hour window. Existing edges skipped by the bulk
     # upsert do not consume the cap.
     TRACKED_ARTIST_DAILY_CAP: int = 500
+    # FEAT-lyrics-match-correction Step 3b (OQ1, owner 2026-10-16): lyrics reports
+    # ("가사가 틀려요") a member may create per rolling 24h. Every report in the
+    # window counts, resolved ones too; a repeat on a track already open costs nothing.
+    LYRICS_REPORT_DAILY_CAP: int = 20
 
     # DATA-catalog-noise-and-lyrics-coverage Step 2: read-side classical-compilation
     # filter tunables for GET /api/me/release-feed (app/services/compilation_filter.py).

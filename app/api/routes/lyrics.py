@@ -24,16 +24,25 @@ server-side to the catalog track — one round trip, no separate resolve endpoin
 rule #9-safe: a direct catalog DB read, never a synchronous Spotify call.
 """
 import logging
+import uuid
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.schemas import LyricsResponse, LyricsTranslationInfo
+from app.api.routes.me import provisioned_member_id
+from app.api.schemas import LyricsReportResult, LyricsResponse, LyricsTranslationInfo
 from app.core.auth import require_cognito_token
 from app.core.authz import require_owner
+from app.core.config import get_settings
 from app.db.session import get_db
-from app.di import get_lyrics_service
+from app.di import get_lyrics_report_service, get_lyrics_service
+from app.services.lyrics_report_service import (
+    LyricsReportNotReportable,
+    LyricsReportRateLimited,
+    LyricsReportService,
+    LyricsReportTrackNotFound,
+)
 from app.services.lyrics_service import (
     LyricsNotTranslatableError,
     LyricsService,
@@ -84,3 +93,39 @@ def request_lyrics_translation(
         raise HTTPException(status_code=404, detail="No track with that spotify id")
     except LyricsNotTranslatableError:
         raise HTTPException(status_code=409, detail="Track has no translatable lyrics")
+
+
+@router.post(
+    "/{spotify_track_id}/report",
+    response_model=LyricsReportResult,
+    responses={
+        404: {"description": "Unknown spotify track id"},
+        409: {"description": "The track shows neither lyrics nor a no-lyrics verdict"},
+        429: {"description": "Daily report limit reached"},
+    },
+)
+def report_lyrics(
+    spotify_track_id: str,
+    member_id: uuid.UUID = Depends(provisioned_member_id),
+    svc: LyricsReportService = Depends(get_lyrics_report_service),
+    db: Session = Depends(get_db),
+):
+    """"가사가 틀려요" — any signed-in member (FEAT-lyrics-match-correction Step 3b).
+
+    Records the report and puts the track on the owner's queue; the first open report on a
+    track also enqueues a worker re-check. Never changes the lyrics. Resending while the
+    member's report is open is `already_reported` and costs nothing. Own explicit JWT route
+    in infra/apigateway.tf like the GET — it 404s at the edge until that route is applied.
+    """
+    try:
+        result = svc.report(
+            db, spotify_track_id=spotify_track_id, member_id=member_id,
+            daily_cap=get_settings().LYRICS_REPORT_DAILY_CAP,
+        )
+    except LyricsReportTrackNotFound:
+        raise HTTPException(status_code=404, detail="No track with that spotify id")
+    except LyricsReportNotReportable:
+        raise HTTPException(status_code=409, detail="not_reportable")
+    except LyricsReportRateLimited:
+        raise HTTPException(status_code=429, detail="Daily lyrics report limit reached — try again later")
+    return LyricsReportResult(outcome=result.outcome)

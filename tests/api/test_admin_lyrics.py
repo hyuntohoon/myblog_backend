@@ -71,6 +71,7 @@ class TestOwnerGate:
         ("post", f"{BASE}/candidates/refresh", None),
         ("post", f"{BASE}/decision", {"action": "pick", "lrclib_id": 1}),
         ("post", f"{BASE}/decision", {"action": "nonsense"}),  # 403 before 422
+        ("post", f"{BASE}/decision", {"action": "keep"}),
     ])
     def test_member_is_403_and_nothing_runs(self, client, app, svc, method, path, body):
         _as(app, "some-member")
@@ -137,7 +138,7 @@ class TestRoutes:
         svc.decide.assert_not_called()
 
     @pytest.mark.parametrize("body", [
-        {"action": "no_lyrics"}, {"action": "unlock"},
+        {"action": "no_lyrics"}, {"action": "unlock"}, {"action": "keep"},
         {"action": "pick", "lrclib_id": 34738767}, {"action": "reject", "lrclib_id": 8996695},
     ])
     def test_each_action_reaches_the_service(self, client, svc, body):
@@ -189,9 +190,11 @@ class TestSqsMessages:
         c, fake, sent = self._client()
         with patch("boto3.client", return_value=fake):
             assert c.send_lyrics_recheck("tid") is True
+            assert c.send_lyrics_recheck("tid", cooldown_sec=3600) is True
             assert c.send_lyrics_pick("tid", "42", "owner-sub") is True
         assert [json.loads(b) for b in sent] == [
             {"job": "lyrics_reassessment", "track_id": "tid", "cooldown_sec": 0},
+            {"job": "lyrics_reassessment", "track_id": "tid", "cooldown_sec": 3600},
             {"job": "lyrics_pick", "track_id": "tid", "lrclib_id": 42, "actor": "owner-sub"},
         ]
 
@@ -212,3 +215,57 @@ class TestSqsMessages:
         with patch("boto3.client") as boto:
             assert SqsClient(queue_url="").send_lyrics_pick("tid", 1, "s") is False
         boto.assert_not_called()
+
+
+class TestReportQueue:
+    @pytest.fixture
+    def rsvc(self, app):
+        from app.api.schemas import AdminLyricsReports
+        from app.db.session import get_db
+        from app.di import get_lyrics_report_service
+        from app.services.lyrics_report_service import LyricsReportService
+
+        s = MagicMock(spec=LyricsReportService)
+        s.queue.return_value = AdminLyricsReports(items=[], total_tracks=0, truncated=False)
+        app.dependency_overrides[get_lyrics_report_service] = lambda: s
+        app.dependency_overrides[get_db] = lambda: MagicMock()
+        yield s
+        app.dependency_overrides.clear()
+
+    def test_owner_reads_the_queue(self, client, rsvc):
+        resp = client.get("/api/admin/lyrics/reports")
+        assert (resp.status_code, resp.json()) == (200, {"items": [], "total_tracks": 0, "truncated": False})
+
+    def test_member_is_403_and_nothing_runs(self, client, app, rsvc):
+        _as(app, "some-member")
+        with _prod():
+            assert client.get("/api/admin/lyrics/reports").status_code == 403
+        assert not rsvc.method_calls
+
+    def test_missing_token_is_401(self, client, rsvc):
+        with _prod():
+            assert client.get("/api/admin/lyrics/reports").status_code == 401
+        assert not rsvc.method_calls
+
+
+class TestKeepDispatch:
+    """`keep` must reach its own branch: the dispatch's old default was unlock, which would
+    drop the owner's lock on a "what it serves is right"."""
+
+    def test_keep_never_reaches_unlock(self):
+        svc = LyricsAdminService(sqs=MagicMock())
+        db = MagicMock()
+        with patch.object(svc, "_track", return_value=SimpleNamespace(id="tid")), \
+                patch.object(svc, "_unlock") as unlock, \
+                patch.object(svc, "_keep", return_value="kept") as keep:
+            assert svc.decide(db, spotify_track_id=SID, action="keep", lrclib_id=None, actor="o") == "kept"
+        keep.assert_called_once()
+        unlock.assert_not_called()
+
+    def test_unknown_action_is_refused_not_unlocked(self):
+        svc = LyricsAdminService(sqs=MagicMock())
+        with patch.object(svc, "_track", return_value=SimpleNamespace(id="tid")), \
+                patch.object(svc, "_unlock") as unlock:
+            with pytest.raises(ValueError):
+                svc.decide(MagicMock(), spotify_track_id=SID, action="bogus", lrclib_id=None, actor="o")
+        unlock.assert_not_called()

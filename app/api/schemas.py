@@ -1312,7 +1312,9 @@ class AdminLyricsRefreshResult(BaseModel):
 
 class AdminLyricsDecisionRequest(BaseModel):
     model_config = {"extra": "forbid"}
-    action: Literal["pick", "no_lyrics", "reject", "unlock"]
+    # keep (3b) = "what it serves is right": closes the track's open reports, changes
+    # nothing else (no lock).
+    action: Literal["pick", "no_lyrics", "reject", "unlock", "keep"]
     # Required for pick and reject, ignored otherwise.
     lrclib_id: Optional[int] = Field(default=None, ge=1, le=2**63 - 1)
 
@@ -1324,12 +1326,53 @@ class AdminLyricsDecisionRequest(BaseModel):
 
 
 class AdminLyricsDecisionResult(BaseModel):
-    action: Literal["pick", "no_lyrics", "reject", "unlock"]
+    action: Literal["pick", "no_lyrics", "reject", "unlock", "keep"]
     # applied = written now; enqueued = the worker writes it (pick); no_change = nothing to do.
     outcome: Literal["applied", "enqueued", "no_change"]
     # Whether a worker re-check was sent (reject of the served lyric, unlock).
     recheck_enqueued: bool = False
+    # Open member/system reports this decision closed (3b): keep, no_lyrics, pick, and a
+    # reject of the served lyric close them; unlock and other rejects do not.
+    reports_resolved: int = 0
     current: AdminLyricsCurrent
+
+
+# ====== Lyrics reports (FEAT-lyrics-match-correction Step 3b) ======
+
+class LyricsReportResult(BaseModel):
+    # reported = recorded now; already_reported = this member already has one open for the
+    # track (nothing recorded, the daily cap untouched).
+    outcome: Literal["reported", "already_reported"]
+
+
+class AdminLyricsReported(BaseModel):
+    # What the latest open report saw being served.
+    match_status: Optional[str] = None
+    lrclib_id: Optional[int] = None
+
+
+class AdminLyricsReport(BaseModel):
+    spotify_track_id: str
+    track_title: str
+    track_artists: List[str] = Field(default_factory=list)
+    report_count: int
+    member_count: int
+    # Step 4 signal names among the open reports; empty for member-only tracks.
+    system_reasons: List[str] = Field(default_factory=list)
+    first_reported_at: datetime
+    last_reported_at: datetime
+    reported: AdminLyricsReported
+    current: AdminLyricsCurrent
+    # auto_resolved = what the track serves changed since the latest report (a re-check
+    # switched it); the owner confirms with a decision. Derived at read, never stored.
+    state: Literal["open", "auto_resolved"]
+
+
+class AdminLyricsReports(BaseModel):
+    items: List[AdminLyricsReport] = Field(default_factory=list)
+    # Tracks with an open report; items holds at most 200 of them.
+    total_tracks: int
+    truncated: bool
 
 
 # ====== Me (FEAT-multi-user-accounts Phase 0 / 0d) ======

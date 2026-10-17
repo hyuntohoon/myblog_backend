@@ -11,7 +11,7 @@
 #                                     — member album-demand bootstrap right after a
 #                                       Spotify connect (FEAT-lyrics-listening-
 #                                       experience Step 4)
-#   {"job": "lyrics_reassessment", "track_id": ..., "cooldown_sec": 0}
+#   {"job": "lyrics_reassessment", "track_id": ..., "cooldown_sec": 0 | 3600}
 #                                     — one track's lyrics re-check; stores the owner
 #                                       panel's candidate set (FEAT-lyrics-match-
 #                                       correction Step 3a)
@@ -152,13 +152,15 @@ class SqsClient:
         logger.info("enqueued %s", what)
         return True
 
-    def send_lyrics_recheck(self, track_id: str) -> bool:
+    def send_lyrics_recheck(self, track_id: str, cooldown_sec: int = 0) -> bool:
         """Enqueue one track's lyrics re-check (the worker's ``lyrics_reassessment`` with
-        ``track_id``). ``cooldown_sec: 0`` because the owner asked for it now; the worker
-        stores the candidate set it judged for the panel. LRCLIB is called by the worker
-        only (rule #9 spirit). Returns False (and logs) when no queue is configured."""
+        ``track_id``). The owner's panel sends ``cooldown_sec: 0`` because the owner asked
+        for it now; a member report (3b) sends a cooldown, so a track re-checked recently
+        is a no-op at the worker. The worker stores the candidate set it judged for the
+        panel. LRCLIB is called by the worker only (rule #9 spirit). Returns False (and
+        logs) when no queue is configured."""
         return self._send_job(
-            {"job": "lyrics_reassessment", "track_id": track_id, "cooldown_sec": 0},
+            {"job": "lyrics_reassessment", "track_id": track_id, "cooldown_sec": int(cooldown_sec)},
             "lyrics re-check",
         )
 
