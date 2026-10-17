@@ -379,31 +379,10 @@ JOBS: Tuple[JobDef, ...] = (
     _cron("youtube_ref_refresh", "YouTube reference refresh", "Refresh YouTube playback references", "worker-youtube-ref-refresh", "cron(10 4 * * ? *)", 86400),
     _cron("backend_warm_ping", "Backend warm ping", "GET /health to keep the backend Lambda warm", "backend-api-warm-ping", "rate(5 min)", 300, executor="ratemymusic-api", note="Keep-warm, not a job."),
     _cron("music_warm_ping", "Music warm ping", "GET /api/music/feed/new-releases to keep the music Lambda warm", "music-api-warm-ping", "rate(5 min)", 300, executor="musicApi", note="Keep-warm, not a job."),
-    # ── F. EventBridge Scheduler (console-made, not in infra/) ─────────────────
-    JobDef(
-        key="scheduler_start_blog_db",
-        group="aws_scheduler",
-        name="StartBlogDB",
-        purpose="Pre-Neon office-hours DB start",
-        trigger="EventBridge Scheduler StartBlogDB · cron(0 9 ? * TUE-FRI *)",
-        timezone="Asia/Seoul",
-        executor="Lambda mydbhandler (deleted)",
-        location="aws",
-        declared_state="obsolete",
-        note="Still fires against a deleted Lambda; retry 0, no DLQ. Deleting it is the owner's call.",
-    ),
-    JobDef(
-        key="scheduler_stop_blog_db",
-        group="aws_scheduler",
-        name="StopBlogDB",
-        purpose="Pre-Neon office-hours DB stop",
-        trigger="EventBridge Scheduler StopBlogDB · cron(0 18 ? * TUE-FRI *)",
-        timezone="Asia/Seoul",
-        executor="Lambda mydbhandler (deleted)",
-        location="aws",
-        declared_state="obsolete",
-        note="Still fires against a deleted Lambda; retry 0, no DLQ. Deleting it is the owner's call.",
-    ),
+    # ── F. EventBridge Scheduler: none. The two console-made schedules (StartBlogDB /
+    # StopBlogDB, the pre-Neon office-hours DB switch firing at the deleted Lambda
+    # mydbhandler) were deleted 2026-10-17 by owner decision
+    # (CHORE-automation-inventory-cleanup). The group stays in the schema.
     # ── B. blogSQS message types ───────────────────────────────────────────────
     _message("sqs_album_sync", "Album sync", "music sync-requests, backend catalog sync, worker fan-out, manual import script"),
     _message("sqs_spotify_refresh", "Spotify refresh", "backend library manual refresh"),

@@ -63,14 +63,14 @@ class TestCatalog:
         assert len(keys) == len(set(keys))
 
     def test_inventory_row_counts_match_rfc_tables(self):
-        # RFC Step 1 tables: A 18 rules, F 2 schedules, B 12 message rows,
-        # C 7 agents (cdp-reaper excluded as dev tooling), E 1 workflow.
+        # RFC Step 1 tables: A 18 rules, B 12 message rows, C 7 agents
+        # (cdp-reaper excluded as dev tooling), E 1 workflow. F's 2 console
+        # schedules were deleted 2026-10-17 (CHORE-automation-inventory-cleanup).
         by_group: dict[str, int] = {}
         for j in catalog.JOBS:
             by_group[j.group] = by_group.get(j.group, 0) + 1
         assert by_group == {
             "aws_schedule": 18,
-            "aws_scheduler": 2,
             "aws_queue_message": 12,
             "local_agent": 7,
             "other_scheduler": 1,
