@@ -278,12 +278,16 @@ class TestLyricsPrivacyGate:
         # FEAT-lyrics-match-correction Step 3a: the owner's candidate panel. Its schemas
         # carry lyric previews, so they may appear ONLY under the owner-only
         # /api/admin/lyrics/ paths (require_owner + their own JWT routes).
+        # Step 3b adds the owner's report queue (same admin-only bar) and the member's
+        # report result, which carries an outcome only and lives under /api/lyrics/.
         admin_schemas = {
             "AdminLyricsCandidate", "AdminLyricsCandidates", "AdminLyricsCurrent",
             "AdminLyricsDecisionRequest", "AdminLyricsDecisionResult", "AdminLyricsRefreshResult",
+            "AdminLyricsReport", "AdminLyricsReported", "AdminLyricsReports",
         }
         assert lyric_schemas == {
-            "LyricsAnnotation", "LyricsResponse", "LyricsSegment", "LyricsTranslationInfo",
+            "LyricsAnnotation", "LyricsReportResult", "LyricsResponse", "LyricsSegment",
+            "LyricsTranslationInfo",
         } | admin_schemas
 
         import json
@@ -350,3 +354,87 @@ class TestGetNormalized:
         db = self._db(("11111111-1111-1111-1111-111111111111", None, None, None))
         LyricsService().get_normalized(db, spotify_track_id=_SPOTIFY_ID)
         assert db.query.call_count == 1
+
+
+class TestReportRoute:
+    """POST /api/lyrics/{id}/report (FEAT-lyrics-match-correction Step 3b): any member, the
+    status mapping, and that the member id is the provisioned one (users row guaranteed)."""
+
+    MEMBER = "6b1c2d3e-0000-4000-8000-000000000001"
+
+    def _run(self, client, app, *, side_effect=None, outcome="reported", sub=MEMBER):
+        import uuid
+
+        from app.api.routes.me import provisioned_member_id
+        from app.di import get_lyrics_report_service
+        from app.services.lyrics_report_service import LyricsReportService, ReportOutcome
+
+        svc = MagicMock(spec=LyricsReportService)
+        svc.report.return_value = ReportOutcome(outcome, recheck_enqueued=True)
+        if side_effect is not None:
+            svc.report.side_effect = side_effect
+        app.dependency_overrides[get_lyrics_report_service] = lambda: svc
+        _override_db(app)
+        app.dependency_overrides[provisioned_member_id] = lambda: uuid.UUID(sub)
+        try:
+            resp = client.post(f"/api/lyrics/{_SPOTIFY_ID}/report")
+        finally:
+            app.dependency_overrides.clear()
+        return resp, svc
+
+    def test_member_reports_and_gets_no_recheck_hint(self, client, app):
+        import uuid
+
+        resp, svc = self._run(client, app)
+        assert (resp.status_code, resp.json()) == (200, {"outcome": "reported"})
+        kw = svc.report.call_args.kwargs
+        assert kw["member_id"] == uuid.UUID(self.MEMBER) and kw["spotify_track_id"] == _SPOTIFY_ID
+        assert kw["daily_cap"] == 20
+
+    def test_already_reported(self, client, app):
+        resp, _ = self._run(client, app, outcome="already_reported")
+        assert resp.json() == {"outcome": "already_reported"}
+
+    def test_error_mapping(self, client, app):
+        from app.services.lyrics_report_service import (
+            LyricsReportNotReportable,
+            LyricsReportRateLimited,
+            LyricsReportTrackNotFound,
+        )
+
+        for exc, status in ((LyricsReportTrackNotFound("x"), 404),
+                            (LyricsReportNotReportable("x"), 409),
+                            (LyricsReportRateLimited("20/20"), 429)):
+            resp, _ = self._run(client, app, side_effect=exc)
+            assert resp.status_code == status, exc
+        resp, _ = self._run(client, app, side_effect=LyricsReportNotReportable("x"))
+        assert resp.json()["detail"] == "not_reportable"
+
+    def test_missing_token_is_401(self, client, app):
+        import app.core.auth as auth_module
+        from app.di import get_lyrics_report_service
+
+        svc = MagicMock()
+        app.dependency_overrides[get_lyrics_report_service] = lambda: svc
+        _override_db(app)
+        from types import SimpleNamespace
+
+        fake = SimpleNamespace(
+            ENV="prod", COGNITO_USER_POOL_ID="ap-northeast-2_TestPool",
+            COGNITO_REGION="ap-northeast-2", COGNITO_ALLOWED_CLIENT_IDS="client-1",
+            OWNER_SUB=_OWNER_SUB,
+        )
+        with patch.object(auth_module, "settings", fake):
+            resp = client.post(f"/api/lyrics/{_SPOTIFY_ID}/report")
+        app.dependency_overrides.clear()
+        assert resp.status_code == 401
+        svc.report.assert_not_called()
+
+
+def test_report_route_is_member_gated_not_owner_gated(app):
+    """The route tests above override provisioned_member_id, so pin the real chain here: a
+    signed-in member (require_cognito_token), never require_owner. A later swap to
+    provisioned_owner_id would turn the member feature off without any other test noticing."""
+    from tests.test_route_guard_map import _live_map
+
+    assert _live_map()["app.api.routes.lyrics:report_lyrics"] == {"require_cognito_token"}

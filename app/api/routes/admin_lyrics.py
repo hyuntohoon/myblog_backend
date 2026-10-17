@@ -11,6 +11,7 @@ route).
   - GET  /api/admin/lyrics/{spotify_track_id}/candidates
   - POST /api/admin/lyrics/{spotify_track_id}/candidates/refresh
   - POST /api/admin/lyrics/{spotify_track_id}/decision
+  - GET  /api/admin/lyrics/reports  (Step 3b: the owner's queue of member reports)
 
 None of them calls LRCLIB: refresh and pick enqueue worker jobs, the other decisions are
 short DB writes committed before any SQS send.
@@ -29,22 +30,36 @@ from app.api.schemas import (
     AdminLyricsDecisionRequest,
     AdminLyricsDecisionResult,
     AdminLyricsRefreshResult,
+    AdminLyricsReports,
 )
 from app.core.authz import require_owner, resolve_owner
 from app.db.session import get_db
-from app.di import get_lyrics_admin_service
+from app.di import get_lyrics_admin_service, get_lyrics_report_service
 from app.services.lyrics_admin_service import (
     LyricsAdminConflict,
     LyricsAdminQueueUnavailable,
     LyricsAdminService,
     LyricsAdminTrackNotFound,
 )
+from app.services.lyrics_report_service import LyricsReportService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 _NOT_FOUND = "No track with that spotify id"
+
+
+@router.get("/reports", response_model=AdminLyricsReports)
+def get_lyrics_reports(
+    _claims: Dict = Depends(require_owner),
+    svc: LyricsReportService = Depends(get_lyrics_report_service),
+    db: Session = Depends(get_db),
+):
+    """Tracks with open lyrics reports, most reported first, each with what was reported
+    and what it serves now. `auto_resolved` = it changed since; a panel decision closes
+    them. Reporter identities are never returned."""
+    return svc.queue(db)
 
 
 @router.get("/{spotify_track_id}/candidates", response_model=AdminLyricsCandidates)

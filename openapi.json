@@ -497,7 +497,8 @@
               "pick",
               "no_lyrics",
               "reject",
-              "unlock"
+              "unlock",
+              "keep"
             ],
             "title": "Action",
             "type": "string"
@@ -529,7 +530,8 @@
               "pick",
               "no_lyrics",
               "reject",
-              "unlock"
+              "unlock",
+              "keep"
             ],
             "title": "Action",
             "type": "string"
@@ -550,6 +552,11 @@
             "default": false,
             "title": "Recheck Enqueued",
             "type": "boolean"
+          },
+          "reports_resolved": {
+            "default": 0,
+            "title": "Reports Resolved",
+            "type": "integer"
           }
         },
         "required": [
@@ -571,6 +578,130 @@
           "enqueued"
         ],
         "title": "AdminLyricsRefreshResult",
+        "type": "object"
+      },
+      "AdminLyricsReport": {
+        "properties": {
+          "current": {
+            "$ref": "#/components/schemas/AdminLyricsCurrent"
+          },
+          "first_reported_at": {
+            "format": "date-time",
+            "title": "First Reported At",
+            "type": "string"
+          },
+          "last_reported_at": {
+            "format": "date-time",
+            "title": "Last Reported At",
+            "type": "string"
+          },
+          "member_count": {
+            "title": "Member Count",
+            "type": "integer"
+          },
+          "report_count": {
+            "title": "Report Count",
+            "type": "integer"
+          },
+          "reported": {
+            "$ref": "#/components/schemas/AdminLyricsReported"
+          },
+          "spotify_track_id": {
+            "title": "Spotify Track Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "auto_resolved"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "system_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "System Reasons",
+            "type": "array"
+          },
+          "track_artists": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Track Artists",
+            "type": "array"
+          },
+          "track_title": {
+            "title": "Track Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "spotify_track_id",
+          "track_title",
+          "report_count",
+          "member_count",
+          "first_reported_at",
+          "last_reported_at",
+          "reported",
+          "current",
+          "state"
+        ],
+        "title": "AdminLyricsReport",
+        "type": "object"
+      },
+      "AdminLyricsReported": {
+        "properties": {
+          "lrclib_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lrclib Id"
+          },
+          "match_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Match Status"
+          }
+        },
+        "title": "AdminLyricsReported",
+        "type": "object"
+      },
+      "AdminLyricsReports": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AdminLyricsReport"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "total_tracks": {
+            "title": "Total Tracks",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "total_tracks",
+          "truncated"
+        ],
+        "title": "AdminLyricsReports",
         "type": "object"
       },
       "AlbumBestNewResponse": {
@@ -3705,6 +3836,23 @@
           "fragment"
         ],
         "title": "LyricsAnnotation",
+        "type": "object"
+      },
+      "LyricsReportResult": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "reported",
+              "already_reported"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "title": "LyricsReportResult",
         "type": "object"
       },
       "LyricsResponse": {
@@ -7795,6 +7943,33 @@
         ]
       }
     },
+    "/api/admin/lyrics/reports": {
+      "get": {
+        "description": "Tracks with open lyrics reports, most reported first, each with what was reported\nand what it serves now. `auto_resolved` = it changed since; a panel decision closes\nthem. Reporter identities are never returned.",
+        "operationId": "get_lyrics_reports_api_admin_lyrics_reports_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLyricsReports"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Lyrics Reports",
+        "tags": [
+          "admin-lyrics"
+        ]
+      }
+    },
     "/api/admin/lyrics/{spotify_track_id}/candidates": {
       "get": {
         "description": "The stored candidate set with each candidate's verdict, what the track serves now and\nits lock. Opening it starts nothing; `stale` says when a refresh is due.",
@@ -10340,6 +10515,63 @@
           }
         ],
         "summary": "Get Lyrics",
+        "tags": [
+          "lyrics"
+        ]
+      }
+    },
+    "/api/lyrics/{spotify_track_id}/report": {
+      "post": {
+        "description": "\"\uac00\uc0ac\uac00 \ud2c0\ub824\uc694\" \u2014 any signed-in member (FEAT-lyrics-match-correction Step 3b).\n\nRecords the report and puts the track on the owner's queue; the first open report on a\ntrack also enqueues a worker re-check. Never changes the lyrics. Resending while the\nmember's report is open is `already_reported` and costs nothing. Own explicit JWT route\nin infra/apigateway.tf like the GET \u2014 it 404s at the edge until that route is applied.",
+        "operationId": "report_lyrics_api_lyrics__spotify_track_id__report_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "spotify_track_id",
+            "required": true,
+            "schema": {
+              "title": "Spotify Track Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LyricsReportResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Unknown spotify track id"
+          },
+          "409": {
+            "description": "The track shows neither lyrics nor a no-lyrics verdict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Daily report limit reached"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Report Lyrics",
         "tags": [
           "lyrics"
         ]

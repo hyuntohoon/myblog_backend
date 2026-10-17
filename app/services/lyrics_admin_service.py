@@ -12,6 +12,12 @@ what the track serves now, and applies the owner's decisions:
 * **pick X** — validated here, written by the worker (``lyrics_pick``), which re-fetches the
   body from LRCLIB by id. A user-facing request never calls LRCLIB.
 * **refresh** — enqueues the worker's single-track re-check, which stores a new set.
+* **keep** (3b) — DB only: "what it serves is right". Closes the track's open reports and
+  changes nothing else; no lock.
+
+Decisions that settle what the track serves close its open reports (3b): keep, no_lyrics and
+a reject of the served lyric in their own transaction; pick after its send succeeds. Unlock
+and a reject of any other candidate leave them open.
 
 Every DB write commits before any SQS send: no transaction is held across an external call.
 The lock keys (``match_basis = 'manual'`` / ``manual_fix``) mirror the worker's
@@ -23,6 +29,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -32,6 +39,7 @@ from myblog_shared_db.models import (
     TrackLyrics,
     TrackLyricsCandidate,
     TrackLyricsRejection,
+    TrackLyricsReport,
     track_artists_table,
 )
 
@@ -137,6 +145,20 @@ def _stamp(action: str, actor: str, row: Optional[TrackLyrics], **extra: Any) ->
         "previous": _previous(row),
         **extra,
     }
+
+
+def resolve_open_reports(db: Session, track_id, resolution: str, actor: str) -> int:
+    """Close the track's open reports with the owner's action, inside the caller's
+    transaction (the caller commits). Returns how many it closed."""
+    result = db.execute(
+        update(TrackLyricsReport)
+        .where(TrackLyricsReport.track_id == track_id, TrackLyricsReport.status == "open")
+        .values(
+            status="resolved", resolution=resolution, resolved_by=actor,
+            resolved_at=datetime.now(timezone.utc),
+        )
+    )
+    return int(result.rowcount or 0)
 
 
 class LyricsAdminService:
@@ -249,7 +271,12 @@ class LyricsAdminService:
             return self._no_lyrics(db, track_id, row, actor)
         if action == "reject":
             return self._reject(db, track_id, row, lrclib_id, actor)
-        return self._unlock(db, track_id, row, actor)
+        if action == "keep":
+            return self._keep(db, track_id, row, actor)
+        if action == "unlock":
+            return self._unlock(db, track_id, row, actor)
+        db.rollback()
+        raise ValueError(f"unknown lyrics decision {action!r}")  # the schema Literal keeps it out
 
     def _pick(self, db, track_id, row, lrclib_id, actor) -> AdminLyricsDecisionResult:
         in_set = db.query(TrackLyricsCandidate.lrclib_id).filter(
@@ -273,7 +300,12 @@ class LyricsAdminService:
             raise LyricsAdminQueueUnavailable() from error
         if not sent:
             raise LyricsAdminQueueUnavailable()
-        return AdminLyricsDecisionResult(action="pick", outcome="enqueued", current=current)
+        # The pick is in flight: close the reports now, in a fresh short transaction. If the
+        # worker then refuses it, the row is unchanged and members can report it again.
+        resolved = self._resolve_after_send(db, track_id, "pick", actor)
+        return AdminLyricsDecisionResult(
+            action="pick", outcome="enqueued", reports_resolved=resolved, current=current,
+        )
 
     def _no_lyrics(self, db, track_id, row, actor) -> AdminLyricsDecisionResult:
         evidence = {
@@ -289,10 +321,13 @@ class LyricsAdminService:
         row.evidence = evidence
         row.matcher_version = MANUAL_MATCHER_VERSION
         row.updated_at = datetime.now(timezone.utc)
+        resolved = resolve_open_reports(db, track_id, "no_lyrics", actor)
         db.commit()
         current = self._settled_view(db, row)
         logger.warning("Lyrics panel: no_lyrics locked for track %s by %s", track_id, actor)
-        return AdminLyricsDecisionResult(action="no_lyrics", outcome="applied", current=current)
+        return AdminLyricsDecisionResult(
+            action="no_lyrics", outcome="applied", reports_resolved=resolved, current=current,
+        )
 
     def _reject(self, db, track_id, row, lrclib_id, actor) -> AdminLyricsDecisionResult:
         # RETURNING, not rowcount: whether the row is new is the idempotency answer, and a
@@ -320,6 +355,7 @@ class LyricsAdminService:
             row.lyric_plain = None
             row.lyric_synced = None
             row.updated_at = datetime.now(timezone.utc)
+        resolved = resolve_open_reports(db, track_id, "reject", actor) if serving else 0
         db.commit()
         current = self._settled_view(db, row)
         if not inserted and not serving:
@@ -328,7 +364,22 @@ class LyricsAdminService:
                        lrclib_id, track_id, actor, serving)
         sent = self._recheck(track_id) if serving else False
         return AdminLyricsDecisionResult(
-            action="reject", outcome="applied", recheck_enqueued=sent, current=current,
+            action="reject", outcome="applied", recheck_enqueued=sent,
+            reports_resolved=resolved, current=current,
+        )
+
+    def _keep(self, db, track_id, row, actor) -> AdminLyricsDecisionResult:
+        resolved = resolve_open_reports(db, track_id, "keep", actor)
+        if not resolved:
+            current = current_view(row)
+            db.rollback()
+            return AdminLyricsDecisionResult(action="keep", outcome="no_change", current=current)
+        db.commit()
+        current = self._settled_view(db, row)
+        logger.warning("Lyrics panel: %d report(s) on track %s closed as kept by %s",
+                       resolved, track_id, actor)
+        return AdminLyricsDecisionResult(
+            action="keep", outcome="applied", reports_resolved=resolved, current=current,
         )
 
     def _unlock(self, db, track_id, row, actor) -> AdminLyricsDecisionResult:
@@ -359,6 +410,20 @@ class LyricsAdminService:
         current = current_view(row)
         db.rollback()
         return current
+
+    @staticmethod
+    def _resolve_after_send(db: Session, track_id, resolution: str, actor: str) -> int:
+        """Best effort after a successful send: the decision is already in flight, so a DB
+        error here leaves the reports open for the owner to close again, not a 503."""
+        try:
+            resolved = resolve_open_reports(db, track_id, resolution, actor)
+            db.commit()
+            return resolved
+        except Exception as error:  # noqa: BLE001
+            db.rollback()
+            logger.error("Lyrics panel: reports on %s not closed after %s (%s)",
+                         track_id, resolution, type(error).__name__)
+            return 0
 
     def _recheck(self, track_id) -> bool:
         """Best effort after a committed decision: the decision stands either way. A taken-down
