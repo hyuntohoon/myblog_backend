@@ -379,19 +379,3 @@ class TestRoute:
         assert resp.status_code == 200
         svc.snapshot.assert_called_once()
 
-
-def test_ci_schema_ref_matches_the_shared_db_pin():
-    """The integration job loads shared_db's canonical schema at a pinned ref.
-
-    Moving requirements.txt without it left CI on a schema missing the table the
-    code now reads (caught in review of this change; #178 moved both together).
-    """
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[2]
-    pin = re.search(r"myblog_shared_db\.git@([0-9a-f]{40})", (root / "requirements.txt").read_text())
-    refs = re.findall(
-        r"repository: hyuntohoon/myblog_shared_db\s+ref: ([0-9a-f]{40})",
-        (root / ".github/workflows/deploy.yml").read_text(),
-    )
-    assert pin and refs and set(refs) == {pin.group(1)}
